@@ -1,0 +1,20 @@
+ue_object_deliverer_bridge_node:
+  ros__parameters:
+    listen_address: "0.0.0.0"
+    port: 8080
+    terminator: "__OD_END__"
+
+    # UE5: cm -> m, cm/s -> m/s, angular velocity already rad/s.
+    position_scale: 0.01
+    velocity_scale: 0.01
+    yaw_rate_scale: 1.0
+    yaw_rate_sign: 1.0
+
+    # Width and height are parsed from the JPEG header.
+    camera_encoding: "jpeg"
+    max_camera_bytes: 8388608
+
+    log_raw_json: false
+
+    # Publish UE5 Get Game Time in Seconds as the ROS 2 /clock source.
+    publish_clock: true

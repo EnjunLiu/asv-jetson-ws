@@ -1,0 +1,30 @@
+perception_node:
+  ros__parameters:
+    # aruco: process the newest UE5 JPEG frame; ground_truth_passthrough: test mode.
+    mode: "aruco"
+
+    # UE5 input is 10 Hz, while perception intentionally publishes at 2 Hz.
+    # The node keeps only the newest input sample between processing ticks.
+    processing_rate_hz: 2.0
+    input_timeout_sec: 1.0
+
+    # Target definition inherited from the original ESP32 implementation.
+    target_marker_id: 0
+    marker_length_m: 0.1
+    detection_confidence: 1.0
+
+    # Calibration used by the old 640x320 UE5 camera with a 30 degree HFOV.
+    # Replace these values with a real calibration for a physical camera.
+    calibration_width: 640
+    calibration_height: 320
+    camera_fx: 1194.2563
+    camera_fy: 1194.2563
+    camera_cx: 320.0
+    camera_cy: 160.0
+    distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # OpenCV camera +X is right and +Y is down. Adjust these signs to match
+    # the ASV body frame and the physical camera mounting convention.
+    lateral_sign: 1.0
+    vertical_sign: -1.0
+    ground_truth_confidence: 1.0

@@ -1,0 +1,11 @@
+int64 stamp_us
+float64 simulation_time
+float64 position_x
+float64 position_y
+float64 position_z
+float64 roll
+float64 pitch
+float64 yaw
+float64 surge_velocity
+float64 yaw_rate
+bool valid

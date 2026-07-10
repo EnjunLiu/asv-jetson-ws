@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>asv_planning</name>
+  <version>0.1.0</version>
+  <description>High-rate world-state prediction and decision nodes.</description>
+  <maintainer email="liuenjun1010@gmail.com">Enjun Liu</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>asv_jetson_interfaces</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
