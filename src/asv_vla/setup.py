@@ -5,7 +5,7 @@ package_name = "asv_vla"
 
 setup(
     name=package_name,
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         (
@@ -15,16 +15,21 @@ setup(
         ("share/" + package_name, ["package.xml"]),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="Enjun Liu",
     maintainer_email="liuenjun1010@gmail.com",
-    description="Fail-closed Day 1 VLA interface skeleton for the ASV.",
+    description="Fail-closed modular VLA stack for the ASV.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "stub_stack = asv_vla.stub_stack_node:main",
+            "stub_stack_without_language = asv_vla.stub_stack_node:main_without_language",
             "smoke_inputs = asv_vla.smoke_inputs:main",
             "contract_probe = asv_vla.contract_probe:main",
+            "language_encoder = asv_vla.language_encoder_node:main",
+            "language_embedding_probe = asv_vla.language_embedding_probe:main",
+            "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",
         ],
     },
 )

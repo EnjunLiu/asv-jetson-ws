@@ -1,0 +1,42 @@
+schema_version: 1
+
+language_encoder:
+  name: qwen3_embedding_0_6b
+  repo_id: Qwen/Qwen3-Embedding-0.6B
+  source_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+
+  revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+
+  local_dir: models/Qwen3-Embedding-0.6B
+  license: Apache-2.0
+  model_type: text_embedding
+  framework: sentence-transformers
+
+  parameter_count: 0.6B
+  native_embedding_dim: 1024
+  output_embedding_dim: 256
+
+  frozen: true
+  normalize_embeddings: true
+  dimension_reduction: matryoshka_truncate_then_l2_normalize
+
+  instruction: >-
+    Encode an instruction for a twin-thruster unmanned surface vessel
+    performing follow or stop tasks.
+
+  runtime:
+    device: cuda
+    dtype: float16
+    event_triggered: true
+    cache_enabled: true
+
+  download:
+    provider: huggingface
+    endpoint: https://huggingface.co
+    client: hf_cli
+    transport: xet
+    downloaded_at: "2026-07-27"
+    command: >-
+      hf download Qwen/Qwen3-Embedding-0.6B
+      --local-dir models/Qwen3-Embedding-0.6B
+    weight_sha256: 0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd
