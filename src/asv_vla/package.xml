@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>asv_vla</name>
-  <version>0.2.0</version>
-  <description>Fail-closed modular VLA stack with a frozen language encoder.</description>
+  <version>0.3.0</version>
+  <description>Modular VLA stack with frozen embeddings and language intervention data.</description>
   <maintainer email="liuenjun1010@gmail.com">Enjun Liu</maintainer>
   <license>Apache-2.0</license>
 
