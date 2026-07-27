@@ -1,0 +1,8 @@
+int64 stamp_us
+string run_id
+uint64 scene_seed
+string jetson_git_sha
+string esp32_git_sha
+string config_sha256
+string language_model_id
+string policy_model_id

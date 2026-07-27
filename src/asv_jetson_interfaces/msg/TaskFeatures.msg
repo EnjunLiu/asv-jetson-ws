@@ -1,0 +1,11 @@
+int64 stamp_us
+string run_id
+string frame_id
+string backend
+uint16 max_entities
+uint16 feature_dim
+uint16 entity_count
+float32[] features
+bool[] mask
+bool valid
+string detail

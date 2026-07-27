@@ -14,5 +14,6 @@
   <exec_depend>asv_planning</exec_depend>
   <exec_depend>asv_control_manager</exec_depend>
   <exec_depend>asv_tools</exec_depend>
+  <exec_depend>asv_vla</exec_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>
