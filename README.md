@@ -25,9 +25,7 @@ ros2 launch asv_bringup full_system.launch.py
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -v6
 ```
 
-## Day 1 VLA 全接口安全停机测试
-
-该测试不连接 UE5、ESP32 或真实模型。七个 VLA 接口均存在，但最终强制输出零推进器。
+## VLA 全接口安全停机测试
 
 ```bash
 source /opt/ros/humble/setup.bash

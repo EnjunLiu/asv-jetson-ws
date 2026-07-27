@@ -110,7 +110,7 @@ class LanguageEncoderStub(StatusNode):
         message.embedding = [0.0] * LANGUAGE_DIM
         message.cached = True
         message.valid = False
-        message.detail = "Day 1 placeholder; replace on Day 2"
+        message.detail = "Stub decision output; replace with learned policy"
         self.publisher.publish(message)
         self.input_ready = bool(task.data.strip())
         self.output_valid = False
@@ -345,17 +345,19 @@ def destroy_nodes(nodes: Iterable[Node]) -> None:
         node.destroy_node()
 
 
-def main(args=None) -> None:
+def run_stack(include_language: bool, args=None) -> None:
     rclpy.init(args=args)
-    nodes = [
-        LanguageEncoderStub(),
+    nodes = []
+    if include_language:
+        nodes.append(LanguageEncoderStub())
+    nodes.extend([
         VisualEncoderStub(),
         TaskFeatureBuilderStub(),
         TrajectoryPolicyStub(),
         WorldModelStub(),
         TrajectorySelectorStub(),
         TrajectoryControllerStub(),
-    ]
+    ])
     executor = MultiThreadedExecutor(num_threads=4)
     for node in nodes:
         executor.add_node(node)
@@ -367,6 +369,14 @@ def main(args=None) -> None:
         executor.shutdown()
         destroy_nodes(nodes)
         rclpy.shutdown()
+
+
+def main(args=None) -> None:
+    run_stack(include_language=True, args=args)
+
+
+def main_without_language(args=None) -> None:
+    run_stack(include_language=False, args=args)
 
 
 if __name__ == "__main__":

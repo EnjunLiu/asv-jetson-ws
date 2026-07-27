@@ -60,6 +60,16 @@ class SmokeInputs(Node):
             .get_parameter_value()
             .string_value
         )
+        self.language_model_id = (
+            self.declare_parameter("language_model_id", "stub:none")
+            .get_parameter_value()
+            .string_value
+        )
+        self.policy_model_id = (
+            self.declare_parameter("policy_model_id", "stub:none")
+            .get_parameter_value()
+            .string_value
+        )
 
         self.task_pub = self.create_publisher(String, "/task/text", LATCHED_QOS)
         self.context_pub = self.create_publisher(
@@ -98,8 +108,8 @@ class SmokeInputs(Node):
         context.jetson_git_sha = self.jetson_git_sha
         context.esp32_git_sha = self.esp32_git_sha
         context.config_sha256 = self.config_sha256
-        context.language_model_id = "stub:none"
-        context.policy_model_id = "stub:none"
+        context.language_model_id = self.language_model_id
+        context.policy_model_id = self.policy_model_id
         self.context_pub.publish(context)
 
         connected = Bool()

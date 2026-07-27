@@ -22,3 +22,11 @@ Thumbs.db
 *.log
 *.bag
 *.db3
+
+# Project Python virtual environment
+.venv/
+
+# Local model weights
+models/*
+!models/manifest.yaml
+!models/.gitkeep
