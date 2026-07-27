@@ -1,0 +1,9 @@
+int64 stamp_us
+string run_id
+uint8 selected_index
+uint16 horizon
+float32 dt
+float32[] xy
+bool safe_stop
+bool valid
+string reason

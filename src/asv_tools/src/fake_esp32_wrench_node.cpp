@@ -13,6 +13,7 @@ public:
     force_ = declare_parameter<double>("force", 0.2);
     moment_ = declare_parameter<double>("moment", 0.001);
     rate_hz_ = declare_parameter<double>("rate_hz", 10.0);
+    valid_ = declare_parameter<bool>("valid", false);
 
     publisher_ = create_publisher<asv_interfaces::msg::ASVWrench>(
       "/control/asv_wrench", rclcpp::QoS(10).reliable());
@@ -24,9 +25,11 @@ public:
         asv_interfaces::msg::ASVWrench message;
         message.seq = ++sequence_;
         message.stamp_us = now().nanoseconds() / 1000;
-        message.force = static_cast<float>(force_);
-        message.moment = static_cast<float>(moment_);
-        message.valid = std::isfinite(force_) && std::isfinite(moment_);
+        const bool output_valid =
+          valid_ && std::isfinite(force_) && std::isfinite(moment_);
+        message.force = output_valid ? static_cast<float>(force_) : 0.0F;
+        message.moment = output_valid ? static_cast<float>(moment_) : 0.0F;
+        message.valid = output_valid;
         publisher_->publish(message);
       });
   }
@@ -35,6 +38,7 @@ private:
   double force_{0.2};
   double moment_{0.001};
   double rate_hz_{10.0};
+  bool valid_{false};
   uint32_t sequence_{0};
   rclcpp::Publisher<asv_interfaces::msg::ASVWrench>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;

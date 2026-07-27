@@ -13,6 +13,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DecisionOutput.msg"
   "msg/ThrusterCommand.msg"
   "msg/SystemStatus.msg"
+  "msg/RunContext.msg"
+  "msg/TaskEmbedding.msg"
+  "msg/VisualFeatures.msg"
+  "msg/TaskFeatures.msg"
+  "msg/TrajectoryCandidates.msg"
+  "msg/WorldModelEvaluation.msg"
+  "msg/SelectedTrajectory.msg"
+  "msg/ModuleStatus.msg"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

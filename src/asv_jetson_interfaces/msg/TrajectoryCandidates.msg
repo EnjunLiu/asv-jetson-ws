@@ -1,0 +1,9 @@
+int64 stamp_us
+string run_id
+uint8 num_modes
+uint16 horizon
+float32 dt
+float32[] xy
+float32[] logits
+bool valid
+string detail
