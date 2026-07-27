@@ -5,7 +5,7 @@ package_name = "asv_vla"
 
 setup(
     name=package_name,
-    version="0.2.0",
+    version="0.3.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         (
@@ -30,6 +30,11 @@ setup(
             "language_encoder = asv_vla.language_encoder_node:main",
             "language_embedding_probe = asv_vla.language_embedding_probe:main",
             "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",
+            (
+                "generate_language_interventions = "
+                "asv_vla.generate_language_interventions:main"
+            ),
+            "evaluate_language_coverage = asv_vla.evaluate_language_coverage:main",
         ],
     },
 )

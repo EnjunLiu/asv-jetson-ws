@@ -49,6 +49,23 @@ ros2 run asv_vla contract_probe
 DAY1_CONTRACT_PASS
 ```
 
+## 语言干预数据集
+
+生成并检查同场景冲突指令：
+
+```bash
+source .venv/bin/activate
+
+PYTHONPATH=src/asv_vla \
+  python -m asv_vla.generate_language_interventions
+
+PYTHONPATH=src/asv_vla \
+  python -m asv_vla.evaluate_language_coverage
+```
+
+数据标签只用于组织和评价，不作为在线任务解析器输出。数据定义见
+`dataset/language/README.md`。
+
 ## 测试环境
 
 - jetson orin nano 8GB
