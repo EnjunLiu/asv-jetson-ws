@@ -1,0 +1,16 @@
+int64 stamp_us
+string run_id
+int64 scene_seed
+uint64 frame_index
+string frame_id
+string model_version
+string action
+string target_attribute
+float32 desired_distance_m
+string selected_entity_id
+float32 dt
+uint16 horizon
+float32[] delta_p_xy
+bool safe_stop
+bool valid
+string detail

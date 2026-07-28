@@ -71,6 +71,32 @@ Labels in `dataset/language/*.jsonl` exist only for dataset construction,
 splitting and evaluation. They are not an online parser output and may not
 bypass the embedding or trajectory policy.
 
+## Day 9 expert-label boundary
+
+The deterministic FOLLOW/STOP expert publishes `ExpertTrajectory` only on
+`/vla/expert_trajectory`. This is a data-label topic, not the executable
+`/vla/selected_trajectory` topic. It is never connected directly to the
+trajectory controller, control manager, ESP32, or left/right thrusters.
+
+`ExpertTrajectory` retains `run_id`, `scene_seed`, `frame_index`, and
+`stamp_us`. The full identity is required because adjacent UE5 Frame Index
+values can legitimately share one game-time timestamp.
+
+The structured `action`, `target_attribute`, and `distance_bucket` inputs come
+from offline dataset metadata:
+
+- FOLLOW selectors: `color:red`, `color:blue`, `bearing:left`,
+  `bearing:right`;
+- FOLLOW standoff distances: `3m` or `10m`;
+- STOP: `target_attribute=none`, `distance_bucket=none`.
+
+FOLLOW predicts the selected target with constant relative velocity, places
+the desired ASV waypoint at the requested line-of-sight standoff, and limits
+each 0.2 s waypoint increment to the configured expert speed. STOP produces a
+20-step zero-displacement label with `safe_stop=true`. Missing, invalid,
+ambiguous, or non-finite target data produces the fixed zero shape with
+`valid=false`; it never silently becomes a valid STOP label.
+
 ## Legacy path
 
 `PredictedWorldState`, `state_predictor_node` and `decision_node` belong to the

@@ -21,6 +21,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskEmbedding.msg"
   "msg/VisualFeatures.msg"
   "msg/TaskFeatures.msg"
+  # Offline expert labels retain the full UE frame identity because adjacent
+  # Frame_Index values may share a UE5 game-time timestamp.
+  "msg/ExpertTrajectory.msg"
   # The VLA policy publishes exactly one body-frame trajectory. Candidate and
   # learned-world-model evaluation messages were intentionally removed.
   "msg/SelectedTrajectory.msg"
