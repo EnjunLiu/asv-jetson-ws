@@ -1,7 +1,12 @@
 int64 stamp_us
 string run_id
+int64 scene_seed
+uint64 frame_index
+string backbone
+uint8 token_count
 uint16 feature_dim
 float32[] feature
+bool[] mask
 bool source_received
 bool valid
 string detail

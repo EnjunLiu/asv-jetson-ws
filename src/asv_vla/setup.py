@@ -37,6 +37,8 @@ setup(
             "contract_probe = asv_vla.contract_probe:main",
             "language_encoder = asv_vla.language_encoder_node:main",
             "language_embedding_probe = asv_vla.language_embedding_probe:main",
+            "visual_encoder = asv_vla.visual_encoder_node:main",
+            "visual_encoder_probe = asv_vla.visual_encoder_probe:main",
             "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",
             (
                 "generate_language_interventions = "
