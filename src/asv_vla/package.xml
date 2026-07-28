@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>asv_vla</name>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <description>Modular VLA stack with frozen embeddings and language intervention data.</description>
   <maintainer email="liuenjun1010@gmail.com">Enjun Liu</maintainer>
   <license>Apache-2.0</license>

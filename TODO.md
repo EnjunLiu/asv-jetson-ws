@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`36cb7a8`
-工作分支：`feature/day8-multimodal-replay`
+基线提交：`06e7530`
+工作分支：`feature/day9-follow-stop-expert`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -74,7 +74,8 @@
 | Day 6 | 已完成 | 冻结 MobileNet、双 token、无图像 fail-closed 和真实 CUDA ROS probe 通过 |
 | Day 7 | 已完成 | 固定实体张量、mask、目标/CPA 风险保留和 ROS probe 通过 |
 | Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
-| Day 9–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
+| Day 10–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -117,8 +118,15 @@
 - Day 8 ROS 回放：`DAY8_REPLAY_PASS`，50/50 帧同步匹配，
   视觉 `2x576`、实体 `16x16`，安全停止 41 次，无效零
   `DecisionOutput` 206 次；probe 自动退出且所有节点 clean exit
-- `src/asv_vla/test`：51 项测试通过
-- 全工作区 `colcon test`：52 项，0 错误、0 失败、0 跳过
+- Day 9 离线专家：`DAY9_EXPERT_LABELS_PASS`；90 条指令、24 个冲突对、
+  9 种结构化任务标签全部产生确定性、有限、固定 `20x2` 的不同轨迹
+- Day 9 ROS 专家：`DAY9_EXPERT_ROS_PASS`；完整帧身份透传，有效红色
+  3 m FOLLOW 与无效实体源 fail-closed 通过
+- Day 9 话题隔离：运行时仅 `/expert_trajectory` 节点发布
+  `/vla/expert_trajectory`；`/vla/selected_trajectory` 和
+  `/decision/output` 均不存在
+- `src/asv_vla/test`：59 项测试通过
+- 全工作区 `colcon test`：60 项，0 错误、0 失败、0 跳过
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 
 ## 3. Git 工作流
@@ -540,6 +548,66 @@ fail-closed，不把它描述为已实现 FOLLOW 策略。
 - `SelectedTrajectory` 始终满足 Day 1 `safe_stop=true` 契约，
   `DecisionOutput` 始终为 `valid=false` 的零位移，未发送推进器命令；
 - Ctrl-C 后 recorder、replay、encoder 和 probe 均无遗留进程。
+
+### Day 9：FOLLOW/STOP 确定性专家轨迹
+
+Day 9 生成训练和评估标签，不实现在线自然语言解析器，也不替代未来的
+学习策略。结构化 `action / target_attribute / distance_bucket` 只从
+Day 3 数据集元数据读取；自然语言在线路径仍必须经过冻结语言编码器。
+
+专家标签发布到独立话题 `/vla/expert_trajectory`，消息类型为
+`ExpertTrajectory`。禁止发布到可执行话题 `/vla/selected_trajectory`，
+禁止连接 trajectory controller、control manager 或 ESP32。该消息保留
+`run_id / scene_seed / frame_index / stamp_us`，避免 Day 8 已发现的
+相邻帧共享同一游戏时间时发生标签歧义。
+
+固定任务范围：
+
+- `action=follow|stop`；
+- FOLLOW 目标选择器为 `color:red`、`color:blue`、
+  `bearing:left`、`bearing:right`；
+- FOLLOW 期望间距只能是 `3m` 或 `10m`；
+- STOP 必须使用 `target_attribute=none` 和
+  `distance_bucket=none`。
+
+FOLLOW 对选中目标使用常相对速度外推。每个未来时刻先计算目标预测
+位置，再沿视线方向保留期望间距；相邻 waypoint 的位移不超过
+`max_speed_mps * 0.2 s`。输出仍为 `base_link` 下
+`H=20、dt=0.2 s` 的累计相对位移 `[20,2]`。
+
+STOP 输出 20 步全零标签并设置 `safe_stop=true`。这只是监督标签；
+未来控制器仍不得把有效全零位移当作通用位置保持命令。实体源无效、
+目标缺失/隐藏、重复 ID、NaN/Inf、frame 错误或不支持的任务标签均输出
+固定零 shape、`safe_stop=true`、`valid=false`，不得冒充有效 STOP。
+
+离线覆盖验收：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 run asv_vla evaluate_expert_labels \
+  --output artifacts/day9/expert_label_report.json
+```
+
+ROS 节点验收不需要 UE5：
+
+```bash
+ros2 launch asv_bringup day9_expert.launch.py
+```
+
+通过条件：
+
+- 打印 `DAY9_EXPERT_LABELS_PASS`，90 条指令和 24 个冲突对全部覆盖；
+- 9 种结构化任务标签产生 9 条不同轨迹，同一标签重复运行逐值一致；
+- STOP、3/10 m、红/蓝和左/右目标均产生预期标签变化；
+- 每条轨迹固定 `20x2`、数值有限，且相邻 waypoint 满足 1.5 m/s
+  默认速度上限；
+- 打印 `DAY9_EXPERT_ROS_PASS`，完整帧身份透传，无效实体源 fail closed；
+- ROS 图中没有 `/vla/expert_trajectory` 之外的专家发布话题，
+  `DecisionOutput`、控制量和推进器话题不因本 launch 产生；
+- 测试和 launch 使用 Ctrl-C 后均干净退出，无遗留进程。
 
 ## 6. UE5 与 Jetson 分工
 

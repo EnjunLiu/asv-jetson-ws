@@ -5,7 +5,7 @@ package_name = "asv_vla"
 
 setup(
     name=package_name,
-    version="0.4.0",
+    version="0.5.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         (
@@ -53,6 +53,15 @@ setup(
             "replay_episode = asv_vla.episode_replay_node:main",
             "evaluate_episode = asv_vla.episode:main",
             "day8_replay_probe = asv_vla.day8_replay_probe:main",
+            "expert_trajectory = asv_vla.expert_trajectory_node:main",
+            (
+                "expert_trajectory_probe = "
+                "asv_vla.expert_trajectory_probe:main"
+            ),
+            (
+                "evaluate_expert_labels = "
+                "asv_vla.evaluate_expert_labels:main"
+            ),
         ],
     },
 )
