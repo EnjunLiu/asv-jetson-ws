@@ -13,14 +13,11 @@ from asv_jetson_interfaces.msg import (
     DecisionOutput,
     SelectedTrajectory,
     ThrusterCommand,
-    TrajectoryCandidates,
 )
 
 
-NUM_MODES = 6
 HORIZON = 20
 ACTION_DIM = 2
-STOP_INDEX = 5
 TIMEOUT_SEC = 12.0
 
 
@@ -37,12 +34,6 @@ class ContractProbe(Node):
         self.passed = False
         self.messages = {}
 
-        self.create_subscription(
-            TrajectoryCandidates,
-            "/vla/candidate_trajectories",
-            lambda msg: self.record("candidates", msg),
-            qos,
-        )
         self.create_subscription(
             SelectedTrajectory,
             "/vla/selected_trajectory",
@@ -86,7 +77,6 @@ class ContractProbe(Node):
 
     def evaluate(self) -> None:
         required = {
-            "candidates",
             "selected",
             "decision",
             "control_input",
@@ -108,7 +98,6 @@ class ContractProbe(Node):
             self.passed = False
 
     def check_contract(self) -> bool:
-        candidates = self.messages["candidates"]
         selected = self.messages["selected"]
         decision = self.messages["decision"]
         control_input = self.messages["control_input"]
@@ -117,13 +106,7 @@ class ContractProbe(Node):
         thruster = self.messages["thruster"]
 
         checks = {
-            "candidate_modes": candidates.num_modes == NUM_MODES,
-            "candidate_horizon": candidates.horizon == HORIZON,
-            "candidate_shape":
-                len(candidates.xy) == NUM_MODES * HORIZON * ACTION_DIM,
-            "candidate_zero": all(zero(value) for value in candidates.xy),
-            "candidate_invalid": not candidates.valid,
-            "selected_index": selected.selected_index == STOP_INDEX,
+            "selected_index": selected.selected_index == 0,
             "selected_horizon": selected.horizon == HORIZON,
             "selected_shape": len(selected.xy) == HORIZON * ACTION_DIM,
             "selected_zero": all(zero(value) for value in selected.xy),

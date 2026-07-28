@@ -20,17 +20,13 @@ from asv_jetson_interfaces.msg import (
     SelectedTrajectory,
     TaskEmbedding,
     TaskFeatures,
-    TrajectoryCandidates,
     VisualFeatures,
-    WorldModelEvaluation,
     WorldState,
 )
 
 
-NUM_MODES = 6
 HORIZON = 20
 ACTION_DIM = 2
-STOP_INDEX = 5
 LANGUAGE_DIM = 256
 VISUAL_DIM = 128
 MAX_ENTITIES = 16
@@ -182,13 +178,20 @@ class TaskFeatureBuilderStub(StatusNode):
 
 
 class TrajectoryPolicyStub(StatusNode):
+    """Stub policy that publishes a single safe-stop trajectory directly.
+
+    In the production implementation this will be replaced by the VLA
+    trajectory policy that maps language, vision, and task features to a
+    4 s (20-step × 0.2 s) 2-D displacement trajectory in the body frame.
+    """
+
     def __init__(self) -> None:
         super().__init__("trajectory_policy_stub")
         self.have_language = False
         self.have_visual = False
         self.have_task_features = False
         self.publisher = self.create_publisher(
-            TrajectoryCandidates, "/vla/candidate_trajectories", RELIABLE_QOS
+            SelectedTrajectory, "/vla/selected_trajectory", RELIABLE_QOS
         )
         self.language_sub = self.create_subscription(
             TaskEmbedding,
@@ -202,9 +205,9 @@ class TrajectoryPolicyStub(StatusNode):
         self.task_sub = self.create_subscription(
             TaskFeatures, "/vla/task_features", self.on_task_features, RELIABLE_QOS
         )
-        self.create_timer(POLICY_PERIOD_SEC, self.publish_candidates)
+        self.create_timer(POLICY_PERIOD_SEC, self.publish_trajectory)
         self.module_state = ModuleStatus.DEGRADED
-        self.detail = "policy backend is a stub; zero candidates only"
+        self.detail = "policy backend is a stub; safe stop only"
 
     def on_language(self, _: TaskEmbedding) -> None:
         self.have_language = True
@@ -215,97 +218,21 @@ class TrajectoryPolicyStub(StatusNode):
     def on_task_features(self, _: TaskFeatures) -> None:
         self.have_task_features = True
 
-    def publish_candidates(self) -> None:
-        message = TrajectoryCandidates()
-        message.stamp_us = now_us(self)
-        message.run_id = self.run_id
-        message.num_modes = NUM_MODES
-        message.horizon = HORIZON
-        message.dt = 0.2
-        message.xy = [0.0] * (NUM_MODES * HORIZON * ACTION_DIM)
-        message.logits = [0.0] * NUM_MODES
-        message.logits[STOP_INDEX] = 1.0
-        message.valid = False
-        message.detail = "Day 1 placeholder; all six candidates are zero displacement"
-        self.publisher.publish(message)
-        self.input_ready = (
-            self.have_language and self.have_visual and self.have_task_features
-        )
-        self.output_valid = False
-
-
-class WorldModelStub(StatusNode):
-    def __init__(self) -> None:
-        super().__init__("world_model_stub")
-        self.publisher = self.create_publisher(
-            WorldModelEvaluation, "/vla/world_evaluation", RELIABLE_QOS
-        )
-        self.subscription = self.create_subscription(
-            TrajectoryCandidates,
-            "/vla/candidate_trajectories",
-            self.on_candidates,
-            RELIABLE_QOS,
-        )
-        self.module_state = ModuleStatus.DEGRADED
-        self.detail = "world model backend is a stub"
-
-    def on_candidates(self, candidates: TrajectoryCandidates) -> None:
-        message = WorldModelEvaluation()
-        message.stamp_us = now_us(self)
-        message.run_id = self.run_id
-        message.feasible = [False] * NUM_MODES
-        message.total_cost = [1.0e6] * NUM_MODES
-        message.rejection_reason = ["Day 1 placeholder"] * NUM_MODES
-        message.valid = False
-        message.detail = "invalid evaluation forces the selector into safe stop"
-        self.publisher.publish(message)
-        self.input_ready = len(candidates.xy) == NUM_MODES * HORIZON * ACTION_DIM
-        self.output_valid = False
-
-
-class TrajectorySelectorStub(StatusNode):
-    def __init__(self) -> None:
-        super().__init__("trajectory_selector_stub")
-        self.have_candidates = False
-        self.have_evaluation = False
-        self.publisher = self.create_publisher(
-            SelectedTrajectory, "/vla/selected_trajectory", RELIABLE_QOS
-        )
-        self.candidates_sub = self.create_subscription(
-            TrajectoryCandidates,
-            "/vla/candidate_trajectories",
-            self.on_candidates,
-            RELIABLE_QOS,
-        )
-        self.evaluation_sub = self.create_subscription(
-            WorldModelEvaluation,
-            "/vla/world_evaluation",
-            self.on_evaluation,
-            RELIABLE_QOS,
-        )
-        self.create_timer(CONTROL_PERIOD_SEC, self.publish_safe_stop)
-        self.module_state = ModuleStatus.SAFE_STOP
-        self.detail = "Day 1 selector is forced to safe stop"
-
-    def on_candidates(self, _: TrajectoryCandidates) -> None:
-        self.have_candidates = True
-
-    def on_evaluation(self, _: WorldModelEvaluation) -> None:
-        self.have_evaluation = True
-
-    def publish_safe_stop(self) -> None:
+    def publish_trajectory(self) -> None:
         message = SelectedTrajectory()
         message.stamp_us = now_us(self)
         message.run_id = self.run_id
-        message.selected_index = STOP_INDEX
+        message.selected_index = 0
         message.horizon = HORIZON
         message.dt = 0.2
         message.xy = [0.0] * (HORIZON * ACTION_DIM)
         message.safe_stop = True
         message.valid = True
-        message.reason = "Day 1 forced safe stop"
+        message.reason = "Day 1 placeholder; stub policy outputs safe stop"
         self.publisher.publish(message)
-        self.input_ready = self.have_candidates and self.have_evaluation
+        self.input_ready = (
+            self.have_language and self.have_visual and self.have_task_features
+        )
         self.output_valid = True
 
 
@@ -354,8 +281,6 @@ def run_stack(include_language: bool, args=None) -> None:
         VisualEncoderStub(),
         TaskFeatureBuilderStub(),
         TrajectoryPolicyStub(),
-        WorldModelStub(),
-        TrajectorySelectorStub(),
         TrajectoryControllerStub(),
     ])
     executor = MultiThreadedExecutor(num_threads=4)
