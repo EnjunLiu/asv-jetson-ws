@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`06e7530`
-工作分支：`feature/day9-follow-stop-expert`
+基线提交：`f273d07`
+工作分支：`feature/day10-supervised-dataset`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -75,7 +75,8 @@
 | Day 7 | 已完成 | 固定实体张量、mask、目标/CPA 风险保留和 ROS probe 通过 |
 | Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
-| Day 10–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
+| Day 11–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -125,8 +126,16 @@
 - Day 9 话题隔离：运行时仅 `/expert_trajectory` 节点发布
   `/vla/expert_trajectory`；`/vla/selected_trajectory` 和
   `/decision/output` 均不存在
-- `src/asv_vla/test`：59 项测试通过
-- 全工作区 `colcon test`：60 项，0 错误、0 失败、0 跳过
+- Day 10 真实 episode：Run ID
+  `A1D7BAAE49F39E3BB7B1808AB8443CA9`、Scene Seed `12345`、
+  Frame Index `0–49`、50 帧、0 缺口，四个目标 ID/颜色/坐标正确
+- Day 10 数据集：`DAY10_DATASET_BUILD_PASS` 和
+  `DAY10_SUPERVISED_DATASET_PASS`；4500 个样本、90/90 指令、
+  9/9 标签、完整源文件哈希和逐值 expert 重算全部通过
+- Day 10 实测修复：方位选择增加 0.25 m 中心线死区，旧单红船
+  episode 正确从误报 5/9 收敛为真实 3/9 覆盖
+- `src/asv_vla/test`：68 项测试通过
+- 全工作区 `colcon test`：69 项，0 错误、0 失败、0 跳过
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 
 ## 3. Git 工作流
@@ -604,10 +613,119 @@ ros2 launch asv_bringup day9_expert.launch.py
 - STOP、3/10 m、红/蓝和左/右目标均产生预期标签变化；
 - 每条轨迹固定 `20x2`、数值有限，且相邻 waypoint 满足 1.5 m/s
   默认速度上限；
+- 方位选择使用中心线两侧 0.25 m 横向死区，浮点抖动不能伪造
+  `bearing:left/right` 标签；
 - 打印 `DAY9_EXPERT_ROS_PASS`，完整帧身份透传，无效实体源 fail closed；
 - ROS 图中没有 `/vla/expert_trajectory` 之外的专家发布话题，
   `DecisionOutput`、控制量和推进器话题不因本 launch 产生；
 - 测试和 launch 使用 Ctrl-C 后均干净退出，无遗留进程。
+
+### Day 10：可复现的多模态监督样本
+
+Day 10 不训练策略。它把 Day 8 的真实四模态 `FrameRecord`、Day 3
+语言指令和 Day 9 确定性专家轨迹配成可复查的监督样本，先冻结训练输入
+与标签的身份、shape、哈希和覆盖契约。只有该数据门通过后，Day 11
+才开始策略网络和训练代码。
+
+输出目录固定为：
+
+```text
+artifacts/day10_supervised/<DATASET_ID>/
+├── manifest.json
+└── samples.jsonl
+```
+
+不复制 JPEG，不改写 Day 8 episode。每个样本必须保存：
+
+- `run_id / scene_seed / frame_index / stamp_us / frame_id`；
+- 原始 FrameRecord 和 JPEG 的相对路径及 SHA-256；
+- Day 3 指令文本、结构化标签和语言模板 split；
+- Day 9 expert 版本、目标 ID、`dt=0.2`、`H=20` 和有限 `20x2` 轨迹。
+
+同一图像配不同指令是有意的语言干预，因此 `language_split` 只检验未见
+措辞模板，不能声称视觉或场景泛化。后续视觉泛化必须按独立 Run ID 或
+Scene Seed 分组。
+
+已有 Day 8 单红船 episode 可先运行部分覆盖检查：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 run asv_vla build_supervised_dataset \
+  --episode artifacts/day8_episode/latest \
+  --instructions dataset/language/instructions.jsonl \
+  --output artifacts/day10_supervised/day8_red_smoke
+
+ros2 run asv_vla evaluate_supervised_dataset \
+  artifacts/day10_supervised/day8_red_smoke
+```
+
+正式九标签验收需要一个真实 UE5 episode，在同一批帧内持续提供四个
+唯一、有效、可见且 `is_target=true` 的目标：
+
+- 红船：`color=red`，位于前方中线附近；
+- 蓝船：`color=blue`，位于前方中线附近；
+- 左目标：建议 `color=white`，`relative_y > 0`；
+- 右目标：建议 `color=white`，`relative_y < 0`。
+
+四者的 `entity_id` 必须不同，位置和速度必须有限。不要增加 bbox 或新
+字段。继续复用 Day 8 记录器，Jetson 先启动并看到
+`/ue/connected=false`，用户再 Play：
+
+```bash
+ros2 launch asv_bringup day8_record.launch.py \
+  task_text:="day10 multimodal intervention scene" max_frames:=50
+```
+
+记录完成后，用新 Run ID 构建数据并执行正式闸门：
+
+```bash
+ros2 run asv_vla evaluate_supervised_dataset \
+  artifacts/day10_supervised/<DATASET_ID> --require-all-labels
+```
+
+通过条件：
+
+- 构建打印 `DAY10_DATASET_BUILD_PASS`；
+- 校验打印 `DAY10_SUPERVISED_DATASET_PASS`；
+- 至少 20 个真实完整帧，9/9 标签和 90/90 Day 3 指令均有样本；
+- 每个样本身份唯一，源 JSON/JPEG 哈希正确，轨迹可逐值重算；
+- 每条轨迹固定 `20x2`、数值有限，STOP 与 FOLLOW 语义保持 Day 9
+  契约；
+- 修改任一源文件、标签、哈希或轨迹后校验必须 fail closed；
+- `artifacts/` 保持 Git 忽略，构建和校验不启动控制链或推进器话题。
+
+#### Day 11 起的 PC 数据与训练边界
+
+Jetson 只负责 UE5 接收、episode 原子记录、现场质量门、ROS 回放、模型
+部署和实时性能验收。PC 负责多 Run 数据汇总、按 Run ID 划分、
+冻结特征预计算、策略训练、离线评估、绘图和模型导出。
+
+迁移包必须保留以下相对路径，不能只复制 `samples.jsonl`：
+
+```text
+dataset/language/instructions.jsonl
+artifacts/day8_episode/<RUN_ID>/
+artifacts/day10_supervised/<RUN_ID>/
+```
+
+Jetson 打包：
+
+```bash
+tar -czf artifacts/pc_transfer/day10_<RUN_ID>.tar.gz \
+  dataset/language/instructions.jsonl \
+  artifacts/day8_episode/<RUN_ID> \
+  artifacts/day10_supervised/<RUN_ID>
+
+sha256sum artifacts/pc_transfer/day10_<RUN_ID>.tar.gz
+```
+
+PC 接收后先核对 SHA-256，再解压到 PC 训练仓库根目录。PC 必须运行同一
+版本的 `evaluate_supervised_dataset --require-all-labels`；校验通过前
+不得开始特征预计算或训练。模型在 PC 导出 ONNX 后回传 Jetson，Jetson
+再做数值一致性、至少 2 Hz、内存和 30 分钟稳定性验证。
 
 ## 6. UE5 与 Jetson 分工
 

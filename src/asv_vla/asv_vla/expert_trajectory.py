@@ -11,6 +11,7 @@ from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
 
 MODEL_VERSION = "deterministic_follow_stop_expert_v1"
 DEFAULT_MAX_SPEED_MPS = 1.5
+BEARING_DEADBAND_M = 0.25
 SUPPORTED_TARGET_ATTRIBUTES = {
     "color:red",
     "color:blue",
@@ -124,9 +125,9 @@ def _matches(entity: Any, target_attribute: str) -> bool:
         return color == expected
     y = float(entity.relative_y)
     if selector == "bearing" and expected == "left":
-        return y > 1.0e-9
+        return y > BEARING_DEADBAND_M
     if selector == "bearing" and expected == "right":
-        return y < -1.0e-9
+        return y < -BEARING_DEADBAND_M
     return False
 
 

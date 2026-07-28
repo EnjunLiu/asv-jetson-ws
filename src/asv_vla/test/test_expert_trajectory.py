@@ -124,6 +124,18 @@ def test_color_and_bearing_selectors_choose_different_targets():
     assert right.selected_entity_id == "blue"
 
 
+def test_bearing_selector_ignores_centerline_float_noise():
+    near_center = [
+        entity("positive_noise", color="red", y=1.0e-8),
+        entity("negative_noise", color="blue", y=-1.0e-8),
+    ]
+
+    with pytest.raises(ExpertTrajectoryError, match="no valid visible"):
+        select_target(near_center, "bearing:left")
+    with pytest.raises(ExpertTrajectoryError, match="no valid visible"):
+        select_target(near_center, "bearing:right")
+
+
 def test_constant_velocity_prediction_and_speed_bound_are_deterministic():
     task = task_from_labels("follow", "color:red", "3m")
     static = generate_expert_trajectory(task, [entity("target", x=8.0)])

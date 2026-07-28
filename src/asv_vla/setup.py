@@ -5,7 +5,7 @@ package_name = "asv_vla"
 
 setup(
     name=package_name,
-    version="0.5.0",
+    version="0.6.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         (
@@ -61,6 +61,14 @@ setup(
             (
                 "evaluate_expert_labels = "
                 "asv_vla.evaluate_expert_labels:main"
+            ),
+            (
+                "build_supervised_dataset = "
+                "asv_vla.supervised_dataset:build_main"
+            ),
+            (
+                "evaluate_supervised_dataset = "
+                "asv_vla.supervised_dataset:evaluate_main"
             ),
         ],
     },
