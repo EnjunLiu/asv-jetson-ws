@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`8537e53`
-工作分支：`refactor/day1-3-direct-trajectory`
+基线提交：`a569414`
+工作分支：`feature/day5-frame-record-v1`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -70,7 +70,8 @@
 | Day 2 | 已完成 | Qwen CUDA 离线评估和真实 ROS 节点探针全部通过 |
 | Day 3 | 已完成 | 90 条指令、24 个冲突场景；生成一致性和覆盖测试通过 |
 | Day 4 | 已完成 | 实体、坐标、运行元数据和相机契约实测冻结；合成报文 validator 通过 |
-| Day 5–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 5 | 已完成 | `FrameRecord v1` schema、样本、原子读写和数据质量测试通过 |
+| Day 6–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -94,7 +95,8 @@
   峰值 GPU 利用率约 72%，最高温度约 52.5 °C
 - Day 3：`LANGUAGE_INTERVENTION_DATA_CHECK_PASS` 和
   `LANGUAGE_INTERVENTION_COVERAGE_PASS`
-- `src/asv_vla/test`：19 项测试通过
+- `src/asv_vla/test`：27 项测试通过
+- 全工作区：28 项测试通过（含 UE packet validator）
 
 ## 3. Git 工作流
 
