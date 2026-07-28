@@ -10,6 +10,13 @@ ue_object_deliverer_bridge_node:
     yaw_rate_scale: 1.0
     yaw_rate_sign: 1.0
 
+    # UE5 relative entity coordinates are centimetres in the ASV-local frame.
+    # UE +Y points right; ROS base_link +Y points left.
+    entity_frame_id: "base_link"
+    entity_lateral_sign: -1.0
+    entity_vertical_sign: 1.0
+    max_entities: 64
+
     # Width and height are parsed from the JPEG header.
     camera_encoding: "jpeg"
     max_camera_bytes: 8388608

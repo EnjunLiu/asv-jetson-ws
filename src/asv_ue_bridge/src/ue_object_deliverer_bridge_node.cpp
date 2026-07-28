@@ -6,6 +6,8 @@
 #include <asv_jetson_interfaces/msg/target_ground_truth.hpp>
 #include <asv_jetson_interfaces/msg/thruster_command.hpp>
 #include <asv_jetson_interfaces/msg/ueasv_state.hpp>
+#include <asv_jetson_interfaces/msg/ue_entity.hpp>
+#include <asv_jetson_interfaces/msg/ue_entity_array.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -26,6 +28,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <utility>
 
 using json = nlohmann::json;
 
@@ -62,6 +66,34 @@ bool read_number(
 
   output = value->get<double>();
   return std::isfinite(output);
+}
+
+bool read_string(
+  const json & object,
+  std::initializer_list<const char *> names,
+  std::string & output)
+{
+  const json * value = find_member(object, names);
+  if (value == nullptr || !value->is_string()) {
+    return false;
+  }
+
+  output = value->get<std::string>();
+  return !output.empty();
+}
+
+bool read_bool(
+  const json & object,
+  std::initializer_list<const char *> names,
+  bool & output)
+{
+  const json * value = find_member(object, names);
+  if (value == nullptr || !value->is_boolean()) {
+    return false;
+  }
+
+  output = value->get<bool>();
+  return true;
 }
 
 bool is_frame_padding(char value)
@@ -109,6 +141,10 @@ public:
     velocity_scale_ = declare_parameter<double>("velocity_scale", 0.01);
     yaw_rate_scale_ = declare_parameter<double>("yaw_rate_scale", 1.0);
     yaw_rate_sign_ = declare_parameter<double>("yaw_rate_sign", 1.0);
+    entity_frame_id_ = declare_parameter<std::string>("entity_frame_id", "base_link");
+    entity_lateral_sign_ = declare_parameter<double>("entity_lateral_sign", -1.0);
+    entity_vertical_sign_ = declare_parameter<double>("entity_vertical_sign", 1.0);
+    max_entities_ = declare_parameter<int>("max_entities", 64);
 
     camera_encoding_ = declare_parameter<std::string>("camera_encoding", "jpeg");
     max_camera_bytes_ = declare_parameter<int>("max_camera_bytes", 8 * 1024 * 1024);
@@ -121,6 +157,17 @@ public:
     if (terminator_.empty()) {
       throw std::runtime_error("terminator must not be empty");
     }
+    if (entity_frame_id_.empty()) {
+      throw std::runtime_error("entity_frame_id must not be empty");
+    }
+    if (!std::isfinite(entity_lateral_sign_) || entity_lateral_sign_ == 0.0 ||
+      !std::isfinite(entity_vertical_sign_) || entity_vertical_sign_ == 0.0)
+    {
+      throw std::runtime_error("entity coordinate signs must be finite and non-zero");
+    }
+    if (max_entities_ <= 0) {
+      throw std::runtime_error("max_entities must be positive");
+    }
 
     asv_state_pub_ = create_publisher<asv_jetson_interfaces::msg::UEASVState>(
       "/ue/asv_state", rclcpp::QoS(10).reliable());
@@ -131,6 +178,9 @@ public:
 
     camera_pub_ = create_publisher<asv_jetson_interfaces::msg::CameraFrame>(
       "/ue/camera_frame", rclcpp::QoS(2).best_effort());
+
+    entities_pub_ = create_publisher<asv_jetson_interfaces::msg::UEEntityArray>(
+      "/ue/entities", rclcpp::QoS(10).reliable());
 
     connected_pub_ = create_publisher<std_msgs::msg::Bool>(
       "/ue/connected", rclcpp::QoS(1).reliable().transient_local());
@@ -433,12 +483,110 @@ private:
       target.valid = true;
       target_truth_pub_->publish(target);
 
+      publish_optional_entities(body, stamp_us);
       publish_optional_camera(body, stamp_us);
     } catch (const std::exception & exception) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Failed to parse UE5 JSON: %s", exception.what());
     }
+  }
+
+  void publish_optional_entities(const json & body, int64_t stamp_us)
+  {
+    asv_jetson_interfaces::msg::UEEntityArray output;
+    output.stamp_us = stamp_us;
+    output.frame_id = entity_frame_id_;
+
+    const json * entities = find_member(body, {"Entities", "entities"});
+    if (entities == nullptr) {
+      output.detail = "missing Entities";
+      entities_pub_->publish(output);
+      return;
+    }
+    if (!entities->is_array()) {
+      output.detail = "Entities is not an array";
+      entities_pub_->publish(output);
+      return;
+    }
+    if (entities->size() > static_cast<std::size_t>(max_entities_)) {
+      output.detail = "Entities exceeds max_entities";
+      entities_pub_->publish(output);
+      return;
+    }
+
+    output.entities.reserve(entities->size());
+    std::unordered_set<std::string> entity_ids;
+
+    for (std::size_t index = 0; index < entities->size(); ++index) {
+      const json & source = (*entities)[index];
+      if (!source.is_object()) {
+        output.entities.clear();
+        output.detail = "entity[" + std::to_string(index) + "] is not an object";
+        entities_pub_->publish(output);
+        return;
+      }
+
+      asv_jetson_interfaces::msg::UEEntity entity;
+      bool is_target = false;
+      bool visible = false;
+      const bool metadata_valid =
+        read_string(source, {"Entity_Id", "EntityId", "entity_id"}, entity.entity_id) &&
+        read_string(source, {"Class", "class"}, entity.class_name) &&
+        read_string(source, {"Color", "color"}, entity.color) &&
+        read_bool(source, {"Is_Target", "IsTarget", "is_target"}, is_target) &&
+        read_bool(source, {"Visible", "visible"}, visible);
+
+      const json * position = read_object(
+        source, {"RelativePosition", "Relative_Position", "relative_position"});
+      const json * velocity = read_object(
+        source, {"RelativeVelocity", "Relative_Velocity", "relative_velocity"});
+
+      double relative_x = 0.0;
+      double relative_y = 0.0;
+      double relative_z = 0.0;
+      double velocity_x = 0.0;
+      double velocity_y = 0.0;
+      double velocity_z = 0.0;
+      const bool vectors_valid =
+        position != nullptr && velocity != nullptr &&
+        read_number(*position, {"X", "x"}, relative_x) &&
+        read_number(*position, {"Y", "y"}, relative_y) &&
+        read_number(*position, {"Z", "z"}, relative_z) &&
+        read_number(*velocity, {"X", "x"}, velocity_x) &&
+        read_number(*velocity, {"Y", "y"}, velocity_y) &&
+        read_number(*velocity, {"Z", "z"}, velocity_z);
+
+      if (!metadata_valid || !vectors_valid) {
+        output.entities.clear();
+        output.detail = "entity[" + std::to_string(index) + "] has invalid fields";
+        entities_pub_->publish(output);
+        return;
+      }
+      if (!entity_ids.insert(entity.entity_id).second) {
+        output.entities.clear();
+        output.detail = "duplicate Entity_Id: " + entity.entity_id;
+        entities_pub_->publish(output);
+        return;
+      }
+
+      entity.is_target = is_target;
+      entity.visible = visible;
+      entity.relative_x = relative_x * position_scale_;
+      entity.relative_y = entity_lateral_sign_ * relative_y * position_scale_;
+      entity.relative_z = entity_vertical_sign_ * relative_z * position_scale_;
+      entity.relative_velocity_x = velocity_x * velocity_scale_;
+      entity.relative_velocity_y =
+        entity_lateral_sign_ * velocity_y * velocity_scale_;
+      entity.relative_velocity_z =
+        entity_vertical_sign_ * velocity_z * velocity_scale_;
+      entity.valid = true;
+      output.entities.push_back(std::move(entity));
+    }
+
+    output.valid = true;
+    output.detail = "ok";
+    entities_pub_->publish(output);
   }
 
   void publish_optional_camera(const json & body, int64_t stamp_us)
@@ -531,6 +679,10 @@ private:
   double velocity_scale_{0.01};
   double yaw_rate_scale_{1.0};
   double yaw_rate_sign_{1.0};
+  std::string entity_frame_id_{"base_link"};
+  double entity_lateral_sign_{-1.0};
+  double entity_vertical_sign_{1.0};
+  int max_entities_{64};
   std::string camera_encoding_;
   int max_camera_bytes_{8 * 1024 * 1024};
   bool log_raw_json_{false};
@@ -546,6 +698,7 @@ private:
   rclcpp::Publisher<asv_jetson_interfaces::msg::TargetGroundTruth>::SharedPtr
     target_truth_pub_;
   rclcpp::Publisher<asv_jetson_interfaces::msg::CameraFrame>::SharedPtr camera_pub_;
+  rclcpp::Publisher<asv_jetson_interfaces::msg::UEEntityArray>::SharedPtr entities_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connected_pub_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
   rclcpp::Subscription<asv_jetson_interfaces::msg::ThrusterCommand>::SharedPtr command_sub_;

@@ -1,0 +1,12 @@
+string entity_id
+string class_name
+string color
+bool is_target
+bool visible
+float64 relative_x
+float64 relative_y
+float64 relative_z
+float64 relative_velocity_x
+float64 relative_velocity_y
+float64 relative_velocity_z
+bool valid
