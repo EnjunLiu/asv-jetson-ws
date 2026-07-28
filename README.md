@@ -134,6 +134,40 @@ Dataset labels are used only for organization, splitting and evaluation. They
 are not an online task parser and cannot bypass the language embedding or VLA
 policy.
 
+## Day 10: reproducible supervision manifest
+
+Build raw multimodal/expert pairs from one or more complete Day 8 episodes:
+
+```bash
+ros2 run asv_vla build_supervised_dataset \
+  --episode artifacts/day8_episode/<RUN_ID> \
+  --instructions dataset/language/instructions.jsonl \
+  --output artifacts/day10_supervised/<DATASET_ID>
+
+ros2 run asv_vla evaluate_supervised_dataset \
+  artifacts/day10_supervised/<DATASET_ID>
+```
+
+Add `--require-all-labels` to the evaluator for the formal 9-label acceptance
+gate. Generated data stays under ignored `artifacts/`; only the builder,
+validator, tests, and contracts belong in Git.
+
+For PC-side data preparation and training, transfer the source episode,
+supervision directory, and frozen instruction file together:
+
+```bash
+tar -czf artifacts/pc_transfer/day10_<RUN_ID>.tar.gz \
+  dataset/language/instructions.jsonl \
+  artifacts/day8_episode/<RUN_ID> \
+  artifacts/day10_supervised/<RUN_ID>
+sha256sum artifacts/pc_transfer/day10_<RUN_ID>.tar.gz
+```
+
+Extract the archive at the root of a PC checkout and rerun
+`evaluate_supervised_dataset --require-all-labels` before feature generation
+or training. Raw data, generated features, checkpoints, and model binaries
+remain outside Git.
+
 ## Platform
 
 - Jetson Orin Nano 8 GB

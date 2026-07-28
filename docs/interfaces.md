@@ -97,6 +97,35 @@ each 0.2 s waypoint increment to the configured expert speed. STOP produces a
 ambiguous, or non-finite target data produces the fixed zero shape with
 `valid=false`; it never silently becomes a valid STOP label.
 
+Bearing selection uses a 0.25 m lateral deadband around the body-frame
+centerline. Sub-millimetre UE/float noise therefore cannot turn a centered
+color target into a left/right training label.
+
+## Day 10 supervised-data boundary
+
+Day 10 pairs immutable Day 8 `FrameRecord` observations with compatible Day 3
+instructions and recomputed Day 9 expert trajectories. The output contains
+only `manifest.json` and `samples.jsonl`; source JSON and JPEG files remain in
+their original episode and are referenced by relative path and SHA-256.
+
+Each sample retains:
+
+- `run_id / scene_seed / frame_index / stamp_us / frame_id`;
+- source FrameRecord and JPEG paths plus SHA-256 hashes;
+- instruction text, offline structured labels, and language-template split;
+- expert version, `dt=0.2`, `horizon=20`, selected target, stop flag, and a
+  finite nested `20x2` trajectory.
+
+The builder overlays multiple language interventions on the same observation
+deliberately. `language_split` therefore measures held-out wording families,
+not visual or scene generalization. Future visual-generalization evaluation
+must group independent UE runs by Run ID or Scene Seed.
+
+Dataset construction never publishes ROS control topics. A changed source
+file, duplicate sample identity, missing instruction, invalid target, hash
+mismatch, or trajectory mismatch causes validation failure rather than a
+partially trusted sample.
+
 ## Legacy path
 
 `PredictedWorldState`, `state_predictor_node` and `decision_node` belong to the
