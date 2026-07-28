@@ -35,7 +35,8 @@ from .trajectory_contract import (
 
 
 LANGUAGE_DIM = 256
-VISUAL_DIM = 128
+VISUAL_TOKEN_COUNT = 2
+VISUAL_DIM = 576
 MAX_ENTITIES = 16
 ENTITY_FEATURE_DIM = 12
 POLICY_PERIOD_SEC = 0.5
@@ -135,9 +136,14 @@ class VisualEncoderStub(StatusNode):
     def on_frame(self, frame: CameraFrame) -> None:
         message = VisualFeatures()
         message.stamp_us = now_us(self)
-        message.run_id = self.run_id
+        message.run_id = frame.run_id or self.run_id
+        message.scene_seed = frame.scene_seed
+        message.frame_index = frame.frame_index
+        message.backbone = "stub:none"
+        message.token_count = VISUAL_TOKEN_COUNT
         message.feature_dim = VISUAL_DIM
-        message.feature = [0.0] * VISUAL_DIM
+        message.feature = [0.0] * (VISUAL_TOKEN_COUNT * VISUAL_DIM)
+        message.mask = [False] * VISUAL_TOKEN_COUNT
         message.source_received = True
         message.valid = False
         message.detail = "Day 1 placeholder; image validity is not promoted"

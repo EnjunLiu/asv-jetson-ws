@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`a569414`
-工作分支：`feature/day5-frame-record-v1`
+基线提交：`402f095`
+工作分支：`feature/day6-visual-encoder`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -71,7 +71,8 @@
 | Day 3 | 已完成 | 90 条指令、24 个冲突场景；生成一致性和覆盖测试通过 |
 | Day 4 | 已完成 | 实体、坐标、运行元数据和相机契约实测冻结；合成报文 validator 通过 |
 | Day 5 | 已完成 | `FrameRecord v1` schema、样本、原子读写和数据质量测试通过 |
-| Day 6–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 6 | 已完成 | 冻结 MobileNet、双 token、无图像 fail-closed 和真实 CUDA ROS probe 通过 |
+| Day 7–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -95,8 +96,13 @@
   峰值 GPU 利用率约 72%，最高温度约 52.5 °C
 - Day 3：`LANGUAGE_INTERVENTION_DATA_CHECK_PASS` 和
   `LANGUAGE_INTERVENTION_COVERAGE_PASS`
-- `src/asv_vla/test`：27 项测试通过
-- 全工作区：28 项测试通过（含 UE packet validator）
+- Day 6：`VISUAL_ENCODER_PASS`，输出 `2x576`，重复推理最大差值为 0
+- Day 6 视觉单元测试：9 项通过；冻结骨干、投影、目标选择、固定 crop、
+  错误图像和固定输出 shape 均覆盖
+- `src/asv_vla/test`：36 项测试通过
+- 全工作区 `colcon build --symlink-install`：9 个包通过
+- 全工作区 `colcon test`：37 项，0 错误、0 失败、0 跳过
+- Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 
 ## 3. Git 工作流
 
@@ -276,6 +282,61 @@ Day 4 以后每一天都必须满足“输入明确、输出可提交、验收�
 | 19 | 定向修复 | grounding/视觉/坐标失败的最小修复 | 至少解决一个高频失败；STOP 和安全测试不退化 |
 | 20 | 压力与演示 | 30 min tegrastats、故障注入、演示脚本 | 无持续 OOM；所有故障进入预期状态 |
 | 21 | 缓冲与归档 | 已知问题、最终 tag、复现说明 | 不增加新架构；他人可按 README 完成回放/仿真 |
+
+### Day 6：视觉编码最小实现
+
+Day 6 不要求 UE5 输出 bbox。目标局部 token 的中心由同一
+`run_id/frame_index` 下的可见目标实体三维坐标，通过 Day 4 冻结的相机
+外参和针孔模型投影得到。局部区域是以该投影点为中心的固定
+`224x224` 像素窗口；这不是物体真实边界框。
+
+固定输出契约：
+
+- token 0：整幅 `1280x720` 图像的 MobileNetV3-small 全局特征；
+- token 1：目标投影点附近 `224x224` crop 的 MobileNetV3-small 特征；
+- shape：`token_count=2`、`feature_dim=576`、扁平数组长度 `1152`；
+- 两个 token 分别 L2 归一化，骨干 `eval()` 且全部参数冻结；
+- 图像为空/损坏、尺寸或编码错误、实体不同步、目标不可见、目标投影
+  在画面外、模型或推理异常时，发布相同 shape 的全零特征、
+  `mask=[false,false]` 和 `valid=false`。
+
+连接 UE5 的启动命令：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch asv_bringup visual_encoder.launch.py \
+  start_ue_bridge:=true use_sim_time:=true
+```
+
+查看结果：
+
+```bash
+ros2 topic echo /vla/visual_features
+```
+
+不启动 UE5 的可重复验收：
+
+```bash
+# 终端 1
+ros2 launch asv_bringup visual_encoder.launch.py \
+  start_ue_bridge:=false use_sim_time:=false
+
+# 终端 2
+source /opt/ros/humble/setup.bash
+source ~/jetson_asv_ws/install/setup.bash
+ros2 run asv_vla visual_encoder_probe
+```
+
+通过条件：
+
+- 打印 `VISUAL_ENCODER_PASS tokens=2x576`；
+- 空图像产生固定全零输出且 `valid=false`；
+- 有效 JPEG 和同步目标实体产生两个有限、归一化 token；
+- 同一合成输入重复推理的最大差值不大于 `1e-6`；
+- 测试完成后没有遗留 `visual_encoder` 或 probe 进程。
 
 ## 6. UE5 与 Jetson 分工
 
