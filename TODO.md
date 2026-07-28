@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`402f095`
-工作分支：`feature/day6-visual-encoder`
+基线提交：`884d634`
+工作分支：`feature/day7-task-entity-tensor`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -72,7 +72,8 @@
 | Day 4 | 已完成 | 实体、坐标、运行元数据和相机契约实测冻结；合成报文 validator 通过 |
 | Day 5 | 已完成 | `FrameRecord v1` schema、样本、原子读写和数据质量测试通过 |
 | Day 6 | 已完成 | 冻结 MobileNet、双 token、无图像 fail-closed 和真实 CUDA ROS probe 通过 |
-| Day 7–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 7 | 已完成 | 固定实体张量、mask、目标/CPA 风险保留和 ROS probe 通过 |
+| Day 8–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -99,9 +100,12 @@
 - Day 6：`VISUAL_ENCODER_PASS`，输出 `2x576`，重复推理最大差值为 0
 - Day 6 视觉单元测试：9 项通过；冻结骨干、投影、目标选择、固定 crop、
   错误图像和固定输出 shape 均覆盖
-- `src/asv_vla/test`：36 项测试通过
-- 全工作区 `colcon build --symlink-install`：9 个包通过
-- 全工作区 `colcon test`：37 项，0 错误、0 失败、0 跳过
+- Day 7：`TASK_ENTITY_TENSOR_PASS shape=16x16`，远目标和 CPA 风险实体
+  分别保留在第 1、2 行
+- Day 7 实体张量单元测试：10 项通过；固定 shape、mask、Top-K、
+  坐标/颜色、CPA、重复 ID 和 NaN 均覆盖
+- `src/asv_vla/test`：46 项测试通过
+- 全工作区 `colcon test`：47 项，0 错误、0 失败、0 跳过
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 
 ## 3. Git 工作流
@@ -337,6 +341,74 @@ ros2 run asv_vla visual_encoder_probe
 - 有效 JPEG 和同步目标实体产生两个有限、归一化 token；
 - 同一合成输入重复推理的最大差值不大于 `1e-6`；
 - 测试完成后没有遗留 `visual_encoder` 或 probe 进程。
+
+### Day 7：任务实体张量
+
+Day 7 直接消费 `/ue/entities`，不再经过只包含单个目标的旧
+`WorldState`。UE5 无需增加字段；继续发送 Day 4 已冻结的实体 ID、颜色、
+目标标志、可见性、相对位置和相对速度即可。
+
+固定输出契约：
+
+- `max_entities=16`、`feature_dim=16`，扁平数组长度固定为 `256`；
+- `entity_ids`、`mask` 长度均固定为 `16`，未使用行以空 ID 和零值填充；
+- 输出保留源 `run_id`、`scene_seed`、`frame_index` 和 `base_link`；
+- 只接收 `valid=true` 且 `visible=true` 的实体；
+- 选择顺序固定为：目标实体、4 秒内 CPA 距离不超过 3 m 的风险实体、
+  其余实体按当前平面距离由近到远；
+- 同一优先级使用距离和 `entity_id` 打破平局，保证重复运行顺序一致；
+- 重复 ID、空 ID、NaN/Inf、错误 frame 或无效源消息都输出固定全零
+  张量、全 false mask 和 `valid=false`。
+
+每个实体的 16 维特征依次为：
+
+```text
+[x, y, z, vx, vy, vz,
+ planar_distance, bearing_sin, bearing_cos,
+ closing_speed, time_to_cpa, cpa_distance,
+ is_target, is_risk, color_red, color_blue]
+```
+
+位置、速度、时间和距离按固定尺度归一化并裁剪到 `[-1,1]` 或
+`[0,1]`。方位沿用 ROS `base_link`：`+X` 前、`+Y` 左。
+
+连接 UE5 的启动命令：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch asv_bringup task_entity_tensor.launch.py \
+  start_ue_bridge:=true use_sim_time:=true
+```
+
+查看结果：
+
+```bash
+ros2 topic echo /vla/task_features
+```
+
+不启动 UE5 的可重复验收：
+
+```bash
+# 终端 1
+ros2 launch asv_bringup task_entity_tensor.launch.py \
+  start_ue_bridge:=false use_sim_time:=false
+
+# 终端 2
+source /opt/ros/humble/setup.bash
+source ~/jetson_asv_ws/install/setup.bash
+ros2 run asv_vla task_entity_probe
+```
+
+通过条件：
+
+- 打印 `TASK_ENTITY_TENSOR_PASS shape=16x16`；
+- 无效源产生固定零张量、全 false mask 和 `valid=false`；
+- 超过 16 个实体时仍保留远目标和高风险实体；
+- 隐藏/无效实体不进入张量；
+- 测试和 launch 使用 Ctrl-C 后均干净退出，无遗留进程。
 
 ## 6. UE5 与 Jetson 分工
 
