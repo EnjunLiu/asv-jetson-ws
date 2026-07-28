@@ -61,8 +61,8 @@
 
 ## 2. 当前状态
 
-基线提交：`884d634`
-工作分支：`feature/day7-task-entity-tensor`
+基线提交：`36cb7a8`
+工作分支：`feature/day8-multimodal-replay`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -73,7 +73,8 @@
 | Day 5 | 已完成 | `FrameRecord v1` schema、样本、原子读写和数据质量测试通过 |
 | Day 6 | 已完成 | 冻结 MobileNet、双 token、无图像 fail-closed 和真实 CUDA ROS probe 通过 |
 | Day 7 | 已完成 | 固定实体张量、mask、目标/CPA 风险保留和 ROS probe 通过 |
-| Day 8–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
+| Day 9–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
 
 当前设备快照（2026-07-28）：
 
@@ -107,8 +108,17 @@
   `target_01` 为首行，实测约 `9.89 Hz`
 - Day 7 实体张量单元测试：10 项通过；固定 shape、mask、Top-K、
   坐标/颜色、CPA、重复 ID 和 NaN 均覆盖
-- `src/asv_vla/test`：46 项测试通过
-- 全工作区 `colcon test`：47 项，0 错误、0 失败、0 跳过
+- Day 8 真实 episode：Run ID
+  `0103264B48AE9EC7483AAFA52A1BE2E5`、Scene Seed `12345`、
+  Frame Index `0–49`、50 帧、0 缺口、四模态全有效、无 NaN/Inf；
+  27 对相邻帧共享 UE5 Game Time，时间戳未倒退
+- Day 8 质量门：`DAY8_EPISODE_QUALITY_PASS`；JPEG 均为
+  `1280x720`，每帧 1 个有效实体
+- Day 8 ROS 回放：`DAY8_REPLAY_PASS`，50/50 帧同步匹配，
+  视觉 `2x576`、实体 `16x16`，安全停止 41 次，无效零
+  `DecisionOutput` 206 次；probe 自动退出且所有节点 clean exit
+- `src/asv_vla/test`：51 项测试通过
+- 全工作区 `colcon test`：52 项，0 错误、0 失败、0 跳过
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 
 ## 3. Git 工作流
@@ -446,6 +456,90 @@ ros2 run asv_vla task_entity_probe
 - 测试和 launch 使用 Ctrl-C 后均干净退出，无遗留进程。
 - 真实 UE5 验收必须先看到 `connected=false` 再 Play，随后看到
   `connected=true` 和 `DAY7_LIVE_MATCH_PASS`。
+
+### Day 8：首次完整数据记录与回放
+
+Day 8 不要求 UE5 增加字段或 bbox。继续使用 Day 4 已冻结的
+`Run_ID / Scene_Seed / Frame_Index`、本船状态、JPEG 和 Entities。
+Jetson 以四元组
+`(run_id, scene_seed, frame_index, stamp_us)` 精确匹配三路 ROS 消息，
+只把四个模态均有效的帧写入 episode。
+
+每个 episode 的目录结构固定为：
+
+```text
+artifacts/day8_episode/<Run_ID>/
+├── camera/<Frame_Index>.jpg
+├── frames/<Frame_Index>.json
+├── manifest.json
+└── quality_report.json
+```
+
+JPEG 和 JSON 均先写临时文件再原子替换；Git 忽略整个 `artifacts/`
+目录。`latest` 符号链接只指向最近一次 Run_ID，不复制或覆盖旧 episode。
+
+#### 真实 UE5 记录
+
+必须先启动 Jetson，再由用户点击 UE5 Play：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch asv_bringup day8_record.launch.py \
+  task_text:="follow the red boat" max_frames:=50
+```
+
+Play 前确认：
+
+```bash
+ss -ltn | grep ':8080'
+ros2 topic echo /ue/connected --once
+```
+
+必须先看到 8080 监听且 `data: false`。用户随后 Play，并保持红色目标船
+在相机前方可见，连续运行约 5–10 秒；同一 episode 内不得重新 Play、
+切换 Scene Seed 或复用 Run ID。记录器打印
+`DAY8_RECORDING_COMPLETE` 后即可停止 UE5。
+
+独立质量检查：
+
+```bash
+ros2 run asv_vla evaluate_episode \
+  ~/jetson_asv_ws/artifacts/day8_episode/latest --min-frames 20
+```
+
+必须打印 `DAY8_EPISODE_QUALITY_PASS`。
+
+#### 离线 ROS 回放
+
+回放不启动 UE5，也不启动 TCP bridge：
+
+```bash
+ros2 launch asv_bringup day8_replay.launch.py \
+  episode_dir:="$HOME/jetson_asv_ws/artifacts/day8_episode/latest" \
+  min_frames:=20
+```
+
+该 launch 将原始 task、ego、camera 和 entities 重新发布到原话题，运行
+Day 6 真实视觉编码器、Day 7 真实实体编码器，以及不重复发布特征的
+安全停止尾链。策略仍是 Day 1 占位实现，因此本日只验收
+fail-closed，不把它描述为已实现 FOLLOW 策略。
+
+通过条件：
+
+- 至少 20 个 FrameRecord，单一 Run ID 和 Scene Seed，Frame Index
+  严格递增，`stamp_us` 不得倒退；UE5 同一游戏时间产生的重复时间戳和
+  传输帧缺口均单独计数，不伪造补帧；
+- 每帧 task、ego、`1280x720` JPEG 和 entities 均有效，schema、单位、
+  mask 和图片尺寸检查通过，JSON 中无 NaN/Inf；
+- 回放时视觉输出固定 `2x576`，实体输出固定 `16x16`，二者使用相同
+  四元组匹配且无 invalid/NaN/shape 错误；
+- 打印 `DAY8_REPLAY_PASS`；
+- `SelectedTrajectory` 始终满足 Day 1 `safe_stop=true` 契约，
+  `DecisionOutput` 始终为 `valid=false` 的零位移，未发送推进器命令；
+- Ctrl-C 后 recorder、replay、encoder 和 probe 均无遗留进程。
 
 ## 6. UE5 与 Jetson 分工
 
