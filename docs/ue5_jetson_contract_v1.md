@@ -19,6 +19,9 @@ It does not define a trajectory or actuator interface.
 
 The current bridge continues to require:
 
+- `Run_ID`: non-empty identifier created once in UE5 `BeginPlay`
+- `Scene_Seed`: signed integer that drives the run's UE5 random stream
+- `Frame_Index`: non-negative integer incremented once per generated packet
 - `Time`: UE simulation time in seconds
 - `ASV_Location`: UE world position in centimetres
 - `ASV_Rotation`: Roll, Pitch and Yaw in degrees
@@ -27,6 +30,17 @@ The current bridge continues to require:
 - `Target_Location`: compatibility-only target world position
 
 `Camera_Capture` is optional. When present it is an array of JPEG bytes.
+
+The bridge also accepts the compatibility spellings `Run_Id`, `RunId` and
+`run_id`, but `Run_ID` is the canonical UE5 field name. `Scene_Seed` must stay
+constant within a run. A new `Run_ID` must start at `Frame_Index=0`.
+Duplicate or decreasing indices are rejected. A forward gap is accepted so the
+latest observation remains usable, but the gap is reported in `detail` and the
+node log.
+
+Every published `/ue/asv_state`, `/ue/target_ground_truth`,
+`/ue/camera_frame` and `/ue/entities` message carries the normalized
+`run_id`, `scene_seed` and `frame_index`.
 
 ## Entities
 
@@ -78,8 +92,8 @@ Malformed input publishes an empty array with `valid=false` and an explicit
 
 ## Still required before Day 4 completion
 
-- add `Run_Id`, `Scene_Seed` and strictly increasing `Frame_Index`;
-- verify the lateral and yaw signs with controlled UE coordinate tests;
+- generate non-placeholder `Run_ID`, `Scene_Seed` and strictly increasing
+  `Frame_Index` values in UE5 and validate them with a real run;
 - freeze camera dimensions, FOV and mounting transform;
 - add a checked-in synthetic packet validator;
 - decide how the natural-language task enters the run.

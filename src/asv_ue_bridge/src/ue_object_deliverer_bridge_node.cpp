@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -96,6 +97,58 @@ bool read_bool(
   return true;
 }
 
+bool read_int64(
+  const json & object,
+  std::initializer_list<const char *> names,
+  int64_t & output)
+{
+  const json * value = find_member(object, names);
+  if (value == nullptr) {
+    return false;
+  }
+
+  if (value->is_number_unsigned()) {
+    const uint64_t unsigned_value = value->get<uint64_t>();
+    if (unsigned_value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return false;
+    }
+    output = static_cast<int64_t>(unsigned_value);
+    return true;
+  }
+  if (!value->is_number_integer()) {
+    return false;
+  }
+
+  output = value->get<int64_t>();
+  return true;
+}
+
+bool read_uint64(
+  const json & object,
+  std::initializer_list<const char *> names,
+  uint64_t & output)
+{
+  const json * value = find_member(object, names);
+  if (value == nullptr) {
+    return false;
+  }
+
+  if (value->is_number_unsigned()) {
+    output = value->get<uint64_t>();
+    return true;
+  }
+  if (!value->is_number_integer()) {
+    return false;
+  }
+
+  const int64_t signed_value = value->get<int64_t>();
+  if (signed_value < 0) {
+    return false;
+  }
+  output = static_cast<uint64_t>(signed_value);
+  return true;
+}
+
 bool is_frame_padding(char value)
 {
   return value == '\0' || value == ' ' || value == '\t' ||
@@ -124,6 +177,13 @@ const json * read_object(
   const json * value = find_member(object, names);
   return value != nullptr && value->is_object() ? value : nullptr;
 }
+
+struct FrameMetadata
+{
+  std::string run_id;
+  int64_t scene_seed{0};
+  uint64_t frame_index{0};
+};
 
 }  // namespace
 
@@ -457,12 +517,25 @@ private:
       const int64_t stamp_us =
         static_cast<int64_t>(simulation_time * 1'000'000.0);
 
+      FrameMetadata metadata;
+      std::string metadata_detail;
+      if (!validate_frame_metadata(body, metadata, metadata_detail)) {
+        publish_invalid_entities(stamp_us, metadata, metadata_detail);
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejected UE5 frame metadata: %s", metadata_detail.c_str());
+        return;
+      }
+
       // Make UE5 game time the ROS 2 time source before publishing any data
       // produced by this simulation step.
       publish_simulation_clock(stamp_us);
 
       asv_jetson_interfaces::msg::UEASVState state;
       state.stamp_us = stamp_us;
+      state.run_id = metadata.run_id;
+      state.scene_seed = metadata.scene_seed;
+      state.frame_index = metadata.frame_index;
       state.simulation_time = simulation_time;
       state.position_x = asv_x * position_scale_;
       state.position_y = asv_y * position_scale_;
@@ -477,14 +550,17 @@ private:
 
       asv_jetson_interfaces::msg::TargetGroundTruth target;
       target.stamp_us = stamp_us;
+      target.run_id = metadata.run_id;
+      target.scene_seed = metadata.scene_seed;
+      target.frame_index = metadata.frame_index;
       target.position_x = target_x * position_scale_;
       target.position_y = target_y * position_scale_;
       target.position_z = target_z * position_scale_;
       target.valid = true;
       target_truth_pub_->publish(target);
 
-      publish_optional_entities(body, stamp_us);
-      publish_optional_camera(body, stamp_us);
+      publish_optional_entities(body, stamp_us, metadata, metadata_detail);
+      publish_optional_camera(body, stamp_us, metadata);
     } catch (const std::exception & exception) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -492,10 +568,104 @@ private:
     }
   }
 
-  void publish_optional_entities(const json & body, int64_t stamp_us)
+  bool validate_frame_metadata(
+    const json & body,
+    FrameMetadata & metadata,
+    std::string & detail)
+  {
+    if (!read_string(body, {"Run_ID", "Run_Id", "RunId", "run_id"}, metadata.run_id)) {
+      detail = "missing or empty Run_ID";
+      return false;
+    }
+    if (!read_int64(
+        body, {"Scene_Seed", "SceneSeed", "scene_seed"}, metadata.scene_seed))
+    {
+      detail = "Scene_Seed must be an integer";
+      return false;
+    }
+    if (!read_uint64(
+        body, {"Frame_Index", "FrameIndex", "frame_index"}, metadata.frame_index))
+    {
+      detail = "Frame_Index must be a non-negative integer";
+      return false;
+    }
+
+    if (!have_last_frame_) {
+      have_last_frame_ = true;
+      last_run_id_ = metadata.run_id;
+      last_scene_seed_ = metadata.scene_seed;
+      last_frame_index_ = metadata.frame_index;
+      detail = metadata.frame_index == 0 ?
+        "ok" : "ok; joined run after frame 0";
+      return true;
+    }
+
+    if (metadata.run_id != last_run_id_) {
+      if (metadata.frame_index != 0) {
+        detail = "new Run_ID must start at Frame_Index 0";
+        return false;
+      }
+      last_run_id_ = metadata.run_id;
+      last_scene_seed_ = metadata.scene_seed;
+      last_frame_index_ = metadata.frame_index;
+      detail = "ok";
+      return true;
+    }
+
+    if (metadata.scene_seed != last_scene_seed_) {
+      detail = "Scene_Seed changed within Run_ID";
+      return false;
+    }
+    if (metadata.frame_index <= last_frame_index_) {
+      detail = "duplicate or out-of-order Frame_Index";
+      return false;
+    }
+
+    if (metadata.frame_index > last_frame_index_ + 1) {
+      const uint64_t dropped = metadata.frame_index - last_frame_index_ - 1;
+      detail = "ok; frame gap: " + std::to_string(dropped);
+      RCLCPP_WARN(
+        get_logger(),
+        "UE5 frame gap: run_id=%s previous=%llu current=%llu dropped=%llu",
+        metadata.run_id.c_str(),
+        static_cast<unsigned long long>(last_frame_index_),
+        static_cast<unsigned long long>(metadata.frame_index),
+        static_cast<unsigned long long>(dropped));
+    } else {
+      detail = "ok";
+    }
+
+    last_frame_index_ = metadata.frame_index;
+    return true;
+  }
+
+  void publish_invalid_entities(
+    int64_t stamp_us,
+    const FrameMetadata & metadata,
+    const std::string & detail)
   {
     asv_jetson_interfaces::msg::UEEntityArray output;
     output.stamp_us = stamp_us;
+    output.run_id = metadata.run_id;
+    output.scene_seed = metadata.scene_seed;
+    output.frame_index = metadata.frame_index;
+    output.frame_id = entity_frame_id_;
+    output.valid = false;
+    output.detail = detail;
+    entities_pub_->publish(output);
+  }
+
+  void publish_optional_entities(
+    const json & body,
+    int64_t stamp_us,
+    const FrameMetadata & metadata,
+    const std::string & metadata_detail)
+  {
+    asv_jetson_interfaces::msg::UEEntityArray output;
+    output.stamp_us = stamp_us;
+    output.run_id = metadata.run_id;
+    output.scene_seed = metadata.scene_seed;
+    output.frame_index = metadata.frame_index;
     output.frame_id = entity_frame_id_;
 
     const json * entities = find_member(body, {"Entities", "entities"});
@@ -585,11 +755,14 @@ private:
     }
 
     output.valid = true;
-    output.detail = "ok";
+    output.detail = metadata_detail;
     entities_pub_->publish(output);
   }
 
-  void publish_optional_camera(const json & body, int64_t stamp_us)
+  void publish_optional_camera(
+    const json & body,
+    int64_t stamp_us,
+    const FrameMetadata & metadata)
   {
     const json * camera = find_member(
       body, {"Camera_Capture", "CameraCapture", "camera_capture"});
@@ -608,6 +781,9 @@ private:
 
     asv_jetson_interfaces::msg::CameraFrame frame;
     frame.stamp_us = stamp_us;
+    frame.run_id = metadata.run_id;
+    frame.scene_seed = metadata.scene_seed;
+    frame.frame_index = metadata.frame_index;
     frame.encoding = camera_encoding_;
     frame.data.reserve(camera->size());
 
@@ -693,6 +869,10 @@ private:
   std::mutex socket_mutex_;
   int server_fd_{-1};
   int client_fd_{-1};
+  bool have_last_frame_{false};
+  std::string last_run_id_;
+  int64_t last_scene_seed_{0};
+  uint64_t last_frame_index_{0};
 
   rclcpp::Publisher<asv_jetson_interfaces::msg::UEASVState>::SharedPtr asv_state_pub_;
   rclcpp::Publisher<asv_jetson_interfaces::msg::TargetGroundTruth>::SharedPtr
