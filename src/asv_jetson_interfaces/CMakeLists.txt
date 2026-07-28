@@ -8,6 +8,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # Existing UE5/perception/control path. PredictedWorldState remains because
   # the legacy state_predictor_node and decision_node still consume it.
   "msg/UEASVState.msg"
+  "msg/UEEntity.msg"
+  "msg/UEEntityArray.msg"
   "msg/TargetGroundTruth.msg"
   "msg/CameraFrame.msg"
   "msg/WorldState.msg"

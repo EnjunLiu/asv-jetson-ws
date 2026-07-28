@@ -1,0 +1,24 @@
+{
+  "Run_ID": "synthetic-day4-run",
+  "Scene_Seed": 12345,
+  "Frame_Index": 0,
+  "Time": 0.0,
+  "Surge_Velocity": 0.0,
+  "Angular_Velocity": 0.0,
+  "ASV_Location": {"x": 0.0, "y": 0.0, "z": 0.0},
+  "ASV_Rotation": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+  "Target_Location": {"x": 150.0, "y": 0.0, "z": -10.5},
+  "Entities": [
+    {
+      "RelativePosition": {"x": 150.0, "y": 0.0, "z": -10.5},
+      "RelativeVelocity": {"x": 0.0, "y": 0.0, "z": 0.0},
+      "Entity_Id": "target_01",
+      "Class": "boat",
+      "Color": "red",
+      "Is_Target": true,
+      "Visible": true,
+      "BBox_XYXY_Px": true
+    }
+  ],
+  "Camera_Capture": [255, 216, 255, 217]
+}
