@@ -5,7 +5,7 @@ package_name = "asv_vla"
 
 setup(
     name=package_name,
-    version="0.3.0",
+    version="0.4.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         (
@@ -33,6 +33,7 @@ setup(
         "console_scripts": [
             "stub_stack = asv_vla.stub_stack_node:main",
             "stub_stack_without_language = asv_vla.stub_stack_node:main_without_language",
+            "safety_tail = asv_vla.stub_stack_node:main_safety_tail",
             "smoke_inputs = asv_vla.smoke_inputs:main",
             "contract_probe = asv_vla.contract_probe:main",
             "language_encoder = asv_vla.language_encoder_node:main",
@@ -48,6 +49,10 @@ setup(
             ),
             "evaluate_language_coverage = asv_vla.evaluate_language_coverage:main",
             "validate_frame_record = asv_vla.frame_record:main",
+            "record_episode = asv_vla.episode_recorder_node:main",
+            "replay_episode = asv_vla.episode_replay_node:main",
+            "evaluate_episode = asv_vla.episode:main",
+            "day8_replay_probe = asv_vla.day8_replay_probe:main",
         ],
     },
 )

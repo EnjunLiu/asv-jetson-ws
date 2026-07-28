@@ -332,5 +332,32 @@ def main_without_language(args=None) -> None:
     run_stack(include_language=False, args=args)
 
 
+def main_safety_tail(args=None) -> None:
+    """Run only language fallback, safe-stop policy, and controller.
+
+    Day 8 uses the real visual and task-entity encoders, so their Day 1 stubs
+    must not be started as duplicate publishers.
+    """
+
+    rclpy.init(args=args)
+    nodes = [
+        LanguageEncoderStub(),
+        TrajectoryPolicyStub(),
+        TrajectoryControllerStub(),
+    ]
+    executor = MultiThreadedExecutor(num_threads=3)
+    for node in nodes:
+        executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        executor.shutdown()
+        destroy_nodes(nodes)
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
 if __name__ == "__main__":
     main()
