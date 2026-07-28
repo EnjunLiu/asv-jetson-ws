@@ -13,8 +13,16 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
+        (
+            "share/" + package_name + "/schema",
+            ["schema/frame_record_v1.schema.json"],
+        ),
+        (
+            "share/" + package_name + "/examples",
+            ["examples/frame_record_v1.json"],
+        ),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "jsonschema"],
     tests_require=["pytest"],
     zip_safe=True,
     maintainer="Enjun Liu",
@@ -35,6 +43,7 @@ setup(
                 "asv_vla.generate_language_interventions:main"
             ),
             "evaluate_language_coverage = asv_vla.evaluate_language_coverage:main",
+            "validate_frame_record = asv_vla.frame_record:main",
         ],
     },
 )

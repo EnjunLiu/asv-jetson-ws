@@ -1,0 +1,68 @@
+{
+  "schema_version": "frame_record_v1",
+  "run_id": "28DF249449C786DCBBF385A583472976",
+  "scene_seed": 12345,
+  "frame_index": 215,
+  "stamp_us": 21613943,
+  "frame_id": "base_link",
+  "task": {
+    "stamp_us": 1000000,
+    "text": "follow the red boat",
+    "valid": true
+  },
+  "ego": {
+    "stamp_us": 21613943,
+    "world_frame_id": "ue_world",
+    "simulation_time_s": 21.613943,
+    "position_m": [0.0, 0.0, 0.0],
+    "rpy_ue_rad": [0.0, 0.0, 0.0],
+    "surge_velocity_mps": 0.0,
+    "yaw_rate_radps": 0.0,
+    "valid": true
+  },
+  "camera": {
+    "stamp_us": 21613943,
+    "image_path": "camera/000000000215.jpg",
+    "encoding": "jpeg",
+    "width_px": 1280,
+    "height_px": 720,
+    "fov_angle_deg": 90.0,
+    "mount_frame_id": "base_link",
+    "mount_position_m": [0.42, 0.0, 0.2],
+    "mount_rpy_ue_deg": [0.0, -5.0, 0.0],
+    "valid": true
+  },
+  "entities": {
+    "stamp_us": 21613943,
+    "frame_id": "base_link",
+    "items": [
+      {
+        "entity_id": "target_01",
+        "class_name": "boat",
+        "color": "red",
+        "is_target": true,
+        "visible": true,
+        "relative_position_m": [
+          1.5000000154724331,
+          2.448286977596581e-09,
+          -0.10554275158589146
+        ],
+        "relative_velocity_mps": [
+          0.0,
+          0.0,
+          -0.0010058338940143585
+        ],
+        "valid": true
+      }
+    ],
+    "valid": true
+  },
+  "modality_mask": {
+    "task": true,
+    "ego": true,
+    "camera": true,
+    "entities": true
+  },
+  "valid": true,
+  "detail": "ok"
+}
