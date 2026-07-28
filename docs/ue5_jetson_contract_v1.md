@@ -1,6 +1,6 @@
 # UE5 to Jetson frame contract v1
 
-Status: Day 4 in progress.
+Status: Day 4 complete.
 
 This document records the packet that is currently emitted by the UE5
 ObjectDeliverer blueprint and the conversion performed by the Jetson bridge.
@@ -41,6 +41,34 @@ node log.
 Every published `/ue/asv_state`, `/ue/target_ground_truth`,
 `/ue/camera_frame` and `/ue/entities` message carries the normalized
 `run_id`, `scene_seed` and `frame_index`.
+
+## Camera profile
+
+The Day 4 camera profile is fixed:
+
+- UE `TextureRenderTarget2D`: `1280 x 720` pixels;
+- UE `SceneCaptureComponent2D` FOV Angle: `90` degrees;
+- UE camera relative location: `X=42`, `Y=0`, `Z=20` centimetres;
+- UE camera relative rotation: `Roll=0`, `Pitch=-5`, `Yaw=0` degrees.
+
+With the Day 4 UE-to-ROS axis mapping, the camera mount origin in `base_link`
+is `(x=0.42, y=0.0, z=0.20)` metres. The raw UE component rotation is retained
+in this contract until a ROS optical frame is introduced with the visual
+encoder.
+
+`Camera_Capture` contains JPEG bytes. Resolution is checked against this fixed
+profile when camera decoding is added; changing the render target or camera
+mount requires a contract-version update.
+
+## Natural-language task input
+
+Natural-language commands do not come from UE5. Jetson owns the task input:
+
+- input topic: `/task/text`;
+- message type: `std_msgs/msg/String`;
+- one command remains constant for a run unless an explicit intervention is
+  being evaluated;
+- the language encoder publishes `/vla/language_embedding`.
 
 ## Entities
 
@@ -90,10 +118,11 @@ An entity array is valid only when:
 Malformed input publishes an empty array with `valid=false` and an explicit
 `detail`; partial entity frames are never accepted.
 
-## Still required before Day 4 completion
+The checked-in producer-side validator is:
 
-- generate non-placeholder `Run_ID`, `Scene_Seed` and strictly increasing
-  `Frame_Index` values in UE5 and validate them with a real run;
-- freeze camera dimensions, FOV and mounting transform;
-- add a checked-in synthetic packet validator;
-- decide how the natural-language task enters the run.
+```bash
+python3 src/asv_ue_bridge/scripts/validate_ue_packet.py \
+  src/asv_ue_bridge/test/data/ue_packet_v1.json
+```
+
+Expected output: `UE_PACKET_VALID`.

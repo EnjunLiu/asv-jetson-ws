@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(asv_ue_bridge)
 
+include(CTest)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -32,5 +34,18 @@ target_link_libraries(
 )
 
 install(TARGETS ue_object_deliverer_bridge_node DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/validate_ue_packet.py DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME ue_packet_validator
+    COMMAND
+      ${Python3_EXECUTABLE} -m unittest discover
+      -s ${CMAKE_CURRENT_SOURCE_DIR}/test
+      -p test_validate_ue_packet.py
+  )
+endif()
+
 ament_package()
