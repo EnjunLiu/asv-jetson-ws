@@ -24,9 +24,16 @@ from asv_jetson_interfaces.msg import (
     WorldState,
 )
 
+from .trajectory_contract import (
+    ACTION_DIM,
+    DT_SEC,
+    FRAME_ID,
+    HORIZON,
+    SAFE_STOP_MODEL_VERSION,
+    is_day1_safe_stop,
+)
 
-HORIZON = 20
-ACTION_DIM = 2
+
 LANGUAGE_DIM = 256
 VISUAL_DIM = 128
 MAX_ENTITIES = 16
@@ -106,7 +113,7 @@ class LanguageEncoderStub(StatusNode):
         message.embedding = [0.0] * LANGUAGE_DIM
         message.cached = True
         message.valid = False
-        message.detail = "Stub decision output; replace with learned policy"
+        message.detail = "Day 1 placeholder; replace with the frozen text encoder"
         self.publisher.publish(message)
         self.input_ready = bool(task.data.strip())
         self.output_valid = False
@@ -190,6 +197,9 @@ class TrajectoryPolicyStub(StatusNode):
         self.have_language = False
         self.have_visual = False
         self.have_task_features = False
+        self.language_valid = False
+        self.visual_valid = False
+        self.task_features_valid = False
         self.publisher = self.create_publisher(
             SelectedTrajectory, "/vla/selected_trajectory", RELIABLE_QOS
         )
@@ -209,23 +219,27 @@ class TrajectoryPolicyStub(StatusNode):
         self.module_state = ModuleStatus.DEGRADED
         self.detail = "policy backend is a stub; safe stop only"
 
-    def on_language(self, _: TaskEmbedding) -> None:
+    def on_language(self, message: TaskEmbedding) -> None:
         self.have_language = True
+        self.language_valid = message.valid
 
-    def on_visual(self, _: VisualFeatures) -> None:
+    def on_visual(self, message: VisualFeatures) -> None:
         self.have_visual = True
+        self.visual_valid = message.valid
 
-    def on_task_features(self, _: TaskFeatures) -> None:
+    def on_task_features(self, message: TaskFeatures) -> None:
         self.have_task_features = True
+        self.task_features_valid = message.valid
 
     def publish_trajectory(self) -> None:
         message = SelectedTrajectory()
         message.stamp_us = now_us(self)
         message.run_id = self.run_id
-        message.selected_index = 0
+        message.frame_id = FRAME_ID
+        message.model_version = SAFE_STOP_MODEL_VERSION
+        message.dt = DT_SEC
         message.horizon = HORIZON
-        message.dt = 0.2
-        message.xy = [0.0] * (HORIZON * ACTION_DIM)
+        message.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
         message.safe_stop = True
         message.valid = True
         message.reason = "Day 1 placeholder; stub policy outputs safe stop"
@@ -234,6 +248,10 @@ class TrajectoryPolicyStub(StatusNode):
             self.have_language and self.have_visual and self.have_task_features
         )
         self.output_valid = True
+        if self.language_valid and self.visual_valid and self.task_features_valid:
+            self.detail = "all inputs valid; Day 1 policy still forces safe stop"
+        else:
+            self.detail = "one or more inputs invalid; fail-closed safe stop published"
 
 
 class TrajectoryControllerStub(StatusNode):
@@ -253,8 +271,8 @@ class TrajectoryControllerStub(StatusNode):
         self.module_state = ModuleStatus.SAFE_STOP
         self.detail = "safe stop is mapped to an invalid zero DecisionOutput"
 
-    def on_selected(self, _: SelectedTrajectory) -> None:
-        self.have_selected = True
+    def on_selected(self, message: SelectedTrajectory) -> None:
+        self.have_selected = is_day1_safe_stop(message)
 
     def publish_invalid_zero(self) -> None:
         message = DecisionOutput()

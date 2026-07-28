@@ -15,14 +15,21 @@ from asv_jetson_interfaces.msg import (
     ThrusterCommand,
 )
 
+from .trajectory_contract import (
+    ACTION_DIM,
+    DT_SEC,
+    FRAME_ID,
+    HORIZON,
+    SAFE_STOP_MODEL_VERSION,
+    finite_zero,
+    is_day1_safe_stop,
+)
 
-HORIZON = 20
-ACTION_DIM = 2
 TIMEOUT_SEC = 12.0
 
 
 def zero(value: float) -> bool:
-    return math.isfinite(value) and abs(value) <= 1.0e-9
+    return finite_zero(value)
 
 
 class ContractProbe(Node):
@@ -106,10 +113,17 @@ class ContractProbe(Node):
         thruster = self.messages["thruster"]
 
         checks = {
-            "selected_index": selected.selected_index == 0,
+            "selected_contract": is_day1_safe_stop(selected),
+            "selected_run_id": bool(selected.run_id),
+            "selected_frame": selected.frame_id == FRAME_ID,
+            "selected_model_version":
+                selected.model_version == SAFE_STOP_MODEL_VERSION,
+            "selected_dt": math.isclose(selected.dt, DT_SEC, abs_tol=1.0e-6),
             "selected_horizon": selected.horizon == HORIZON,
-            "selected_shape": len(selected.xy) == HORIZON * ACTION_DIM,
-            "selected_zero": all(zero(value) for value in selected.xy),
+            "selected_shape":
+                len(selected.delta_p_xy) == HORIZON * ACTION_DIM,
+            "selected_zero":
+                all(zero(value) for value in selected.delta_p_xy),
             "selected_safe_stop": selected.safe_stop,
             "selected_container_valid": selected.valid,
             "decision_x_zero": zero(decision.desired_x),
@@ -130,8 +144,10 @@ class ContractProbe(Node):
         }
 
         for name, passed in checks.items():
-            log = self.get_logger().info if passed else self.get_logger().error
-            log(f"{name}={'PASS' if passed else 'FAIL'}")
+            if passed:
+                self.get_logger().info(f"{name}=PASS")
+            else:
+                self.get_logger().error(f"{name}=FAIL")
         return all(checks.values())
 
 

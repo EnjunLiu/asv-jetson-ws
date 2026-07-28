@@ -1,9 +1,10 @@
 int64 stamp_us
 string run_id
-uint8 selected_index
-uint16 horizon
+string frame_id
+string model_version
 float32 dt
-float32[] xy
+uint16 horizon
+float32[] delta_p_xy
 bool safe_stop
 bool valid
 string reason

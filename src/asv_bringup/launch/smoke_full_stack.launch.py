@@ -17,10 +17,17 @@ def config(package_name, file_name):
 
 def generate_launch_description():
     run_id = LaunchConfiguration("run_id")
+    jetson_git_sha = LaunchConfiguration("jetson_git_sha")
     run_id_parameter = ParameterValue(run_id, value_type=str)
+    jetson_git_sha_parameter = ParameterValue(jetson_git_sha, value_type=str)
 
     return LaunchDescription([
         DeclareLaunchArgument("run_id", default_value="day1-smoke"),
+        DeclareLaunchArgument(
+            "jetson_git_sha",
+            default_value="unknown-unset",
+            description="Exact Jetson repository commit under test.",
+        ),
 
         Node(
             package="asv_vla",
@@ -30,9 +37,9 @@ def generate_launch_description():
             parameters=[{
                 "run_id": run_id_parameter,
                 "scene_seed": 1,
-                "jetson_git_sha": "d43d226-day1-working-tree",
+                "jetson_git_sha": jetson_git_sha_parameter,
                 "esp32_git_sha": "not-connected",
-                "config_sha256": "day1-placeholder",
+                "config_sha256": "day1-smoke-v2",
                 "use_sim_time": False,
             }],
         ),

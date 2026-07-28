@@ -100,8 +100,10 @@ class LanguageEmbeddingProbe(Node):
                 ),
             }
             for name, passed in checks.items():
-                log = self.get_logger().info if passed else self.get_logger().error
-                log(f"{name}={'PASS' if passed else 'FAIL'}")
+                if passed:
+                    self.get_logger().info(f"{name}=PASS")
+                else:
+                    self.get_logger().error(f"{name}=FAIL")
             self.passed = all(checks.values())
             marker = (
                 "LANGUAGE_EMBEDDING_PASS"

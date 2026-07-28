@@ -5,6 +5,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  # Existing UE5/perception/control path. PredictedWorldState remains because
+  # the legacy state_predictor_node and decision_node still consume it.
   "msg/UEASVState.msg"
   "msg/TargetGroundTruth.msg"
   "msg/CameraFrame.msg"
@@ -17,8 +19,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskEmbedding.msg"
   "msg/VisualFeatures.msg"
   "msg/TaskFeatures.msg"
-  "msg/TrajectoryCandidates.msg"
-  "msg/WorldModelEvaluation.msg"
+  # The VLA policy publishes exactly one body-frame trajectory. Candidate and
+  # learned-world-model evaluation messages were intentionally removed.
   "msg/SelectedTrajectory.msg"
   "msg/ModuleStatus.msg"
 )
