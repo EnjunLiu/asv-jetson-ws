@@ -38,7 +38,7 @@ LANGUAGE_DIM = 256
 VISUAL_TOKEN_COUNT = 2
 VISUAL_DIM = 576
 MAX_ENTITIES = 16
-ENTITY_FEATURE_DIM = 12
+ENTITY_FEATURE_DIM = 16
 POLICY_PERIOD_SEC = 0.5
 CONTROL_PERIOD_SEC = 0.1
 
@@ -172,11 +172,14 @@ class TaskFeatureBuilderStub(StatusNode):
         message = TaskFeatures()
         message.stamp_us = now_us(self)
         message.run_id = self.run_id
+        message.scene_seed = 0
+        message.frame_index = 0
         message.frame_id = "base_link"
         message.backend = "stub_v0"
         message.max_entities = MAX_ENTITIES
         message.feature_dim = ENTITY_FEATURE_DIM
         message.entity_count = 0
+        message.entity_ids = [""] * MAX_ENTITIES
         message.features = [0.0] * (MAX_ENTITIES * ENTITY_FEATURE_DIM)
         message.mask = [False] * MAX_ENTITIES
         message.valid = False
@@ -317,7 +320,8 @@ def run_stack(include_language: bool, args=None) -> None:
     finally:
         executor.shutdown()
         destroy_nodes(nodes)
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def main(args=None) -> None:
