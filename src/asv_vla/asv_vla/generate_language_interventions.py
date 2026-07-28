@@ -6,6 +6,7 @@ from typing import Any
 
 from .language_intervention_dataset import (
     default_dataset_dir,
+    read_jsonl,
     validate_language_dataset,
     write_jsonl,
 )
@@ -243,11 +244,34 @@ def parse_args(argv=None):
         default=str(default_dataset_dir()),
         help="Directory for instructions.jsonl and contrast_pairs.jsonl.",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify checked-in files without rewriting them.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    if args.check:
+        destination = Path(args.output_dir)
+        expected_instructions = build_instructions()
+        expected_pairs = build_contrast_pairs(expected_instructions)
+        validate_language_dataset(expected_instructions, expected_pairs)
+        actual_instructions = read_jsonl(destination / "instructions.jsonl")
+        actual_pairs = read_jsonl(destination / "contrast_pairs.jsonl")
+        if (
+            actual_instructions != expected_instructions
+            or actual_pairs != expected_pairs
+        ):
+            raise SystemExit(
+                "LANGUAGE_INTERVENTION_DATA_CHECK_FAIL:"
+                "checked-in files differ from the deterministic generator"
+            )
+        print("LANGUAGE_INTERVENTION_DATA_CHECK_PASS")
+        return
+
     instructions_path, pairs_path = generate(args.output_dir)
     print(f"instructions={instructions_path}")
     print(f"contrast_pairs={pairs_path}")

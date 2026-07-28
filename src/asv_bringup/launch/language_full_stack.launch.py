@@ -22,15 +22,36 @@ def config(package_name, file_name):
 
 def generate_launch_description():
     run_id = LaunchConfiguration("run_id")
+    jetson_git_sha = LaunchConfiguration("jetson_git_sha")
+    python_executable = LaunchConfiguration("python_executable")
     model_path = LaunchConfiguration("model_path")
     device = LaunchConfiguration("device")
     output_dim = LaunchConfiguration("output_dim")
     max_chars = LaunchConfiguration("max_chars")
 
     run_id_parameter = ParameterValue(run_id, value_type=str)
+    jetson_git_sha_parameter = ParameterValue(jetson_git_sha, value_type=str)
 
     return LaunchDescription([
         DeclareLaunchArgument("run_id", default_value="language-embedding"),
+        DeclareLaunchArgument(
+            "jetson_git_sha",
+            default_value="unknown-unset",
+            description="Exact Jetson repository commit under test.",
+        ),
+        DeclareLaunchArgument(
+            "python_executable",
+            default_value=PathJoinSubstitution([
+                EnvironmentVariable("HOME"),
+                "jetson_asv_ws",
+                ".venv",
+                "bin",
+                "python",
+            ]),
+            description=(
+                "Python with sentence-transformers and system ROS packages."
+            ),
+        ),
         DeclareLaunchArgument(
             "model_path",
             default_value=PathJoinSubstitution([
@@ -52,7 +73,7 @@ def generate_launch_description():
             parameters=[{
                 "run_id": run_id_parameter,
                 "scene_seed": 1,
-                "jetson_git_sha": "language-embedding-working-tree",
+                "jetson_git_sha": jetson_git_sha_parameter,
                 "esp32_git_sha": "not-connected",
                 "config_sha256": "language-embedding",
                 "language_model_id": "Qwen/Qwen3-Embedding-0.6B",
@@ -65,6 +86,7 @@ def generate_launch_description():
             executable="language_encoder",
             name="language_encoder",
             output="screen",
+            prefix=[python_executable],
             additional_env={
                 "USE_TF": "0",
                 "USE_FLAX": "0",

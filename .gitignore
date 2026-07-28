@@ -31,8 +31,6 @@ models/*
 !models/manifest.yaml
 !models/.gitkeep
 
-# TODO
-TODO.md
-
 # Generated
 *.egg-info/
+artifacts/

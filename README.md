@@ -1,73 +1,144 @@
-# Jetson ASV ROS2 工作空间
+# Jetson ASV ROS 2 workspace
 
-基于 ROS2 的 无人船感知与决策系统工作空间。
+ROS 2 Humble workspace for the Jetson side of a twin-thruster unmanned surface
+vessel. UE5 sends simulation observations; the Jetson publishes only
+two-dimensional desired displacement/trajectory commands to the existing
+control boundary.
 
-## 功能简介
+## Current paths
 
-- 接收低频感知原始数据，输出高频决策
-- 基于 micro-ROS agent 实现与下位机串口通信
-- 基于 TCP/IP 与 UE5 通信实现控制指令回传与数据解析
+- `full_system.launch.py` is the existing legacy perception/prediction/control
+  path.
+- `smoke_full_stack.launch.py` is the Day 1 fail-closed VLA contract test.
+- `language_full_stack.launch.py` replaces only the language stub with the
+  frozen Day 2 embedding model.
 
-## 实现细节
+Never run the formal and smoke launches at the same time: they share control
+topics. The direct VLA policy publishes one `[20,2]` trajectory; the removed
+six-candidate and learned-world-model evaluation stages are not part of the
+architecture.
 
-- ArUco占位图像处理相关内容
-- 最小二乘拟合预测器实现低频数据的高频预测
+The frozen interfaces and fail-closed semantics are documented in
+[`docs/interfaces.md`](docs/interfaces.md). The execution plan and acceptance
+gates are in [`TODO.md`](TODO.md).
 
-## 使用方式
+## Build
 
-
-```
-source /opt/ros/humble/setup.bash
-source /microros_ws/install/setup.bash
-colcon build
-source install/setup.bash
-ros2 launch asv_bringup full_system.launch.py
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -v6
-```
-
-## VLA 全接口安全停机测试
-
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch asv_bringup smoke_full_stack.launch.py
-```
-
-另开终端运行：
+Run on the Jetson:
 
 ```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source /home/jetson/microros_ws/install/setup.bash
+
+colcon build --symlink-install
+source install/setup.bash
+```
+
+## Day 1: direct-trajectory fail-closed contract
+
+Terminal A:
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch asv_bringup smoke_full_stack.launch.py \
+  jetson_git_sha:="$(git rev-parse HEAD)"
+```
+
+Terminal B:
+
+```bash
+cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 run asv_vla contract_probe
 ```
 
-通过标志：
+Acceptance marker:
 
 ```text
 DAY1_CONTRACT_PASS
 ```
 
-## 语言干预数据集
+This verifies a well-formed single safe-stop trajectory followed by invalid
+zero `DecisionOutput`, invalid zero control/wrench and invalid zero thrusters.
 
-生成并检查同场景冲突指令：
+## Day 2: language embedding
+
+The model is `Qwen/Qwen3-Embedding-0.6B`, loaded locally through the
+PyTorch-only `sentence-transformers` path. Do not replace the NVIDIA Jetson
+PyTorch installation with a desktop wheel.
+
+Run the lightweight unit tests first:
 
 ```bash
+cd ~/jetson_asv_ws
+source .venv/bin/activate
+PYTHONPATH=src/asv_vla python -m pytest -q -p no:cacheprovider src/asv_vla/test
+```
+
+Run the real offline model test:
+
+```bash
+PYTHONPATH=src/asv_vla \
+  python -m asv_vla.evaluate_language_similarity \
+  --model-path models/Qwen3-Embedding-0.6B \
+  --device cuda
+```
+
+Acceptance marker:
+
+```text
+LANGUAGE_EMBEDDING_OFFLINE_PASS
+```
+
+The command writes the ignored runtime artifact
+`artifacts/language_embedding/language_similarity.csv`.
+
+For the ROS path, start `language_full_stack.launch.py` and run
+`ros2 run asv_vla language_embedding_probe`. Expected marker:
+
+```text
+LANGUAGE_EMBEDDING_PASS
+```
+
+Run the language model headlessly: close VS Code language servers, Jupyter and
+other large processes before benchmarking. If Qwen still cannot load without
+memory allocation failures, switch to the documented MiniLM fallback while
+keeping the 256-dimensional ROS contract.
+
+## Day 3: language intervention data
+
+```bash
+cd ~/jetson_asv_ws
 source .venv/bin/activate
 
 PYTHONPATH=src/asv_vla \
-  python -m asv_vla.generate_language_interventions
+  python -m asv_vla.generate_language_interventions --check
 
 PYTHONPATH=src/asv_vla \
   python -m asv_vla.evaluate_language_coverage
 ```
 
-数据标签只用于组织和评价，不作为在线任务解析器输出。数据定义见
-`dataset/language/README.md`。
+Acceptance marker:
 
-## 测试环境
+```text
+LANGUAGE_INTERVENTION_COVERAGE_PASS
+```
 
-- jetson orin nano 8GB
-- ROS2 humble
-- micro-ROS agent humble
+Dataset labels are used only for organization, splitting and evaluation. They
+are not an online task parser and cannot bypass the language embedding or VLA
+policy.
+
+## Platform
+
+- Jetson Orin Nano 8 GB
+- Ubuntu 22.04 / ROS 2 Humble
+- micro-ROS agent Humble
+
+Record the actual L4T, CUDA, TensorRT and NVIDIA PyTorch versions in every
+deployment benchmark; do not infer them only from a nominal JetPack release.
