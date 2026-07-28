@@ -102,6 +102,9 @@
   错误图像和固定输出 shape 均覆盖
 - Day 7：`TASK_ENTITY_TENSOR_PASS shape=16x16`，远目标和 CPA 风险实体
   分别保留在第 1、2 行
+- Day 7 真实 UE5 顺序验收：Jetson 先监听时 `connected=false`，Play 后
+  `connected=true`；`DAY7_LIVE_MATCH_PASS`，同一帧元数据完全匹配，
+  `target_01` 为首行，实测约 `9.89 Hz`
 - Day 7 实体张量单元测试：10 项通过；固定 shape、mask、Top-K、
   坐标/颜色、CPA、重复 ID 和 NaN 均覆盖
 - `src/asv_vla/test`：46 项测试通过
@@ -304,7 +307,10 @@ Day 6 不要求 UE5 输出 bbox。目标局部 token 的中心由同一
   在画面外、模型或推理异常时，发布相同 shape 的全零特征、
   `mask=[false,false]` 和 `valid=false`。
 
-连接 UE5 的启动命令：
+连接 UE5 时必须先启动 Jetson 监听，再启动 UE5 Play。禁止先 Play
+再启动 bridge，否则 UE5 首次连接和首帧数据可能丢失。
+
+终端 1，先启动 Jetson：
 
 ```bash
 cd ~/jetson_asv_ws
@@ -315,7 +321,22 @@ ros2 launch asv_bringup visual_encoder.launch.py \
   start_ue_bridge:=true use_sim_time:=true
 ```
 
-查看结果：
+终端 2，在 UE5 尚未 Play 时确认 Jetson 已就绪：
+
+```bash
+ss -ltn | grep ':8080'
+ros2 topic echo /ue/connected --once
+```
+
+此时必须看到端口 `8080` 正在监听且 `data: false`。然后用户在 UE5
+点击 Play。连接建立后再确认：
+
+```bash
+ros2 topic echo /ue/connected --once
+ros2 topic echo /vla/visual_features
+```
+
+此时 `/ue/connected` 必须为 `data: true`，随后才验收视觉结果。
 
 ```bash
 ros2 topic echo /vla/visual_features
@@ -372,7 +393,9 @@ Day 7 直接消费 `/ue/entities`，不再经过只包含单个目标的旧
 位置、速度、时间和距离按固定尺度归一化并裁剪到 `[-1,1]` 或
 `[0,1]`。方位沿用 ROS `base_link`：`+X` 前、`+Y` 左。
 
-连接 UE5 的启动命令：
+连接 UE5 时必须使用同一顺序：Jetson bridge 先监听，UE5 后 Play。
+
+终端 1，先启动 Jetson：
 
 ```bash
 cd ~/jetson_asv_ws
@@ -383,11 +406,23 @@ ros2 launch asv_bringup task_entity_tensor.launch.py \
   start_ue_bridge:=true use_sim_time:=true
 ```
 
-查看结果：
+终端 2，在 UE5 尚未 Play 时确认等待状态：
 
 ```bash
+ss -ltn | grep ':8080'
+ros2 topic echo /ue/connected --once
+```
+
+预期端口 `8080` 正在监听且连接状态为 `data: false`。确认后用户再点击
+UE5 Play。随后执行：
+
+```bash
+ros2 topic echo /ue/connected --once
 ros2 topic echo /vla/task_features
 ```
+
+只有 `/ue/connected` 变为 `data: true` 且任务实体张量开始更新，才说明
+正确完成了 UE5→Jetson 启动握手。
 
 不启动 UE5 的可重复验收：
 
@@ -409,6 +444,8 @@ ros2 run asv_vla task_entity_probe
 - 超过 16 个实体时仍保留远目标和高风险实体；
 - 隐藏/无效实体不进入张量；
 - 测试和 launch 使用 Ctrl-C 后均干净退出，无遗留进程。
+- 真实 UE5 验收必须先看到 `connected=false` 再 Play，随后看到
+  `connected=true` 和 `DAY7_LIVE_MATCH_PASS`。
 
 ## 6. UE5 与 Jetson 分工
 
