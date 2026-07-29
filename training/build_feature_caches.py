@@ -1,0 +1,248 @@
+"""Build the complete Day 15 feature set with one frozen-model load."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import gc
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from asv_vla.language_encoder import USVLanguageEncoder
+from asv_vla.language_intervention_dataset import read_jsonl
+from asv_vla.visual_encoder import BACKBONE_ID, FrozenMobileNetEncoder
+from training.dataset import load_split_assignments
+from training.feature_cache import (
+    ModelFingerprint,
+    build_feature_cache,
+    encode_language_instructions,
+    hash_torch_module_state,
+    hash_weight_tree,
+    validate_feature_cache,
+)
+
+
+FEATURE_SET_SCHEMA_VERSION = "day15_feature_set_v1"
+REQUIRED_RUN_COUNT = 12
+FROZEN_FEATURE_GIT_SHA = "eb832f3"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_registry(path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{path}:{line_number}: invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}:{line_number}: expected an object")
+        if bool(value.get("training_eligible")):
+            entries.append(value)
+    if len(entries) != REQUIRED_RUN_COUNT:
+        raise ValueError(
+            f"Day 15 requires {REQUIRED_RUN_COUNT} eligible Runs, "
+            f"found {len(entries)}"
+        )
+    run_ids = [str(entry.get("run_id", "")).strip() for entry in entries]
+    if any(not run_id for run_id in run_ids):
+        raise ValueError("registry contains an empty Run ID")
+    if len(set(run_ids)) != len(run_ids):
+        raise ValueError("registry contains duplicate Run IDs")
+    return sorted(entries, key=lambda entry: str(entry["run_id"]))
+
+
+def _release_cuda() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+def build_complete_feature_set(
+    *,
+    data_root: str | Path,
+    registry_path: str | Path,
+    split_path: str | Path,
+    instructions_path: str | Path,
+    output_root: str | Path,
+    language_model_path: str | Path,
+    device: str = "cuda",
+    frozen_git_sha: str = FROZEN_FEATURE_GIT_SHA,
+) -> dict[str, Any]:
+    root = Path(data_root).expanduser().resolve()
+    registry_source = Path(registry_path).expanduser().resolve()
+    split_source = Path(split_path).expanduser().resolve()
+    instructions_source = Path(instructions_path).expanduser().resolve()
+    output = Path(output_root).expanduser().resolve()
+    language_model_source = Path(language_model_path).expanduser().resolve()
+    if str(frozen_git_sha).strip() != FROZEN_FEATURE_GIT_SHA:
+        raise ValueError(
+            f"Day 15 feature provenance is frozen to {FROZEN_FEATURE_GIT_SHA}"
+        )
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("CUDA feature build requested but CUDA is unavailable")
+
+    entries = _load_registry(registry_source)
+    assignments = load_split_assignments(split_source)
+    run_ids = {str(entry["run_id"]) for entry in entries}
+    if set(assignments) != run_ids:
+        raise ValueError("registry and split Run IDs differ")
+    split_counts = {
+        split: sum(value == split for value in assignments.values())
+        for split in ("train", "validation", "test")
+    }
+    if split_counts != {"train": 8, "validation": 2, "test": 2}:
+        raise ValueError(f"Day 15 split must be 8/2/2, got {split_counts}")
+
+    instructions = read_jsonl(instructions_source)
+    if len(instructions) != 90:
+        raise ValueError(f"Day 15 requires 90 instructions, got {len(instructions)}")
+    language_weights_sha256 = hash_weight_tree(language_model_source)
+    language_encoder = USVLanguageEncoder(
+        str(language_model_source),
+        device=device,
+        cache_size=128,
+    )
+    language_embeddings = encode_language_instructions(
+        instructions, language_encoder
+    )
+    del language_encoder
+    _release_cuda()
+
+    visual_encoder = FrozenMobileNetEncoder(device=device)
+    visual_weights_sha256 = hash_torch_module_state(visual_encoder.backbone)
+    language_fingerprint = ModelFingerprint(
+        "Qwen/Qwen3-Embedding-0.6B",
+        language_weights_sha256,
+    )
+    visual_fingerprint = ModelFingerprint(
+        BACKBONE_ID,
+        visual_weights_sha256,
+    )
+
+    run_reports: list[dict[str, Any]] = []
+    for entry in entries:
+        run_id = str(entry["run_id"])
+        episode = root / str(entry["episode_path"])
+        supervision = root / str(entry["supervision_path"])
+        result = build_feature_cache(
+            episode,
+            supervision,
+            instructions_source,
+            output,
+            language_encoder=None,
+            visual_encoder=visual_encoder,
+            language_model=language_fingerprint,
+            visual_model=visual_fingerprint,
+            git_sha=FROZEN_FEATURE_GIT_SHA,
+            precomputed_language_embeddings=language_embeddings,
+        )
+        validation = validate_feature_cache(output / run_id)
+        run_reports.append(
+            {
+                "run_id": run_id,
+                "split": assignments[run_id],
+                "cached": bool(result["cached"]),
+                "frame_count": int(validation["frame_count"]),
+                "instruction_count": int(validation["instruction_count"]),
+                "sample_count": int(validation["sample_count"]),
+                "cache_key_sha256": str(validation["cache_key_sha256"]),
+                "manifest_sha256": _sha256_file(
+                    output / run_id / "manifest.json"
+                ),
+            }
+        )
+
+    total_frames = sum(item["frame_count"] for item in run_reports)
+    total_samples = sum(item["sample_count"] for item in run_reports)
+    if total_frames != 1200:
+        raise ValueError(f"Day 15 requires 1200 cached frames, got {total_frames}")
+    if total_samples <= 0:
+        raise ValueError("Day 15 feature set has no samples")
+    report = {
+        "schema_version": FEATURE_SET_SCHEMA_VERSION,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "passed": True,
+        "frozen_feature_git_sha": FROZEN_FEATURE_GIT_SHA,
+        "run_count": len(run_reports),
+        "split_counts": split_counts,
+        "frame_count": total_frames,
+        "sample_count": total_samples,
+        "language_weights_sha256": language_weights_sha256,
+        "visual_weights_sha256": visual_weights_sha256,
+        "registry_sha256": _sha256_file(registry_source),
+        "split_sha256": _sha256_file(split_source),
+        "instructions_sha256": _sha256_file(instructions_source),
+        "runs": run_reports,
+    }
+    report_path = output / "feature_set_manifest.json"
+    report_path.write_text(
+        json.dumps(
+            report,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build all frozen Day 15 feature caches"
+    )
+    parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--registry", type=Path, required=True)
+    parser.add_argument("--split", type=Path, required=True)
+    parser.add_argument("--instructions", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--language-model-path", type=Path, required=True)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--frozen-git-sha", default=FROZEN_FEATURE_GIT_SHA)
+    args = parser.parse_args()
+    report = build_complete_feature_set(
+        data_root=args.data_root,
+        registry_path=args.registry,
+        split_path=args.split,
+        instructions_path=args.instructions,
+        output_root=args.output_root,
+        language_model_path=args.language_model_path,
+        device=args.device,
+        frozen_git_sha=args.frozen_git_sha,
+    )
+    print(
+        "DAY15_FEATURE_SET_PASS "
+        f"runs={report['run_count']} "
+        f"frames={report['frame_count']} "
+        f"samples={report['sample_count']} "
+        f"split={report['split_counts']['train']}/"
+        f"{report['split_counts']['validation']}/"
+        f"{report['split_counts']['test']} "
+        f"git_sha={report['frozen_feature_git_sha']}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

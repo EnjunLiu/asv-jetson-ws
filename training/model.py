@@ -293,12 +293,20 @@ class SmallTrajectoryPolicy(nn.Module):
             (batch_size, cfg.entity_count),
             "entity_geometry_mask",
         )
-        entity_mask = entity_visual_mask.to(
+        visual_entity_mask = entity_visual_mask.to(
             device=device, dtype=torch.bool
-        ) & entity_geometry_mask.to(device=device, dtype=torch.bool)
+        )
+        geometry_entity_mask = entity_geometry_mask.to(
+            device=device, dtype=torch.bool
+        )
 
         valid_mask = language_mask & global_mask & ego_mask & input_mask
-        entity_mask = entity_mask & valid_mask.unsqueeze(1)
+        geometry_entity_mask = geometry_entity_mask & valid_mask.unsqueeze(1)
+        visual_entity_mask = (
+            visual_entity_mask
+            & geometry_entity_mask
+            & valid_mask.unsqueeze(1)
+        )
 
         language_clean = self._sanitize_masked(
             language.detach(), language_mask, "language"
@@ -307,10 +315,10 @@ class SmallTrajectoryPolicy(nn.Module):
             global_visual.detach(), global_mask, "global_visual"
         )
         entity_visual_clean = self._sanitize_masked(
-            entity_visual.detach(), entity_mask, "entity_visual"
+            entity_visual.detach(), visual_entity_mask, "entity_visual"
         )
         entity_geometry_clean = self._sanitize_masked(
-            entity_geometry, entity_mask, "entity_geometry"
+            entity_geometry, geometry_entity_mask, "entity_geometry"
         )
         ego_clean = self._sanitize_masked(ego, ego_mask, "ego")
 
@@ -326,7 +334,9 @@ class SmallTrajectoryPolicy(nn.Module):
 
         attention_score = self.entity_attention(entity_token).squeeze(-1)
         attention_weight = torch.exp(attention_score.clamp(-20.0, 20.0))
-        attention_weight = attention_weight * entity_mask.to(dtype=dtype)
+        attention_weight = attention_weight * geometry_entity_mask.to(
+            dtype=dtype
+        )
         attention_weight = attention_weight / attention_weight.sum(
             dim=1, keepdim=True
         ).clamp_min(1.0e-12)

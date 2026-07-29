@@ -83,6 +83,27 @@ def test_all_entity_masks_false_remains_finite_and_deterministic() -> None:
     assert first.valid_mask.all()
 
 
+def test_geometry_remains_available_when_entity_visual_is_not_projectable() -> None:
+    torch.manual_seed(19)
+    model = SmallTrajectoryPolicy().eval()
+    first_inputs = _inputs(1)
+    first_inputs["entity_visual_mask"].zero_()
+    first_inputs["entity_visual"].fill_(float("nan"))
+    first_inputs["entity_geometry"].zero_()
+    second_inputs = {
+        key: value.clone() if isinstance(value, torch.Tensor) else value
+        for key, value in first_inputs.items()
+    }
+    second_inputs["entity_geometry"].fill_(1.0)
+
+    first = model(**first_inputs)
+    second = model(**second_inputs)
+
+    assert torch.isfinite(first.trajectory).all()
+    assert torch.isfinite(second.trajectory).all()
+    assert not torch.equal(first.trajectory, second.trajectory)
+
+
 def test_missing_required_modality_fails_closed_without_nan() -> None:
     model = SmallTrajectoryPolicy()
     inputs = _inputs(2)
