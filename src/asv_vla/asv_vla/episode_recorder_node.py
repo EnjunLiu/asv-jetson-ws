@@ -171,6 +171,7 @@ class EpisodeRecorderNode(Node):
         self.finished = False
         self.finalized = False
         self.exit_timer = None
+        self.exit_requested = threading.Event()
         self.cache_evictions = 0
         self.invalid_drops = 0
         self.get_logger().info(
@@ -357,8 +358,7 @@ class EpisodeRecorderNode(Node):
             self.exit_timer.start()
 
     def _shutdown_after_complete(self) -> None:
-        if rclpy.ok():
-            rclpy.shutdown()
+        self.exit_requested.set()
 
     def destroy_node(self) -> bool:
         if not self.finalized:
@@ -370,7 +370,8 @@ def main(args=None) -> None:
     rclpy.init(args=args)
     node = EpisodeRecorderNode()
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not node.exit_requested.is_set():
+            rclpy.spin_once(node, timeout_sec=0.1)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

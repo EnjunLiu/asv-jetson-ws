@@ -156,6 +156,55 @@ def test_repository_plan_has_twelve_unique_counterbalanced_slots() -> None:
     assert plan["relation_evaluation_frames"] == 1
 
 
+def test_repository_extended_plan_inherits_twelve_and_reaches_thirty() -> None:
+    plan_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "day15_collection_plan_30_v1.json"
+    )
+    plan = load_plan(plan_path)
+
+    assert len(plan["slots"]) == 30
+    assert plan["minimum_complete_runs"] == 30
+    assert len({slot["slot_id"] for slot in plan["slots"]}) == 30
+    assert len({slot["scene_seed"] for slot in plan["slots"]}) == 30
+    counts = {
+        layout: sum(slot["layout_id"] == layout for slot in plan["slots"])
+        for layout in ("L1", "L2", "L3", "L4")
+    }
+    assert counts == {"L1": 8, "L2": 8, "L3": 7, "L4": 7}
+
+
+def test_collection_plan_inheritance_cycle_is_rejected(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    _write(
+        first,
+        {
+            "schema_version": "day12_collection_plan_v1",
+            "base_plan": "second.json",
+            "slots": [],
+        },
+    )
+    _write(
+        second,
+        {
+            "schema_version": "day12_collection_plan_v1",
+            "base_plan": "first.json",
+            "slots": [],
+        },
+    )
+
+    try:
+        load_plan(first)
+    except ValueError as exc:
+        assert "inheritance cycle" in str(exc)
+    else:
+        raise AssertionError("expected inheritance cycle rejection")
+
+
 def test_slot_validator_checks_observed_geometry(tmp_path: Path) -> None:
     episode, supervision = _make_run(tmp_path)
 

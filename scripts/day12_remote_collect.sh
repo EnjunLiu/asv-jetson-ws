@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED" >&2
+if [[ $# -lt 4 || $# -gt 5 ]]; then
+  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH]" >&2
   exit 2
 fi
 
@@ -10,6 +10,7 @@ slot_id=$1
 layout_id=$2
 motion_state=$3
 scene_seed=$4
+collection_plan=${5:-training/config/day12_collection_plan_v1.json}
 
 [[ $slot_id =~ ^L[1-9]_S[01]_R[1-9][0-9]*$ ]] || {
   echo "DAY12_REMOTE_FAIL invalid slot_id=$slot_id" >&2
@@ -166,6 +167,7 @@ ros2 run asv_vla evaluate_supervised_dataset \
 
 python3 -m training.day12_collection status \
   --data-root . \
+  --plan "$collection_plan" \
   --report artifacts/day12_collection_report_v1.json
 python3 -m training.dataset_registry \
   --data-root . \

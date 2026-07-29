@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -82,6 +83,22 @@ class _RunCache:
     target_safe_stop: np.ndarray
 
 
+@dataclass(frozen=True)
+class InstructionMetadata:
+    instruction_id: str
+    intent_group: str
+    action: str
+    target_attribute: str
+    distance_bucket: str
+    split: str
+
+    @property
+    def task_label(self) -> str:
+        return (
+            f"{self.action}|{self.target_attribute}|{self.distance_bucket}"
+        )
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -124,6 +141,56 @@ def discover_feature_caches(root: str | Path) -> list[Path]:
     if not caches:
         raise ValueError(f"no feature caches found under {base}")
     return caches
+
+
+def load_instruction_metadata(
+    path: str | Path,
+) -> dict[str, InstructionMetadata]:
+    source = Path(path).expanduser().resolve()
+    output: dict[str, InstructionMetadata] = {}
+    for line_number, line in enumerate(
+        source.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{source}:{line_number}: invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{source}:{line_number}: expected an object")
+        instruction_id = str(value.get("instruction_id", "")).strip()
+        metadata = InstructionMetadata(
+            instruction_id=instruction_id,
+            intent_group=str(value.get("intent_group", "")).strip(),
+            action=str(value.get("action", "")).strip(),
+            target_attribute=str(value.get("target_attribute", "")).strip(),
+            distance_bucket=str(value.get("distance_bucket", "")).strip(),
+            split=str(value.get("split", "")).strip().casefold(),
+        )
+        fields = (
+            metadata.instruction_id,
+            metadata.intent_group,
+            metadata.action,
+            metadata.target_attribute,
+            metadata.distance_bucket,
+        )
+        if any(not field for field in fields):
+            raise ValueError(
+                f"{source}:{line_number}: incomplete instruction metadata"
+            )
+        if metadata.split not in {"train", "validation", "test"}:
+            raise ValueError(
+                f"{source}:{line_number}: invalid split={metadata.split!r}"
+            )
+        if instruction_id in output:
+            raise ValueError(f"duplicate instruction ID: {instruction_id}")
+        output[instruction_id] = metadata
+    if len(output) != 90:
+        raise ValueError(f"expected 90 instructions, found {len(output)}")
+    return output
 
 
 def _validate_frame_key(value: str, run_id: str) -> None:
@@ -317,6 +384,20 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
     def __len__(self) -> int:
         return len(self._samples)
 
+    def sample_metadata(self, index: int) -> dict[str, str | bool]:
+        reference = self._samples[index]
+        cache = self._caches[reference.cache_index]
+        sample_row = reference.sample_row
+        frame_row = int(cache.sample_frame_rows[sample_row])
+        instruction_row = int(cache.sample_instruction_rows[sample_row])
+        return {
+            "run_id": cache.run_id,
+            "frame_key": str(cache.frame_keys[frame_row]),
+            "sample_id": str(cache.sample_ids[sample_row]),
+            "instruction_id": str(cache.instruction_ids[instruction_row]),
+            "target_stop": bool(cache.target_safe_stop[sample_row]),
+        }
+
     def __getitem__(self, index: int) -> dict[str, Tensor | str]:
         reference = self._samples[index]
         cache = self._caches[reference.cache_index]
@@ -365,6 +446,106 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             "sample_id": str(cache.sample_ids[sample_row]),
             "instruction_id": str(cache.instruction_ids[instruction_row]),
         }
+
+
+def _annotate_item(
+    item: dict[str, Tensor | str],
+    metadata: InstructionMetadata,
+) -> dict[str, Any]:
+    output: dict[str, Any] = dict(item)
+    output["metadata"] = {
+        "task_label": metadata.task_label,
+        "intent_group": metadata.intent_group,
+        "action": metadata.action,
+        "target_attribute": metadata.target_attribute,
+        "distance_bucket": metadata.distance_bucket,
+        "language_split": metadata.split,
+    }
+    return output
+
+
+class AnnotatedFeatureDataset(Dataset[dict[str, Any]]):
+    """Add evaluation-only labels under a nested metadata object."""
+
+    def __init__(
+        self,
+        base: FrozenFeatureDataset,
+        instructions: Mapping[str, InstructionMetadata],
+    ) -> None:
+        self.base = base
+        self.instructions = dict(instructions)
+        for index in range(len(base)):
+            instruction_id = str(base.sample_metadata(index)["instruction_id"])
+            if instruction_id not in self.instructions:
+                raise ValueError(
+                    f"missing metadata for instruction_id={instruction_id!r}"
+                )
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        item = self.base[index]
+        instruction_id = str(item["instruction_id"])
+        return _annotate_item(item, self.instructions[instruction_id])
+
+
+class EpochSynonymDataset(Dataset[dict[str, Any]]):
+    """Choose one deterministic synonym per frame/task label each epoch."""
+
+    def __init__(
+        self,
+        base: FrozenFeatureDataset,
+        instructions: Mapping[str, InstructionMetadata],
+        *,
+        seed: int,
+    ) -> None:
+        self.base = base
+        self.instructions = dict(instructions)
+        groups: dict[tuple[str, str, str], list[int]] = {}
+        for index in range(len(base)):
+            sample = base.sample_metadata(index)
+            instruction_id = str(sample["instruction_id"])
+            metadata = self.instructions.get(instruction_id)
+            if metadata is None:
+                raise ValueError(
+                    f"missing metadata for instruction_id={instruction_id!r}"
+                )
+            key = (
+                str(sample["run_id"]),
+                str(sample["frame_key"]),
+                metadata.task_label,
+            )
+            groups.setdefault(key, []).append(index)
+        if not groups:
+            raise ValueError("synonym dataset has no frame/task groups")
+        self.seed = int(seed)
+        self._groups = tuple(
+            (key, tuple(indices)) for key, indices in sorted(groups.items())
+        )
+        self._selected: list[int] = []
+        self.set_epoch(0)
+
+    def set_epoch(self, epoch: int) -> None:
+        selected: list[int] = []
+        for key, candidates in self._groups:
+            payload = (
+                f"{self.seed}:{int(epoch)}:{key[0]}:{key[1]}:{key[2]}"
+            ).encode("utf-8")
+            choice = int.from_bytes(
+                hashlib.sha256(payload).digest()[:8], "big"
+            ) % len(candidates)
+            selected.append(candidates[choice])
+        self._selected = selected
+
+    def __len__(self) -> int:
+        return len(self._groups)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        base_index = self._selected[index]
+        item = self.base[base_index]
+        instruction_id = str(item["instruction_id"])
+        return _annotate_item(item, self.instructions[instruction_id])
 
 
 def policy_inputs_from_batch(batch: Mapping[str, Any]) -> dict[str, Tensor]:
