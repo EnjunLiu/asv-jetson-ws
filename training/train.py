@@ -165,8 +165,14 @@ def _build_dataset_bundle(
     if not isinstance(data_config, Mapping):
         raise ValueError("data configuration is missing")
     caches = discover_feature_caches(feature_root)
-    if len(caches) != 12:
-        raise ValueError(f"Day 15 requires 12 feature caches, got {len(caches)}")
+    expected_run_count = int(data_config.get("expected_run_count", 12))
+    if expected_run_count not in {12, 30}:
+        raise ValueError("Day 15 expected_run_count must be 12 or 30")
+    if len(caches) != expected_run_count:
+        raise ValueError(
+            f"Day 15 requires {expected_run_count} feature caches, "
+            f"got {len(caches)}"
+        )
     assignments = load_split_assignments(split_path)
     instructions = load_instruction_metadata(instructions_path)
     stride = int(data_config["frame_stride"])

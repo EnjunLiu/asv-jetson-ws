@@ -60,10 +60,32 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
             temporary.unlink()
 
 
-def load_plan(path: Path) -> dict[str, Any]:
-    plan = _load_object(path)
+def _load_plan(path: Path, ancestors: set[Path]) -> dict[str, Any]:
+    resolved = path.expanduser().resolve()
+    if resolved in ancestors:
+        raise ValueError(f"collection plan inheritance cycle at {resolved}")
+    plan = _load_object(resolved)
     if plan.get("schema_version") != PLAN_SCHEMA_VERSION:
         raise ValueError("collection plan schema_version is invalid")
+    base_plan_value = str(plan.get("base_plan", "")).strip()
+    if base_plan_value:
+        base_path = Path(base_plan_value)
+        if not base_path.is_absolute():
+            base_path = resolved.parent / base_path
+        base = _load_plan(base_path, ancestors | {resolved})
+        extension_slots = plan.get("slots", [])
+        if not isinstance(extension_slots, list):
+            raise ValueError("collection plan slots must be a list")
+        merged = dict(base)
+        merged.update(
+            {
+                key: value
+                for key, value in plan.items()
+                if key not in {"base_plan", "slots"}
+            }
+        )
+        merged["slots"] = list(base["slots"]) + extension_slots
+        plan = merged
     slots = plan.get("slots")
     if not isinstance(slots, list) or not slots:
         raise ValueError("collection plan slots must be a non-empty list")
@@ -105,6 +127,10 @@ def load_plan(path: Path) -> dict[str, Any]:
                     f"slot {slot_id} has invalid relation: {relation!r}"
                 )
     return plan
+
+
+def load_plan(path: Path) -> dict[str, Any]:
+    return _load_plan(path, set())
 
 
 def _iter_bundles(data_root: Path) -> list[Path]:

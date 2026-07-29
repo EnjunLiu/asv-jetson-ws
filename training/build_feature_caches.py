@@ -27,8 +27,11 @@ from training.feature_cache import (
 
 
 FEATURE_SET_SCHEMA_VERSION = "day15_feature_set_v1"
-REQUIRED_RUN_COUNT = 12
 FROZEN_FEATURE_GIT_SHA = "eb832f3"
+SUPPORTED_SPLITS = {
+    12: {"train": 8, "validation": 2, "test": 2},
+    30: {"train": 18, "validation": 6, "test": 6},
+}
 
 
 def _sha256_file(path: Path) -> str:
@@ -39,7 +42,9 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_registry(path: Path) -> list[dict[str, Any]]:
+def _load_registry(
+    path: Path, required_run_count: int
+) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for line_number, line in enumerate(
         path.read_text(encoding="utf-8").splitlines(), start=1
@@ -56,9 +61,9 @@ def _load_registry(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{path}:{line_number}: expected an object")
         if bool(value.get("training_eligible")):
             entries.append(value)
-    if len(entries) != REQUIRED_RUN_COUNT:
+    if len(entries) != required_run_count:
         raise ValueError(
-            f"Day 15 requires {REQUIRED_RUN_COUNT} eligible Runs, "
+            f"Day 15 requires {required_run_count} eligible Runs, "
             f"found {len(entries)}"
         )
     run_ids = [str(entry.get("run_id", "")).strip() for entry in entries]
@@ -86,6 +91,7 @@ def build_complete_feature_set(
     language_model_path: str | Path,
     device: str = "cuda",
     frozen_git_sha: str = FROZEN_FEATURE_GIT_SHA,
+    required_run_count: int = 12,
 ) -> dict[str, Any]:
     root = Path(data_root).expanduser().resolve()
     registry_source = Path(registry_path).expanduser().resolve()
@@ -100,7 +106,13 @@ def build_complete_feature_set(
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA feature build requested but CUDA is unavailable")
 
-    entries = _load_registry(registry_source)
+    expected_split = SUPPORTED_SPLITS.get(int(required_run_count))
+    if expected_split is None:
+        raise ValueError(
+            "Day 15 required_run_count must be one of "
+            f"{sorted(SUPPORTED_SPLITS)}"
+        )
+    entries = _load_registry(registry_source, int(required_run_count))
     assignments = load_split_assignments(split_source)
     run_ids = {str(entry["run_id"]) for entry in entries}
     if set(assignments) != run_ids:
@@ -109,8 +121,11 @@ def build_complete_feature_set(
         split: sum(value == split for value in assignments.values())
         for split in ("train", "validation", "test")
     }
-    if split_counts != {"train": 8, "validation": 2, "test": 2}:
-        raise ValueError(f"Day 15 split must be 8/2/2, got {split_counts}")
+    if split_counts != expected_split:
+        raise ValueError(
+            f"Day 15 split for {required_run_count} Runs must be "
+            f"{expected_split}, got {split_counts}"
+        )
 
     instructions = read_jsonl(instructions_source)
     if len(instructions) != 90:
@@ -173,8 +188,11 @@ def build_complete_feature_set(
 
     total_frames = sum(item["frame_count"] for item in run_reports)
     total_samples = sum(item["sample_count"] for item in run_reports)
-    if total_frames != 1200:
-        raise ValueError(f"Day 15 requires 1200 cached frames, got {total_frames}")
+    expected_frames = int(required_run_count) * 100
+    if total_frames != expected_frames:
+        raise ValueError(
+            f"Day 15 requires {expected_frames} cached frames, got {total_frames}"
+        )
     if total_samples <= 0:
         raise ValueError("Day 15 feature set has no samples")
     report = {
@@ -220,6 +238,12 @@ def main() -> int:
     parser.add_argument("--language-model-path", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--frozen-git-sha", default=FROZEN_FEATURE_GIT_SHA)
+    parser.add_argument(
+        "--required-run-count",
+        type=int,
+        choices=sorted(SUPPORTED_SPLITS),
+        default=12,
+    )
     args = parser.parse_args()
     report = build_complete_feature_set(
         data_root=args.data_root,
@@ -230,6 +254,7 @@ def main() -> int:
         language_model_path=args.language_model_path,
         device=args.device,
         frozen_git_sha=args.frozen_git_sha,
+        required_run_count=args.required_run_count,
     )
     print(
         "DAY15_FEATURE_SET_PASS "

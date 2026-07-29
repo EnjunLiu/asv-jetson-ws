@@ -1,10 +1,11 @@
 param(
-    [ValidateRange(0, 12)]
+    [ValidateRange(0, 30)]
     [int]$Count = 1,
     [string]$JetsonHost = "192.168.137.100",
     [string]$JetsonUser = "jetson",
     [string]$IdentityFile = "$env:USERPROFILE\.ssh\asv_day12_ed25519",
     [string]$RemoteRepo = "/home/jetson/jetson_asv_ws",
+    [string]$RemotePlan = "training/config/day15_collection_plan_30_v1.json",
     [string]$UeProject = "D:\Unreal Projects\VLA\VLA.uproject",
     [string]$UnrealExe = "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe",
     [string]$LocalOutput = "",
@@ -45,7 +46,7 @@ $sshTarget = "${JetsonUser}@${JetsonHost}"
 $completedThisInvocation = 0
 
 while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
-    $nextCommand = "cd '$RemoteRepo' && python3 -m training.day12_collection next --data-root . --json"
+    $nextCommand = "cd '$RemoteRepo' && python3 -m training.day12_collection next --data-root . --plan '$RemotePlan' --json"
     $queryStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
     $queryStdout = Join-Path $env:TEMP "day12-query-$queryStamp.stdout.log"
     $queryStderr = Join-Path $env:TEMP "day12-query-$queryStamp.stderr.log"
@@ -83,7 +84,7 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $remoteStderr = Join-Path $env:TEMP "day12-$slot-$stamp.stderr.log"
     $ueStdout = Join-Path $env:TEMP "day12-$slot-$stamp.ue.stdout.log"
     $ueStderr = Join-Path $env:TEMP "day12-$slot-$stamp.ue.stderr.log"
-    $remoteCommand = "cd '$RemoteRepo' && bash scripts/day12_remote_collect.sh '$slot' '$layout' '$motion' '$seed'"
+    $remoteCommand = "cd '$RemoteRepo' && bash scripts/day12_remote_collect.sh '$slot' '$layout' '$motion' '$seed' '$RemotePlan'"
 
     $remoteProcess = Start-Process $sshExe `
         -ArgumentList @(
