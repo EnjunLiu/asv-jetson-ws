@@ -267,6 +267,12 @@ Day 11 已完成，Day 12 已开始：
 - Day 12 split 修正：12 Run 固定 8/2/2，30 Run 固定 18/6/6；不合格
   Run 不进入 split
 - Day 12 当前只完成代码与单元测试，不代表 UE5 真实采集已通过
+- Day 12 Jetson 构建：`asv_jetson_interfaces`、`asv_ue_bridge`、
+  `asv_vla`、`asv_bringup` 共 4 包通过；目标机 pytest 102 项通过
+- Day 12 launch 拓扑：8080 仅 1 个 listener，恰有 4 个节点；
+  `/ue/kinematic_setpoint` 1 pub + 1 sub，`/ue/thruster_command` 不存在
+- Day 11 遗留的 3 套重复 launch 已终止；STOP 参数覆盖已在目标机读取为
+  `action=stop / target_attribute=none / distance_bucket=none`
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
@@ -358,12 +364,12 @@ ros2 launch asv_bringup day8_record.launch.py \
 
 ### 已知问题
 
-1. launch 参数的 `action:=stop` 和 `distance_bucket:=10m` 可能未正确覆盖
-   节点默认值，实测中始终显示 `action: follow, desired_distance_m: 3.0`。
-   下一个 AI 需检查 launch 文件中的 ParameterValue 参数传递路径。
-2. PC 端 asv_vla_pc 目录尚未建立，DAY11_PC_PILOT_PASS 尚未在 Windows 本地执行。
-3. pilot 数据只有 1 个 Scene Seed（12345），training_ready=false 是正确结果，
+1. PC 端 asv_vla_pc 目录尚未建立，DAY11_PC_PILOT_PASS 尚未在 Windows 本地执行。
+2. pilot 数据只有 1 个 Scene Seed（12345），training_ready=false 是正确结果，
    不是 bug。
+
+原参数覆盖疑问已在 Day 12 接管审计中关闭：目标机 `ros2 param get`
+确认 STOP 三个参数均正确覆盖。
 
 ### 下一个 AI 接管第一步
 
