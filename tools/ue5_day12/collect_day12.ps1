@@ -13,6 +13,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$sshExe = Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe"
+$scpExe = Join-Path $env:WINDIR "System32\OpenSSH\scp.exe"
 
 function Quote-NativeArgument([string]$Value) {
     return '"' + $Value.Replace('"', '\"') + '"'
@@ -31,6 +33,9 @@ if (-not (Test-Path $UeProject)) {
 if (-not (Test-Path $UnrealExe)) {
     throw "UnrealEditor not found: $UnrealExe"
 }
+if (-not (Test-Path $sshExe) -or -not (Test-Path $scpExe)) {
+    throw "Windows OpenSSH client is not installed."
+}
 if (Get-Process UnrealEditor -ErrorAction SilentlyContinue) {
     throw "Close the interactive UnrealEditor before unattended collection."
 }
@@ -41,10 +46,24 @@ $completedThisInvocation = 0
 
 while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $nextCommand = "cd '$RemoteRepo' && python3 -m training.day12_collection next --data-root . --json"
-    $nextOutput = & ssh.exe -i $IdentityFile -o BatchMode=yes `
-        $sshTarget $nextCommand
-    if ($LASTEXITCODE -ne 0) {
-        throw "Cannot query the next Day12 slot from Jetson."
+    $queryStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+    $queryStdout = Join-Path $env:TEMP "day12-query-$queryStamp.stdout.log"
+    $queryStderr = Join-Path $env:TEMP "day12-query-$queryStamp.stderr.log"
+    $queryProcess = Start-Process $sshExe `
+        -ArgumentList @(
+            "-i", (Quote-NativeArgument $IdentityFile),
+            "-o", "BatchMode=yes",
+            $sshTarget,
+            (Quote-NativeArgument $nextCommand)
+        ) `
+        -RedirectStandardOutput $queryStdout `
+        -RedirectStandardError $queryStderr `
+        -Wait `
+        -PassThru
+    $nextOutput = Get-Content $queryStdout
+    if ($queryProcess.ExitCode -ne 0) {
+        $queryErrors = Get-Content $queryStderr -Raw -ErrorAction SilentlyContinue
+        throw "Cannot query the next Day12 slot from Jetson.`n$queryErrors"
     }
     $nextLine = @($nextOutput | Where-Object { $_.Trim() })[-1]
     $next = $nextLine | ConvertFrom-Json
@@ -66,7 +85,7 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $ueStderr = Join-Path $env:TEMP "day12-$slot-$stamp.ue.stderr.log"
     $remoteCommand = "cd '$RemoteRepo' && bash scripts/day12_remote_collect.sh '$slot' '$layout' '$motion' '$seed'"
 
-    $remoteProcess = Start-Process ssh.exe `
+    $remoteProcess = Start-Process $sshExe `
         -ArgumentList @(
             "-i", (Quote-NativeArgument $IdentityFile),
             "-o", "BatchMode=yes",
@@ -159,9 +178,22 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $remotePackage = $packageMatch.Groups[1].Value
     $expectedSha = $packageMatch.Groups[2].Value
 
-    & scp.exe -i $IdentityFile -o BatchMode=yes `
-        "${sshTarget}:$remotePackage" $LocalOutput
-    if ($LASTEXITCODE -ne 0) {
+    $scpStdout = Join-Path $env:TEMP "day12-$slot-$stamp.scp.stdout.log"
+    $scpStderr = Join-Path $env:TEMP "day12-$slot-$stamp.scp.stderr.log"
+    $scpProcess = Start-Process $scpExe `
+        -ArgumentList @(
+            "-i", (Quote-NativeArgument $IdentityFile),
+            "-o", "BatchMode=yes",
+            (Quote-NativeArgument "${sshTarget}:$remotePackage"),
+            (Quote-NativeArgument $LocalOutput)
+        ) `
+        -RedirectStandardOutput $scpStdout `
+        -RedirectStandardError $scpStderr `
+        -Wait `
+        -PassThru
+    if ($scpProcess.ExitCode -ne 0) {
+        $scpErrors = Get-Content $scpStderr -Raw -ErrorAction SilentlyContinue
+        Write-Error $scpErrors
         throw "SCP failed for $remotePackage"
     }
     $localPackage = Join-Path $LocalOutput (Split-Path -Leaf $remotePackage)

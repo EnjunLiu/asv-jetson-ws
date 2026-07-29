@@ -31,8 +31,10 @@ scene_seed=$4
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
+set +u
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+set -u
 
 automation_root="$repo_root/artifacts/day12_automation"
 transfer_root="$repo_root/artifacts/pc_transfer"
