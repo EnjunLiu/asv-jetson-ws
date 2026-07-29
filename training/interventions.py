@@ -119,8 +119,8 @@ def _resolve_device(name: str) -> torch.device:
 def _validate_config(config: Mapping[str, Any]) -> None:
     if config.get("schema_version") != CONFIG_SCHEMA_VERSION:
         raise ValueError("Day 16 configuration schema mismatch")
-    if int(config.get("expected_run_count", 0)) != 30:
-        raise ValueError("Day 16 requires the frozen 30-Run dataset")
+    if int(config.get("expected_run_count", 0)) not in (8, 30):
+        raise ValueError("Day 16 requires either the frozen 30-Run set or 8-Run holdout")
     seeds = tuple(int(seed) for seed in config.get("seeds", ()))
     if seeds != (17, 23, 42):
         raise ValueError("Day 16 requires frozen seeds [17, 23, 42]")
@@ -751,10 +751,26 @@ def evaluate(args: argparse.Namespace) -> int:
         raise ValueError("Day 15 training Git SHA mismatch")
 
     feature_root = args.features.resolve()
+    registry_path = args.registry.resolve()
+    split_path = args.split.resolve()
+    provenance_files = {
+        "expected_registry_sha256": registry_path,
+        "expected_split_sha256": split_path,
+        "expected_feature_set_manifest_sha256": (
+            feature_root / "feature_set_manifest.json"
+        ),
+    }
+    for config_key, source_path in provenance_files.items():
+        expected_sha256 = str(config.get(config_key, "")).strip()
+        if expected_sha256 and _sha256_file(source_path) != expected_sha256:
+            raise ValueError(f"{config_key} mismatch")
     caches = discover_feature_caches(feature_root)
     if len(caches) != int(config["expected_run_count"]):
-        raise ValueError(f"expected 30 caches, found {len(caches)}")
-    assignments = load_split_assignments(args.split.resolve())
+        raise ValueError(
+            f"expected {int(config['expected_run_count'])} caches, "
+            f"found {len(caches)}"
+        )
+    assignments = load_split_assignments(split_path)
     instructions = load_instruction_metadata(args.instructions.resolve())
     frame_stride = int(config["frame_stride"])
     evaluation_split = str(
@@ -778,34 +794,42 @@ def evaluate(args: argparse.Namespace) -> int:
         frame_stride=frame_stride,
     )
     test_standard = AnnotatedFeatureDataset(test_standard_base, instructions)
-    validation_all_base = FrozenFeatureDataset(
+    color_config = config["color_swap"]
+    color_run_split = str(
+        color_config.get("evaluation_run_split", evaluation_split)
+    )
+    color_all_base = FrozenFeatureDataset(
         caches,
-        selected_split="validation",
+        selected_split=color_run_split,
         split_assignments=assignments,
         allowed_language_splits=["train", "validation", "test"],
         frame_stride=frame_stride,
     )
-    validation_all = AnnotatedFeatureDataset(validation_all_base, instructions)
+    color_all = AnnotatedFeatureDataset(color_all_base, instructions)
 
     pairs = _read_jsonl(args.contrast_pairs.resolve())
     required_pairs = int(config["language_interventions"]["require_pair_count"])
     if len(pairs) != required_pairs:
         raise ValueError(f"expected {required_pairs} contrast pairs, found {len(pairs)}")
-    registry = _registry_by_slot(args.registry.resolve())
-    color_config = config["color_swap"]
+    registry = _registry_by_slot(registry_path)
     left_slot = str(color_config["left_slot"])
     right_slot = str(color_config["right_slot"])
     if left_slot not in registry or right_slot not in registry:
         raise ValueError("configured color-swap slots are absent from the registry")
     left_run = str(registry[left_slot]["run_id"])
     right_run = str(registry[right_slot]["run_id"])
-    if assignments[left_run] != "validation" or assignments[right_run] != "validation":
-        raise ValueError("color-swap Runs must both be held-out validation Runs")
+    if (
+        assignments[left_run] != color_run_split
+        or assignments[right_run] != color_run_split
+    ):
+        raise ValueError(
+            f"color-swap Runs must both be held-out {color_run_split} Runs"
+        )
     color_instruction_ids = tuple(
         str(value) for value in color_config["instruction_ids"]
     )
     color_dataset = _subset_by_runs_and_instructions(
-        validation_all,
+        color_all,
         (left_run, right_run),
         color_instruction_ids,
     )
@@ -1023,6 +1047,12 @@ def evaluate(args: argparse.Namespace) -> int:
             "color_swap_right_slot": right_slot,
             "color_swap_left_run_id": left_run,
             "color_swap_right_run_id": right_run,
+            "color_swap_run_split": color_run_split,
+            "registry_sha256": _sha256_file(registry_path),
+            "split_sha256": _sha256_file(split_path),
+            "feature_set_manifest_sha256": _sha256_file(
+                feature_root / "feature_set_manifest.json"
+            ),
         },
         "language_interventions": {
             "configured_pair_count": len(pairs),
