@@ -523,6 +523,17 @@ class EpochSynonymDataset(Dataset[dict[str, Any]]):
         self._groups = tuple(
             (key, tuple(indices)) for key, indices in sorted(groups.items())
         )
+        frame_groups: list[list[int]] = []
+        previous_frame: tuple[str, str] | None = None
+        for group_index, (key, _) in enumerate(self._groups):
+            current_frame = (key[0], key[1])
+            if current_frame != previous_frame:
+                frame_groups.append([])
+                previous_frame = current_frame
+            frame_groups[-1].append(group_index)
+        self.frame_group_indices = tuple(
+            tuple(indices) for indices in frame_groups
+        )
         self._selected: list[int] = []
         self.set_epoch(0)
 
