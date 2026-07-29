@@ -9,11 +9,11 @@
 版本控制。UE5 蓝图由用户单独研究和实现；Jetson 负责采集、回放和
 部署；PC 负责数据汇总、特征缓存、训练和离线评价。
 
-## 0. 先看这里：现在不是白做，也不能现在就训练
+## 0. 先看这里：Day 15 已真实训练通过
 
 ### 0.1 当前到底完成了什么
 
-Day 11 完成后，项目已验证以下全链路：
+截至 Day 15，项目已验证以下全链路：
 
 **Jetson 推理管线（Day 1–10）：**
 - UE5 的图像、本船状态和四目标实体能被 Jetson 同步接收；
@@ -28,15 +28,16 @@ Day 11 完成后，项目已验证以下全链路：
 - FOLLOW 实测：每步约 3 cm（max_speed_mps=0.15），船在 UE5 中可见运动；
 - STOP/hold_position/Sequence 防重入/陈旧输入/超步长 fail-closed 全部通过。
 
-**PC 数据基座（Day 11B）：**
+**PC 数据与训练基座（Day 11B–15）：**
 - training/ 包已实现：dataset_registry.py、make_group_splits.py、16 项切分测试；
-- Pilot 验证：registry training_ready=false（单 Scene Seed 正确拒绝）；
-- 切分规则：同一 Run/Scene Seed 不可跨 split，已通过测试强制执行。
+- 30 个合格 Run、3000 帧、266800 个监督样本已在 PC 独立复验；
+- 固定 group split 为 18/6/6，同一 Run/Scene Seed 不跨 split；
+- Qwen/MobileNet 冻结特征已在 RTX 5060 构建，30 Run manifest 通过；
+- 三 seed 的 validation 和首次 sealed test 均通过冻结的 Day 15 门槛。
 
-这叫"数据管线已验证且运动学执行已打通"，不叫"训练数据已经足够"。
-禁止用这个单 Run 训练后宣称泛化，也禁止把 4500 条高度相关的配对记录
-当成 4500 个独立
-场景。
+这叫"数据、训练和 held-out 离线评价已通过"，仍不叫"UE5 学习策略
+闭环已完成"。Day 16 还必须证明语言、视觉和实体干预有效；Day 17–20
+还要完成安全门、控制桥、UE5 闭环和 Jetson 部署。
 
 ### 0.2 为什么项目仍然可行
 
@@ -89,23 +90,17 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11–14 已完成，下一步进入 Day 15：
+Day 11–15 已完成，下一步进入 Day 16：
 
-1. PR #17 已合并；PC 与 Jetson `main` 已同步到 `56859f3`，Day 13
-   本地/远端分支已删除；
-2. Day 12 的 12 个 Run 已全部迁移 PC，registry/split 为
-   `12 Runs / 8/2/2 / training_ready=true`；
-3. Day 13 冻结 cache、每实体视觉 token、颜色防泄漏、cache miss 和
-   无图像 fail closed 均已实现；
-4. 同一 L2 Run 已由 Jetson CUDA 与 PC RTX 5060 CUDA 独立重算，
-   20 帧最小余弦 `0.999994539 >= 0.999`；
-5. Day 14 小型融合策略已通过 PC/Jetson CUDA 合约：457258 个可训练
-   参数、约 1.84 MB checkpoint、结构性 0.3 m 最大步长；
-6. 下一步只做 Day 15 的三 seed 训练与基线比较，不接 UE5 闭环，
-   不继续盲目补采或扩大模型。
-
-Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 13–16，
-再根据 held-out 与干预测试结果决定是否补采。
+1. 等待 `feature/day15-training` PR 合并，同步 PC/Jetson `main` 并删除分支；
+2. 冻结 Day 15 最终配置 `training/config/train_30_v5.yaml`、提交
+   `e93c6ef` 和外部 checkpoint，不再根据 test 调参；
+3. 先在 PC 做同一 observation 的语言替换、图像遮挡/换位、实体 mask
+   和 modality ablation；
+4. 若视觉干预无影响，必须回查 Day 12/13 数据与 grounding，不能直接
+   进入 UE5 闭环；
+5. Day 16 不需要用户修改 UE5；只有需要补充真实颜色换位场景证据时再
+   启动现有无人值守采集。
 
 ## 1. 结论与固定边界
 
@@ -170,8 +165,9 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 
 ## 2. 当前状态
 
-基线提交：`56859f3`（PR #17 merge）
-工作分支：`feature/day14-fusion-policy`
+主线基线：`a8390d9`（PR #18 merge）
+工作分支：`feature/day15-training`
+最终训练提交：`e93c6ef`；当前交接提交以 `git log -1` 为准
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -186,10 +182,10 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
-| Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
+| Day 12 | 已完成 | 自动采集与迁移扩展至 30/30；registry/split 为 30 Runs、18/6/6 |
 | Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
-| Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
+| Day 15 | 已完成 | 30 Run 三 seed sealed test 全门槛通过；平均 ADE 0.6039 m |
 | Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
 | Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
 | Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
@@ -423,6 +419,42 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
   ignored `artifacts/day14_policy_contract_jetson.json`，均不进入 Git
 - Day 14 不需要 UE5 Play 或修改蓝图；Day 15 继续只在 PC 使用已冻结
   特征训练，不提前接入 ROS/UE5 闭环
+
+### Day 15 完成证据（2026-07-29）
+
+- 12 Run 冻结实验完整保留：validation 三 seed 的 ADE/FDE 均优于均值
+  基线，但首次 sealed test 仅改善约 20%–25%，未达到 30%，因此严格
+  按预定路线扩充到 30 Run；未放宽门槛或扩大模型
+- Windows 一键编排器无人值守补采 18 Run：自动启动 Jetson ROS、
+  UE5 `-game -RenderOffscreen`、记录 100 帧、构建监督、校验、打包、
+  SCP 和 SHA-256；最终 `DAY12_COLLECTION_PASS passed=30/30`
+- PC 独立复验：30 Runs、30 Scene Seeds、3000 帧、266800 样本；
+  split 为 `18/6/6`；registry SHA-256
+  `e9687460c90cb0b934ddce3f72cf8addc486e59584017d4e3648148c11447b64`
+- 30 Run 冻结 feature set：`DAY15_FEATURE_SET_PASS`，Qwen 权重指纹
+  `0437e45c...e23fd`，MobileNet state 指纹 `a2143bb6...b238`，
+  manifest SHA-256
+  `3c5b9f8e0b40d602ab15bd6e15c0a3307016b92521fd9220da6c939689e03322`
+- 训练修复完全基于 validation：先发现 checkpoint 选择忽略 STOP 门，
+  再加入 STOP-gated 选择、STOP BCE 权重 1.0、预测 STOP 时硬零轨迹，
+  minimum epochs 30；test 在 v5 validation 三 seed 全通过前始终封存
+- 最终配置：`training/config/train_30_v5.yaml`；Git SHA `e93c6ef`；
+  validation label-mean ADE/FDE 为 `1.7450/3.0886 m`
+- validation 三 seed ADE 改善 `62.51% / 66.49% / 53.87%`，
+  FDE 改善 `65.88% / 69.60% / 58.60%`；STOP F1 均不低于
+  `0.9939`，10 cm 静止漂移通过率均不低于 `0.9926`
+- 首次 30 Run sealed test：`DAY15_TRAINING_PASS`；三 seed ADE
+  `0.5266 / 0.5116 / 0.7736 m`，平均 `0.6039 m`，标准差
+  `0.1201 m`；label-mean ADE `1.6107 m`
+- test 三 seed ADE 改善 `67.30% / 68.24% / 51.97%`，FDE 改善
+  `71.08% / 71.51% / 57.92%`；STOP F1 `1.0 / 0.9951 / 1.0`，
+  速度违规率全部 0，invalid 全部 0
+- entity-only test ADE/FDE 为 `1.5839/2.8540 m`，接近均值基线，
+  明显弱于完整多模态模型；正式 summary SHA-256
+  `c82ab7b726a1c2036e478e0e9541c141b0b362d79ac6dfb970f7a3f4a35d03b4`
+- checkpoint、特征和训练报告位于 ignored 外部目录
+  `pc_datasets/`，不进入 Git；失败的 12 Run 和 v1–v4 实验目录均保留
+  作为审计证据
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
@@ -1580,7 +1612,7 @@ checkpoints/<experiment_id>/
 - 速度约束违规率；
 - NaN/invalid 计数。
 
-Day 15 初始通过条件：
+Day 15 通过条件（已全部满足）：
 
 - 三个 seed 都能完整训练和复现；
 - held-out validation/test ADE、FDE 至少比“每标签均值轨迹”基线改善
@@ -1594,6 +1626,10 @@ Day 15 初始通过条件：
 若 12 Run 无法通过，先扩充到 30 Run 并检查颜色/位置相关性，不扩大
 模型。若完整模型不优于简单 baseline，优先检查数据、mask、特权泄漏和
 特征对齐。
+
+最终结果采用 30 Run `18/6/6` split 和 `train_30_v5.yaml`。12 Run
+sealed test 失败后已执行扩充；30 Run test 只在最终 validation 通过后
+打开一次，并通过全部门槛。Day 15 关闭，不再用 test 继续调参。
 
 ### Day 16：语言、视觉和实体干预证明
 
@@ -1865,8 +1901,8 @@ Day 21 通过条件：
 
 ### P0：必须完成
 
-- 12 Run 最小数据集及严格 split；
-- 小型策略优于简单 baseline；
+- 30 Run 数据集及严格 split（已完成）；
+- 小型策略优于简单 baseline（Day 15 sealed test 已完成）；
 - STOP、FOLLOW 和语言干预；
 - 唯一安全门；
 - `desired_x/y` 控制边界；
@@ -1875,7 +1911,7 @@ Day 21 通过条件：
 
 ### P1：让“VLA”说法可信
 
-- 30 Run 推荐数据集；
+- 30 Run 推荐数据集（已完成）；
 - 颜色/位置换位；
 - 每实体视觉 token；
 - 实体颜色真值对 policy 屏蔽；
