@@ -89,15 +89,17 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11、Day 12 已完成，下一步进入 Day 13：
+Day 11–13 已完成，下一步进入 Day 14：
 
-1. PR #14 已合并；Jetson `main` 已同步到 `408318c`，Day 11 分支已删除；
-2. Day 12 的 L1–L4 × 3 个 Run 已全部自动采集，集合质量门为 `12/12`；
-3. 12 个 Run 均已生成监督数据、打包迁移 PC 并核对 SHA-256；
-4. registry 为 12 个合格 Run，固定 split 为 `8/2/2`，
-   `training_ready=true`；
-5. 下一步只做 Day 13：在 PC 缓存冻结特征，并验证视觉、语言和 Jetson/PC
-   特征一致性；不要继续盲目增加采集量。
+1. PR #16 已合并；PC 与 Jetson `main` 已同步到 `3e8b979`，Day 12
+   分支已删除；
+2. Day 12 的 12 个 Run 已全部迁移 PC，registry/split 为
+   `12 Runs / 8/2/2 / training_ready=true`；
+3. Day 13 冻结 cache、每实体视觉 token、颜色防泄漏、cache miss 和
+   无图像 fail closed 均已实现；
+4. 同一 L2 Run 已由 Jetson CUDA 与 PC RTX 5060 CUDA 独立重算，
+   20 帧最小余弦 `0.999994539 >= 0.999`；
+5. 下一步只做 Day 14 的小型单轨迹融合策略，不继续盲目补采或扩大模型。
 
 Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 13–16，
 再根据 held-out 与干预测试结果决定是否补采。
@@ -182,7 +184,7 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
 | Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
-| Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
+| Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
 | Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
@@ -337,6 +339,55 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | L4_S0_R1 | `52ABC0F14358AD8E61C40B9FF55DCC8F` | `0137981babcf08e80e5a667ea1b616226665d8ec2a8276cfb189837f55947bdf` |
 | L4_S1_R2 | `C69BC2324D493880BEC50BA0FFABD8D7` | `59a97a1083faec109410eb0da49cc748c27ac732ca159400d22179c593aa7dd5` |
 | L4_S1_R3 | `5B7A42E64A161FA3B56015A07C406BBF` | `688559447cd78b0222b265ccaf382e6691ffda57418df632cdff9d0b6889b182` |
+
+- Day 13 已建立 `feature/day13-feature-cache` 分支；PC 与 Jetson `main`
+  均同步到 PR #16 合并提交 `3e8b979`，Day 12 本地/远程分支已删除
+- 12 个 Day 12 包已在 PC 解压为独立 bundle，共 1200 帧、107360
+  个监督样本；PC registry 为 12 个合格 Run，split 为 `8/2/2`，
+  `training_ready=true`
+- Day 13 第一阶段代码已实现：`feature_cache_v1`、全局视觉 token、
+  与 Day 7 entity ID 顺序一致的 `[16,576]` 每实体视觉 token、
+  policy 实体颜色列 14/15 强制清零、无图像 fail closed、不可变 cache
+  key、独立 PC/Jetson 20 帧余弦一致性检查
+- PC 合成回归目前为 113 passed、1 skipped；Jetson 为 114 passed
+- Jetson 独立 Qwen CUDA 探针通过：FP16 模型 8.65 秒装载，真实中文
+  指令输出 `[256] float32`，L2 范数约 1.0；无需量化或 CPU 降级
+- 为避免 Jetson 统一内存瞬时 `NvMap` 分配失败，正式 CLI 已改为：
+  CUDA 编码 90 条唯一指令后释放 Qwen、清空 CUDA cache，再加载
+  MobileNet；CUDA 装载只做有限重试，持续失败时 hard fail，绝不静默
+  切换 CPU
+- 真实 CUDA reference cache：slot `L2_S0_R1`，Run ID
+  `0FCC05104CD8B7388994E9B5477ED769`，100 帧、90 条指令、9000 样本，
+  237 个有效实体 crop，cache key
+  `30df3953d78462353417000600a53b764e848d9155e6e7b3a878d0e94695f55e`
+- 最终 reference 包已迁移 PC 并再次通过 cache validator：
+  `day13_features_eb832f3_0FCC05104CD8B7388994E9B5477ED769.tar.gz`，
+  Jetson/PC SHA-256 均为
+  `6d2381243d3b55a809630c673d4e453f56883263923845f0ff591c16bf8b6162`
+- 12 Run 投影扫描发现 crop 覆盖随专家轨迹变化显著：L2 三个 Run
+  均为 100/100 帧至少一个实体可投影；L1 静态 Run 仅 1/100。
+  出界实体严格保持 mask=false/token=0，不伪造视觉特征；固定 20 帧
+  跨机一致性选择高覆盖的 `L2_S0_R1`
+- Windows interop 问题已定位为 Codex 网络沙箱而非 WSL 损坏；受控
+  PowerShell 在沙箱外正常运行，无需再次重启 WSL
+- PC Day 13 环境已固定在外部数据目录 `.venv-day13`：Windows 11、
+  Python 3.13.5、RTX 5060、PyTorch 2.8.0+cu129、torchvision
+  0.23.0+cu129；sentence-transformers/transformers/tokenizers 与
+  Jetson 对齐为 `4.1.0 / 4.51.3 / 0.21.1`
+- Qwen 与 MobileNet checkpoint 已从 Jetson 迁移 PC，原始文件
+  SHA-256 分别为
+  `0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd`
+  和
+  `047dcff4addef86ea5bc2eff13c9614dc11f47ab1160d0a71a25e7db994f4e1f`
+- PC RTX 5060 已独立重算 `L2_S0_R1`；PC/Jetson manifest 的 cache key
+  同为
+  `30df3953d78462353417000600a53b764e848d9155e6e7b3a878d0e94695f55e`，
+  language/visual 权重指纹也完全一致
+- 固定 20 帧跨机一致性最终通过：
+  language 最小余弦 `0.9999945388`、global visual `0.9999994874`、
+  entity visual `0.9999994225`，总门槛 `>=0.999`
+- `DAY13_FEATURE_CACHE_PASS` 与 `DAY13_CONSISTENCY_PASS` 均已获得真实
+  PC/Jetson 证据；Day 13 全部通过条件已关闭，可以进入 Day 14
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 

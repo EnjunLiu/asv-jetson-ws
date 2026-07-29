@@ -231,7 +231,7 @@ def _letterbox_and_normalize(
 
 
 class FrozenMobileNetEncoder:
-    """Frozen MobileNetV3-small backbone producing two normalized tokens."""
+    """Frozen MobileNetV3-small backbone producing normalized 576-D tokens."""
 
     def __init__(
         self,
@@ -288,12 +288,34 @@ class FrozenMobileNetEncoder:
         global_image: Image.Image,
         target_crop: Image.Image,
     ) -> np.ndarray:
+        result = self.encode_images((global_image, target_crop))
+        expected_shape = (TOKEN_COUNT, self.feature_dim)
+        if result.shape != expected_shape:
+            raise InvalidVisualFeaturesError(
+                f"backbone returned shape {result.shape}; "
+                f"expected {expected_shape}"
+            )
+        return result
+
+    def encode_images(
+        self,
+        images: Iterable[Image.Image],
+    ) -> np.ndarray:
+        """Encode an arbitrary non-empty image batch.
+
+        Day 6 used exactly two images (global plus one selected target).  Day
+        13 reuses the same frozen backbone and preprocessing for one global
+        image plus every projectable entity crop.  Keeping the batching here
+        prevents the feature-cache builder from running one CUDA inference per
+        entity.
+        """
+
+        image_batch = tuple(images)
+        if not image_batch:
+            raise InvalidVisualFeaturesError("image batch must not be empty")
         torch = self._torch
         batch_array = np.stack(
-            (
-                _letterbox_and_normalize(global_image),
-                _letterbox_and_normalize(target_crop),
-            )
+            tuple(_letterbox_and_normalize(image) for image in image_batch)
         )
         batch = torch.from_numpy(batch_array).to(self.device)
         try:
@@ -313,7 +335,7 @@ class FrozenMobileNetEncoder:
         result = np.ascontiguousarray(
             features.detach().cpu().numpy(), dtype=np.float32
         )
-        expected_shape = (TOKEN_COUNT, self.feature_dim)
+        expected_shape = (len(image_batch), self.feature_dim)
         if result.shape != expected_shape:
             raise InvalidVisualFeaturesError(
                 f"backbone returned shape {result.shape}; "
