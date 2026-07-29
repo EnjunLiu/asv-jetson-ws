@@ -1,7 +1,7 @@
 # PC Training Pipeline
 
-Day 11B PC data registry, Run-level splits, and the foundation for Day 13–16
-feature caching, training and evaluation.
+Day 11B PC data registry, Day 13 frozen feature caching, and the foundation
+for Day 14–16 training and evaluation.
 
 ## Directory conventions
 
@@ -94,6 +94,59 @@ The 12-Run split is frozen to 8/2/2; the 30-Run split is 18/6/6.
 Use `training/day12_collection.py` to verify that the recorded entity
 geometry really matches the counterbalanced plan. Full instructions are in
 `docs/DAY12_COLLECTION.md`.
+
+## Day 13 frozen feature cache
+
+`training.feature_cache` caches each camera frame once and keeps the
+instruction-specific expert trajectories as sample rows. It reuses the frozen
+Day 2 language encoder, Day 6 MobileNet backbone, and Day 7 entity ordering.
+The policy-facing entity tensor always zeros columns 14 and 15, so UE5 color
+truth cannot leak into the learned policy.
+
+Each Run produces:
+
+```text
+features/<RUN_ID>/
+├── manifest.json
+├── language.npz
+├── frames_000.npz
+└── quality_report.json
+```
+
+The immutable key includes every source-frame and image SHA-256, both model
+IDs and weight SHA-256 values, preprocessing/schema versions, and Git SHA.
+Changing any of them returns a cache miss instead of silently reusing stale
+features.
+
+On the machine with the frozen models:
+
+```bash
+PYTHONPATH=src/asv_vla python3 -m training.feature_cache build \
+  --episode <bundle>/artifacts/day8_episode/<RUN_ID> \
+  --supervision <bundle>/artifacts/day10_supervised/<RUN_ID> \
+  --instructions dataset/language/instructions.jsonl \
+  --output-root <data-root>/features \
+  --language-model-path models/Qwen3-Embedding-0.6B \
+  --language-weights-sha256 auto \
+  --visual-weights-sha256 auto \
+  --git-sha <exact-git-sha> \
+  --device cuda
+```
+
+Validate a cache or compare independently generated PC/Jetson caches:
+
+```bash
+PYTHONPATH=src/asv_vla python3 -m training.feature_cache validate \
+  <data-root>/features/<RUN_ID>
+
+PYTHONPATH=src/asv_vla python3 -m training.feature_cache compare \
+  <pc-cache>/<RUN_ID> <jetson-cache>/<RUN_ID> \
+  --sample-count 20 --cosine-threshold 0.999
+```
+
+A missing/corrupt image sets the global visual mask false and every visual
+token to zero. The complete cache gate rejects such a Run; it never fabricates
+a valid policy input.
 
 ## Environment report
 

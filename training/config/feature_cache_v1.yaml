@@ -1,0 +1,35 @@
+# Day 13 frozen feature-cache contract.
+
+feature_schema_version: "feature_cache_v1"
+preprocess_version: "day13_camera_entity_crop_v1"
+
+language:
+  model_id: "Qwen/Qwen3-Embedding-0.6B"
+  feature_dim: 256
+  encode_each_instruction_once: true
+
+visual:
+  model_id: "torchvision:mobilenet_v3_small:IMAGENET1K_V1"
+  feature_dim: 576
+  input_size_px: 224
+  global_token_count: 1
+  maximum_entity_tokens: 16
+  crop_size_px: 224
+
+entity:
+  maximum_entities: 16
+  feature_dim: 16
+  privileged_color_columns_zero_based: [14, 15]
+  entity_id_is_alignment_only: true
+
+ego:
+  fields: ["surge_velocity_mps", "yaw_rate_radps"]
+
+expert:
+  horizon: 20
+  action_dim: 2
+
+consistency:
+  minimum_samples: 20
+  cosine_similarity_threshold: 0.999
+
