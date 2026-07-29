@@ -16,7 +16,10 @@ from training.metrics import (  # noqa: E402
     improvement_fraction,
     predict_label_mean_baseline,
 )
-from training.train import _acceptance  # noqa: E402
+from training.train import (  # noqa: E402
+    _acceptance,
+    _checkpoint_selection_eligible,
+)
 
 
 class _FakeFeatureDataset:
@@ -134,6 +137,26 @@ def test_label_mean_baseline_and_improvement() -> None:
     assert np.allclose(prediction[1, :, 1], 2.0)
     assert np.all(logits == -20.0)
     assert improvement_fraction(0.7, 1.0) == pytest.approx(0.3)
+
+
+def test_checkpoint_selection_requires_both_stop_gates() -> None:
+    config = {
+        "selection_constraints": {
+            "minimum_stop_f1": 0.95,
+            "minimum_stop_within_0_10m_rate": 0.95,
+        }
+    }
+    metrics = {
+        "stop_classification": {"f1": 0.97},
+        "stop_drift": {"within_0_10m_rate": 0.96},
+    }
+
+    assert _checkpoint_selection_eligible(metrics, config)
+    metrics["stop_classification"]["f1"] = 0.94
+    assert not _checkpoint_selection_eligible(metrics, config)
+    metrics["stop_classification"]["f1"] = 0.97
+    metrics["stop_drift"]["within_0_10m_rate"] = 0.94
+    assert not _checkpoint_selection_eligible(metrics, config)
 
 
 def test_acceptance_requires_every_frozen_gate() -> None:

@@ -153,6 +153,45 @@ def _parse_settings(config: Mapping[str, Any]) -> TrainSettings:
     return settings
 
 
+def _checkpoint_selection_eligible(
+    metrics: Mapping[str, Any],
+    training_config: Mapping[str, Any],
+) -> bool:
+    constraints = training_config.get("selection_constraints")
+    if constraints is None:
+        return True
+    if not isinstance(constraints, Mapping):
+        raise ValueError("training selection_constraints must be a mapping")
+    unknown = set(constraints) - {
+        "minimum_stop_f1",
+        "minimum_stop_within_0_10m_rate",
+    }
+    if unknown:
+        raise ValueError(
+            f"unknown selection constraint keys: {sorted(unknown)}"
+        )
+    stop_classification = metrics.get("stop_classification")
+    stop_drift = metrics.get("stop_drift")
+    if not isinstance(stop_classification, Mapping) or not isinstance(
+        stop_drift, Mapping
+    ):
+        raise ValueError("validation metrics have no STOP gate values")
+    minimum_f1 = float(constraints.get("minimum_stop_f1", 0.0))
+    minimum_drift_rate = float(
+        constraints.get("minimum_stop_within_0_10m_rate", 0.0)
+    )
+    if not 0.0 <= minimum_f1 <= 1.0:
+        raise ValueError("minimum_stop_f1 must be in [0, 1]")
+    if not 0.0 <= minimum_drift_rate <= 1.0:
+        raise ValueError(
+            "minimum_stop_within_0_10m_rate must be in [0, 1]"
+        )
+    return (
+        float(stop_classification["f1"]) >= minimum_f1
+        and float(stop_drift["within_0_10m_rate"]) >= minimum_drift_rate
+    )
+
+
 def _build_dataset_bundle(
     *,
     feature_root: Path,
@@ -450,6 +489,9 @@ def _train_one(
     git_sha: str,
 ) -> dict[str, Any]:
     settings = _parse_settings(train_config)
+    training_config = train_config.get("training")
+    if not isinstance(training_config, Mapping):
+        raise ValueError("training configuration is missing")
     loss_weights = PolicyLossWeights.from_mapping(train_config.get("loss"))
     _seed_everything(seed)
     experiment_dir.mkdir(parents=True, exist_ok=False)
@@ -537,6 +579,9 @@ def _train_one(
             validation_metrics["ade_m"]
             + 0.5 * validation_metrics["fde_m"]
         )
+        selection_eligible = _checkpoint_selection_eligible(
+            validation_metrics, training_config
+        )
         history.append(
             {
                 "epoch": epoch,
@@ -546,10 +591,14 @@ def _train_one(
                 "validation_stop_f1": validation_metrics[
                     "stop_classification"
                 ]["f1"],
+                "validation_stop_within_0_10m_rate": validation_metrics[
+                    "stop_drift"
+                ]["within_0_10m_rate"],
+                "selection_eligible": selection_eligible,
                 "selection_score": selection_score,
             }
         )
-        if selection_score < best_score - 1.0e-9:
+        if selection_eligible and selection_score < best_score - 1.0e-9:
             best_score = selection_score
             best_epoch = epoch
             epochs_without_improvement = 0
@@ -568,13 +617,18 @@ def _train_one(
                     dataset_manifest_sha256=dataset_manifest_sha256,
                 ),
             )
-        else:
+        elif best_epoch >= 0:
             epochs_without_improvement += 1
         if (
             epoch + 1 >= settings.minimum_epochs
             and epochs_without_improvement >= settings.early_stopping_patience
         ):
             break
+
+    if best_epoch < 0:
+        raise RuntimeError(
+            "no validation checkpoint satisfied selection_constraints"
+        )
 
     last_validation, _ = _evaluate_model(
         model,
