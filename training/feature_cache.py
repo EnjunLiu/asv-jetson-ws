@@ -127,6 +127,8 @@ def hash_weight_tree(path: str | Path) -> str:
     )
     if not files:
         raise FeatureCacheError(f"no model weight files found under {root}")
+    if len(files) == 1:
+        return _sha256_file(files[0])
     digest = hashlib.sha256()
     for candidate in files:
         relative = candidate.relative_to(root).as_posix().encode("utf-8")

@@ -20,6 +20,7 @@ from training.feature_cache import (
     build_policy_entity_tensor,
     compare_feature_caches,
     encode_frame_visual,
+    hash_weight_tree,
     make_cache_key,
     validate_feature_cache,
 )
@@ -275,6 +276,16 @@ def test_cache_key_changes_for_weights_preprocess_or_source() -> None:
     assert base != changed
     assert base["source_frame_sha256"]["RUN:1:0:100"] == "1" * 64
     assert base["image_sha256"]["RUN:1:0:100"] == "2" * 64
+
+
+def test_single_weight_file_uses_its_real_sha256(tmp_path: Path) -> None:
+    weight = tmp_path / "model" / "model.safetensors"
+    weight.parent.mkdir()
+    weight.write_bytes(b"frozen-weights")
+
+    assert hash_weight_tree(weight.parent) == hashlib.sha256(
+        b"frozen-weights"
+    ).hexdigest()
 
 
 def test_build_validate_and_hit_immutable_cache(tmp_path: Path) -> None:

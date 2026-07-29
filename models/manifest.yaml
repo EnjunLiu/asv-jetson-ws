@@ -40,3 +40,14 @@ language_encoder:
       hf download Qwen/Qwen3-Embedding-0.6B
       --local-dir models/Qwen3-Embedding-0.6B
     weight_sha256: 0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd
+
+visual_encoder:
+  name: mobilenet_v3_small_imagenet1k_v1
+  repo_id: torchvision/mobilenet_v3_small
+  model_id: torchvision:mobilenet_v3_small:IMAGENET1K_V1
+  framework: torchvision
+  output_embedding_dim: 576
+  frozen: true
+  normalize_embeddings: true
+  checkpoint_filename: mobilenet_v3_small-047dcff4.pth
+  checkpoint_sha256: 047dcff4addef86ea5bc2eff13c9614dc11f47ab1160d0a71a25e7db994f4e1f
