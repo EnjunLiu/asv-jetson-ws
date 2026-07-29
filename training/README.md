@@ -167,6 +167,55 @@ A missing/corrupt image sets the global visual mask false and every visual
 token to zero. The complete cache gate rejects such a Run; it never fabricates
 a valid policy input.
 
+## Day 14 small single-trajectory policy
+
+`training.model.SmallTrajectoryPolicy` consumes only the frozen Day 13 cache:
+language, global visual, aligned entity visual/geometry, ego, and validity
+masks. It never receives structured task labels, entity colors, entity IDs,
+candidate trajectories, world-model state, or thruster commands.
+
+The trajectory head predicts 20 two-dimensional increments. `tanh` bounds each
+increment to 0.3 m before `cumsum` produces cumulative body-frame displacement.
+Missing required language/global-visual/ego input returns an explicit invalid
+mask, a zero trajectory, and a fail-closed stop logit. An all-false entity mask
+uses a zero pooled entity token without a softmax NaN.
+
+The dataset loader preserves Run-level and language-template split filters:
+
+```python
+from torch.utils.data import DataLoader
+from training.dataset import (
+    FrozenFeatureDataset,
+    discover_feature_caches,
+    load_split_assignments,
+)
+
+dataset = FrozenFeatureDataset(
+    discover_feature_caches(r"C:\path\to\pc_datasets\features"),
+    selected_split="train",
+    split_assignments=load_split_assignments(
+        r"C:\path\to\pc_datasets\registry\group_split_v1.json"
+    ),
+    allowed_language_splits={"train"},
+    frame_stride=3,
+)
+loader = DataLoader(dataset, batch_size=8, shuffle=True)
+```
+
+Run the executable shape, mask, determinism, gradient, parameter, checkpoint,
+and peak-memory contract before Day 15 training:
+
+```powershell
+$env:PYTHONPATH = "src\asv_vla"
+python -m training.day14_contract `
+  --config training\config\model_small_v1.yaml `
+  --report C:\path\to\pc_datasets\reports\day14_policy_contract_pc.json `
+  --device cuda
+```
+
+Success prints `DAY14_POLICY_CONTRACT_PASS`. The report is external training
+evidence and must not be committed with datasets or checkpoints.
+
 ## Environment report
 
 Before any training, capture and save this information:
