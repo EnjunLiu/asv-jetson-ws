@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from training.dataset_registry import build_registry
-from training.day12_collection import load_plan, validate_slot
+from training.day12_collection import discover_slots, load_plan, validate_slot
 
 
 def _write(path: Path, value: dict) -> None:
@@ -124,6 +124,7 @@ def test_repository_plan_has_twelve_unique_counterbalanced_slots() -> None:
         "L3",
         "L4",
     }
+    assert plan["relation_evaluation_frames"] == 1
 
 
 def test_slot_validator_checks_observed_geometry(tmp_path: Path) -> None:
@@ -196,3 +197,16 @@ def test_registry_reads_legacy_static_pilot_but_does_not_count_it(
     assert entry["execution_mode"] == "static"
     assert entry["training_eligible"] is False
     assert report["eligible_run_count"] == 0
+
+
+def test_latest_symlink_is_not_a_duplicate_collection_slot(
+    tmp_path: Path,
+) -> None:
+    _make_run(tmp_path)
+    latest = tmp_path / "artifacts" / "day8_episode" / "latest"
+    latest.symlink_to("RUN_001", target_is_directory=True)
+
+    discovered, errors = discover_slots(tmp_path)
+
+    assert set(discovered) == {"L1_S0_R1"}
+    assert errors == []

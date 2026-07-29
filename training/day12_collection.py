@@ -123,6 +123,7 @@ def discover_slots(
 ) -> tuple[dict[str, tuple[Path, Path | None]], list[str]]:
     discovered: dict[str, tuple[Path, Path | None]] = {}
     errors: list[str] = []
+    seen_episode_paths: set[Path] = set()
     for bundle in _iter_bundles(data_root):
         episode_root = bundle / "artifacts" / "day8_episode"
         supervision_root = bundle / "artifacts" / "day10_supervised"
@@ -132,6 +133,12 @@ def discover_slots(
             manifest_path = episode_dir / "manifest.json"
             if not episode_dir.is_dir() or not manifest_path.is_file():
                 continue
+            resolved_episode = episode_dir.resolve()
+            if resolved_episode in seen_episode_paths:
+                # Jetson maintains artifacts/day8_episode/latest as a
+                # convenience symlink. It is not a second recorded Run.
+                continue
+            seen_episode_paths.add(resolved_episode)
             try:
                 manifest = _load_object(manifest_path)
             except ValueError as exc:

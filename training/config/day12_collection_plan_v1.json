@@ -11,8 +11,8 @@
     "target_right"
   ],
   "relation_margin_m": 0.25,
-  "relation_evaluation_frames": 10,
-  "minimum_relation_pass_fraction": 0.8,
+  "relation_evaluation_frames": 1,
+  "minimum_relation_pass_fraction": 1.0,
   "slots": [
     {
       "slot_id": "L1_S0_R1",
