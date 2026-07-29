@@ -89,15 +89,18 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11 已完成，Day 12 已开始：
+Day 11、Day 12 已完成，下一步进入 Day 13：
 
 1. PR #14 已合并；Jetson `main` 已同步到 `408318c`，Day 11 分支已删除；
-2. 已建立 Day 12 的版本化 12 槽采集计划、单 launch 入口和几何质量门；
-3. 接下来按 L1–L4 各采 3 个 Run，每个 Run 立即校验和生成监督数据；
-4. 每 Run 通过质量门后打包迁移 PC 并核对 SHA-256；
-5. 12 Run 注册表、8/2/2 split 和集合几何三个 gate 全部通过后进入 Day 13。
+2. Day 12 的 L1–L4 × 3 个 Run 已全部自动采集，集合质量门为 `12/12`；
+3. 12 个 Run 均已生成监督数据、打包迁移 PC 并核对 SHA-256；
+4. registry 为 12 个合格 Run，固定 split 为 `8/2/2`，
+   `training_ready=true`；
+5. 下一步只做 Day 13：在 PC 缓存冻结特征，并验证视觉、语言和 Jetson/PC
+   特征一致性；不要继续盲目增加采集量。
 
-不要跳过 Day 12 直接训练，也不要盲目采集 30 Run。一次只推进一个 gate。
+Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 13–16，
+再根据 held-out 与干预测试结果决定是否补采。
 
 ## 1. 结论与固定边界
 
@@ -178,7 +181,7 @@ Day 11 已完成，Day 12 已开始：
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
-| Day 12 | 进行中 | L1_S0_R1、L1_S0_R2 已通过；真实合格 Run 为 2/12 |
+| Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
@@ -266,7 +269,7 @@ Day 11 已完成，Day 12 已开始：
   `training_ready=false`
 - Day 12 split 修正：12 Run 固定 8/2/2，30 Run 固定 18/6/6；不合格
   Run 不进入 split
-- Day 12 当前只完成代码与单元测试，不代表 UE5 真实采集已通过
+- Day 12 已完成真实 UE5 端到端采集，不再是仅代码/单元测试状态
 - Day 12 Jetson 构建：`asv_jetson_interfaces`、`asv_ue_bridge`、
   `asv_vla`、`asv_bringup` 共 4 包通过；目标机 pytest 102 项通过
 - Day 12 launch 拓扑：8080 仅 1 个 listener，恰有 4 个节点；
@@ -291,14 +294,13 @@ Day 11 已完成，Day 12 已开始：
   Frame Index `0–99`，100 帧、0 缺口，episode 质量门通过
 - 第二个 Run 监督数据：9000 样本、100 帧、90/90 指令、9/9 标签；
   几何门通过，`DAY12_COLLECTION_INCOMPLETE passed=2/12`
-- 当前 registry：6 个可读 Run、350 帧、25000 样本，其中 Day 12
-  合格 Run 为 2 个；按 Scene Seed 分组后的 split 为 train/val/test
-  `1/1/0`，因此 `training_ready=false` 符合预期
+- 当时 registry：6 个可读 Run、350 帧、25000 样本，其中 Day 12
+  合格 Run 为 2 个；这是自动化完成前的中间证据
 - 第二个 PC 迁移包：
   `day12_L1_S0_R2_1BB38BD848FB042EDFAD2CB9E65BF092.tar.gz`，
   Jetson/PC SHA-256 均为
   `5a5c4d5cfae932c03fb0c15976233790399b465c81ab07b35e00fd9d750e3b5b`
-- Day 12 自动化重构（待 live 采集验收）：UE5 `EDGEEditor` 已完成真实
+- Day 12 自动化重构已通过 live 采集验收：UE5 `EDGEEditor` 已完成真实
   UHT/C++ 编译；命令行 `-game -RenderOffscreen` 干跑能够自动找到
   `BP_ASV_C`、`Connection_C` 和四个目标，在 BeginPlay 前写入
   Scene Seed，并输出 `DAY12_UE_READY`
@@ -309,8 +311,32 @@ Day 11 已完成，Day 12 已开始：
   自动生成监督数据、运行全部 gate、打包并输出 SHA-256；Windows
   PowerShell 编排器负责 UE 启停、SCP 和连续槽位
 - PC 回归：`src/asv_vla/test + training/test` 为 105 passed、1 skipped；
-  UE 命令行干跑：slot `L1_S1_R3`、Scene Seed `120103`，10 秒后按安全
-  上限自动退出；尚需 Jetson 部署和首个端到端自动 Run 才能宣称完成
+  Jetson 回归为 106 passed；UE 命令行干跑及真实编译均通过
+- PowerShell 一键编排器已连续完成全部剩余槽位：自动等待 Jetson ready、
+  启动/停止 UE、采集 100 帧、运行质量门、构建监督数据、打包、SCP 并
+  逐包核对 SHA-256；最终输出 `DAY12_BATCH_COMPLETE`
+- Day 12 最终集合：`DAY12_COLLECTION_PASS passed=12/12`；12 个合格
+  Run、12 个 Scene Seed，split 为 train/val/test `8/2/2`，
+  `training_ready=true`
+- 最终 registry 扫描包含历史数据共 16 Runs、1350 帧、114360 样本；
+  其中 Day 12 合格集合为 12 Runs，registry SHA-256 为
+  `0f46b637d68509455e9b5a898040f97d102a92b445fd93b582500c89d4f523ed`
+- 12 个 PC 迁移包均位于 `pc_datasets/`，Run ID 与 SHA-256 如下：
+
+| Slot | Run ID | PC 包 SHA-256 |
+| --- | --- | --- |
+| L1_S0_R1 | `E5BEEC4C4620383F4647A58381581C64` | `db8c402a34764787eff203a6cecdc1d2d6e7aec0d8dda63abbcd4b87b4169094` |
+| L1_S0_R2 | `1BB38BD848FB042EDFAD2CB9E65BF092` | `5a5c4d5cfae932c03fb0c15976233790399b465c81ab07b35e00fd9d750e3b5b` |
+| L1_S1_R3 | `518F09B646307D3D6D8EDBB95287C0A7` | `63f723310db9f49a915678cf1bfefc6aa7262f46c0ed4f06007535da4e55d84c` |
+| L2_S0_R1 | `0FCC05104CD8B7388994E9B5477ED769` | `5c1ee8a6cdf19fb0dd8d187e04a711af57cc1dc7d321e3d69da6ce662f3fccf7` |
+| L2_S1_R2 | `D239509640A316D0BEC9CB866A0B9C90` | `f2d107194776f2992b2fcec2bb077a9bbc401bc88ce8b0d8d36085002f2bbf39` |
+| L2_S1_R3 | `A76A8A3E4A1EE902F591D0AEA7FA33AE` | `5126a49db8a87411895eecce21848cb8a3e1e8fb91caa24da359e3f7d0eeb235` |
+| L3_S0_R1 | `6C4F7CEB46F76E3716686DBB97602DCE` | `47f3289645871ff5fc96fa5c35327cad7cb62cd1788c6b0738a79fae6f43327c` |
+| L3_S1_R2 | `83E8AE3C45CCF5114D6903A37A5F76DD` | `80555d611f1a45bee401daaa83c60429d3e26cef1cfd5a66fa1e35a9558d9cee` |
+| L3_S1_R3 | `780C2FAD4D197A8E786E93A262ED9385` | `15a997e6bbe0150184e972158c6877f64e090f654c0b94ad98a5d5c01ac456de` |
+| L4_S0_R1 | `52ABC0F14358AD8E61C40B9FF55DCC8F` | `0137981babcf08e80e5a667ea1b616226665d8ec2a8276cfb189837f55947bdf` |
+| L4_S1_R2 | `C69BC2324D493880BEC50BA0FFABD8D7` | `59a97a1083faec109410eb0da49cc748c27ac732ca159400d22179c593aa7dd5` |
+| L4_S1_R3 | `5B7A42E64A161FA3B56015A07C406BBF` | `688559447cd78b0222b265ccaf382e6691ffda57418df632cdff9d0b6889b182` |
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
