@@ -13,16 +13,29 @@
 
 ### 0.1 当前到底完成了什么
 
-Day 10 的 1 个 Run、50 个真实帧和 4500 条语言配对样本证明了：
+Day 11 完成后，项目已验证以下全链路：
 
+**Jetson 推理管线（Day 1–10）：**
 - UE5 的图像、本船状态和四目标实体能被 Jetson 同步接收；
 - 每帧都能用完整 Run/Scene/Frame/Timestamp 身份追踪；
 - 90 条语言指令能覆盖 9 种 FOLLOW/STOP 标签；
 - 专家轨迹可以逐值重算，源图片或 JSON 被修改后会被哈希门拒绝；
 - 数据能打包迁移到 PC，Jetson 和 PC 包的 SHA-256 一致。
 
-这叫“数据管线已验证”，不叫“训练数据已经足够”。禁止用这个单 Run
-训练后宣称泛化，也禁止把 4500 条高度相关的配对记录当成 4500 个独立
+**UE5 运动学执行（Day 11A）：**
+- UE5 蓝图已按 docs/ue5_kinematic_command_v1.md 改造，消费 Kinematic_Setpoint JSON；
+- Jetson bridge 切换到 kinematic 模式，/ue/thruster_command 不存在；
+- FOLLOW 实测：每步约 3 cm（max_speed_mps=0.15），船在 UE5 中可见运动；
+- STOP/hold_position/Sequence 防重入/陈旧输入/超步长 fail-closed 全部通过。
+
+**PC 数据基座（Day 11B）：**
+- training/ 包已实现：dataset_registry.py、make_group_splits.py、16 项切分测试；
+- Pilot 验证：registry training_ready=false（单 Scene Seed 正确拒绝）；
+- 切分规则：同一 Run/Scene Seed 不可跨 split，已通过测试强制执行。
+
+这叫"数据管线已验证且运动学执行已打通"，不叫"训练数据已经足够"。
+禁止用这个单 Run 训练后宣称泛化，也禁止把 4500 条高度相关的配对记录
+当成 4500 个独立
 场景。
 
 ### 0.2 为什么项目仍然可行
@@ -76,16 +89,16 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-不要一上来采 30 个 Run，也不要立即训练。下一阶段只做 Day 11：
+Day 11 已完成。下一阶段只做 Day 12：
 
-1. 确认本路线图 PR 已合并；
-2. 在 PC 新建干净 checkout 和外部数据目录；
-3. 记录 PC 的 GPU、驱动、Python 和 PyTorch 环境；
-4. 解压并校验现有 pilot；
-5. 实现 registry 和 Run-level split 测试；
-6. 看到 `training_ready=false` 是正确结果，不是失败。
+1. 确认 PR #14 已合并到 main；
+2. 在 Jetson 同步 main 并删除 feature/day11-kinematic-executor 分支；
+3. 在 PC 建立干净的 asv_vla_pc 目录结构，运行 DAY11_PC_PILOT_PASS；
+4. 按 Day 12 布局矩阵采集 12 Run 最小集（4 布局 × 3 Scene Seed）；
+5. 每 Run 通过质量门后打包迁移 PC 并核对 SHA-256；
+6. 12 Run 注册表 training_ready=true 后进入 Day 13。
 
-Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个 gate。
+不要跳过 Day 12 直接训练，也不要盲目采集 30 Run。一次只推进一个 gate。
 
 ## 1. 结论与固定边界
 
@@ -150,7 +163,7 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 
 ## 2. 当前状态
 
-基线提交：`ddc1489`
+基线提交：`793d027`
 工作分支：`feature/day11-kinematic-executor`
 
 | 阶段 | 状态 | 当前证据/缺口 |
@@ -165,7 +178,7 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 | Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
-| Day 11 | 进行中 | 11A Jetson 构建/ROS 合成探针通过，UE5 待验收；11B PC 数据基座待实现 |
+| Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
 | Day 12 | 未开始 | 12 Run 最小集；30 Run 为最终推荐集 |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
@@ -235,7 +248,137 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
   episode 正确从误报 5/9 收敛为真实 3/9 覆盖
 - `src/asv_vla/test`：68 项测试通过
 - 全工作区 `colcon test`：69 项，0 错误、0 失败、0 跳过
+- Day 11A Jetson 构建：4 包通过（asv_jetson_interfaces, asv_ue_bridge, asv_vla, asv_bringup）
+- Day 11A pytest：79 项通过（含新增 11 项 kinematic_executor 测试）
+- Day 11A UE5 live 验收：Jetson 先监听、UE5 后 Play；bridge 在 kinematic 模式；
+  `/ue/thruster_command` 不存在；`/ue/kinematic_setpoint` 1 pub + 1 sub；
+  FOLLOW 单步 3 cm（max_speed_mps=0.15）；UE5 画面可见船体运动；
+  Sequence 递增防重入；hold_position 和 valid 语义正确
+- Day 11B training/ 包：dataset_registry.py, make_group_splits.py,
+  test_group_splits.py（16 项）、config 和 README 已提交并 push
+- Day 11B pilot 验证：registry runs=1 training_ready=False；
+  splits seeds=1 training_ready=False；pilot SHA-256 与 Day 10 一致
+- Day 11B 切分测试：跨 split 泄漏和同 Run 重复均被主动拒绝
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
+
+## 2.5 Day 11 完成交接（2026-07-29）
+
+### 当前仓库状态
+
+- **分支**: `feature/day11-kinematic-executor`
+- **最新提交**: `793d027` — feat: add Day 11B PC data registry, group splits and tests
+- **PR**: https://github.com/EnjunLiu/asv-jetson-ws/pull/14
+- **Jetson 测试**: `src/asv_vla/test` 79 项 + `training/test` 16 项 = 95 项通过
+- **Jetson 构建**: asv_jetson_interfaces, asv_ue_bridge, asv_vla, asv_bringup 共 4 包
+
+### Day 11A 新增文件
+
+| 文件 | 作用 |
+|------|------|
+| `src/asv_jetson_interfaces/msg/UEKinematicSetpoint.msg` | 运动学 setpoint 消息定义 |
+| `src/asv_vla/asv_vla/kinematic_executor.py` | 纯函数：从专家轨迹取 waypoint 0，步长限制 0.35m |
+| `src/asv_vla/asv_vla/expert_kinematic_executor_node.py` | ROS 节点：5 Hz 发布 /ue/kinematic_setpoint |
+| `src/asv_bringup/launch/day11_expert_kinematic.launch.py` | Launch：bridge(kinematic) + expert + executor |
+| `src/asv_vla/test/test_kinematic_executor.py` | 11 项单元测试 |
+| `docs/ue5_kinematic_command_v1.md` | UE5 Blueprint 改造契约 |
+| `docs/HANDOFF_DAY11.md` | Day 11A 接管说明 |
+
+### Day 11A 修改的已有文件
+
+| 文件 | 变更 |
+|------|------|
+| `src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp` | 新增 outbound_command_mode（kinematic/thruster/disabled）|
+| `src/asv_ue_bridge/config/ue_bridge.yaml` | kinematic 模式配置 |
+| `src/asv_bringup/launch/day8_record.launch.py` | 新增 start_ue_bridge 参数和 execution_mode 字段 |
+| `src/asv_vla/asv_vla/episode.py` | manifest 新增 execution_mode 校验 |
+| `src/asv_vla/asv_vla/episode_recorder_node.py` | 支持复用已有 bridge |
+| `src/asv_vla/setup.py` | 注册 expert_kinematic_executor 入口点 |
+| `src/asv_vla/test/test_episode.py` | 新增 kinematic mode manifest 测试 |
+| `src/asv_jetson_interfaces/CMakeLists.txt` | 新增 UEKinematicSetpoint.msg |
+
+### Day 11B 新增文件
+
+| 文件 | 作用 |
+|------|------|
+| `training/dataset_registry.py` | 扫描 episodes + supervisions，生成 JSONL 注册表；支持 Jetson live / PC flat / PC nested 三种数据布局 |
+| `training/make_group_splits.py` | 按 Scene Seed 分组切分 train/val/test；验证语言模板不重叠 |
+| `training/test/test_group_splits.py` | 16 项测试：空注册表、pilot、防泄漏、确定性、12/30 Run |
+| `training/config/dataset_v1.yaml` | 切分配置：split_seed=42、ratios=0.6/0.2/0.2、frame_stride=3 |
+| `training/README.md` | PC 训练工作流文档 |
+
+### UE5 Blueprint 改造要点
+
+UE5 蓝图已按 `docs/ue5_kinematic_command_v1.md` 改造（用户实现）：
+
+1. 解析 TCP JSON，过滤 `Command_Type: "Kinematic_Setpoint"`
+2. `Valid=false` 或 `Hold_Position=true` → 不移动
+3. 同一 Run_ID 内 `Sequence` 不大于上次 → 拒绝
+4. `(Delta_X_Cm, Delta_Y_Cm, 0)` → actor 本地向量 → 世界空间 → 设置位置
+5. 非零位移时设置 Yaw 朝向移动方向；保持 Roll/Pitch/Z
+6. Teleport 语义：清零物理速度，不施加力
+
+### 关键运行命令
+
+**Jetson 先启动，UE5 后 Play（必守纪律）：**
+
+```bash
+# FOLLOW（慢速，适合近距离目标）
+ros2 launch asv_bringup day11_expert_kinematic.launch.py \
+  action:=follow target_attribute:=color:red distance_bucket:=3m \
+  max_speed_mps:=0.15
+
+# STOP
+ros2 launch asv_bringup day11_expert_kinematic.launch.py \
+  action:=stop target_attribute:=none distance_bucket:=none
+
+# 数据采集（终端 1 独占 bridge）
+ros2 launch asv_bringup day11_expert_kinematic.launch.py \
+  action:=follow target_attribute:=color:red distance_bucket:=3m
+
+# 终端 2 复用同一 bridge 记录
+ros2 launch asv_bringup day8_record.launch.py \
+  start_ue_bridge:=false execution_mode:=ue5_kinematic_expert_v1 \
+  task_text:="day12 counterbalanced scene" max_frames:=100
+```
+
+### 验收关键点
+
+- `/ue/thruster_command` 在 kinematic launch 中不存在（证明解耦成功）
+- `/ue/kinematic_setpoint` 恰好 1 pub + 1 sub
+- FOLLOW 单步 ≤35 cm；max_speed_mps 可调
+- STOP 输出 hold_position=true, valid=true, 零位移
+- Sequence 递增；源 frame 过旧(>0.5s)输出 invalid hold
+
+### 已知问题
+
+1. launch 参数的 `action:=stop` 和 `distance_bucket:=10m` 可能未正确覆盖
+   节点默认值，实测中始终显示 `action: follow, desired_distance_m: 3.0`。
+   下一个 AI 需检查 launch 文件中的 ParameterValue 参数传递路径。
+2. PC 端 asv_vla_pc 目录尚未建立，DAY11_PC_PILOT_PASS 尚未在 Windows 本地执行。
+3. pilot 数据只有 1 个 Scene Seed（12345），training_ready=false 是正确结果，
+   不是 bug。
+
+### 下一个 AI 接管第一步
+
+```bash
+# Jetson
+cd /home/jetson/jetson_asv_ws
+git log --oneline -5
+git status --short --branch
+source .venv/bin/activate
+PYTHONPATH=src/asv_vla python -m pytest -q src/asv_vla/test training/test
+```
+
+```powershell
+# PC（在 PowerShell 中执行）
+cd C:\Users\LIU\Documents\jetson_ws\day11_kinematic_work
+git log --oneline -5
+git status --short --branch
+```
+
+Agent 不得假设：Windows 旧 checkout 是最新的；静态测试等于 ROS 实测；
+UE5 蓝图未改就能运动；参数覆盖一定生效。
+
 
 ## 3. Git 工作流
 
