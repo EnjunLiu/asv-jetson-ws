@@ -118,6 +118,13 @@ IDs and weight SHA-256 values, preprocessing/schema versions, and Git SHA.
 Changing any of them returns a cache miss instead of silently reusing stale
 features.
 
+On Jetson, the CLI keeps the CUDA path without quantization: it encodes the 90
+unique language instructions first, releases Qwen and clears the CUDA cache,
+then loads MobileNet for frame processing. A transient `NvMap` allocation
+failure is retried a bounded number of times (`--cuda-load-attempts`, default
+2); a persistent failure remains a hard error instead of silently switching
+to CPU.
+
 On the machine with the frozen models:
 
 ```bash

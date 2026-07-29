@@ -317,6 +317,36 @@ def test_build_validate_and_hit_immutable_cache(tmp_path: Path) -> None:
     assert cached["cached"] is True
 
 
+def test_precomputed_language_stage_does_not_keep_encoder(
+    tmp_path: Path,
+) -> None:
+    episode, supervision, instructions = _make_sources(tmp_path)
+    language = FakeLanguageEncoder()
+    records = [
+        json.loads(line)
+        for line in instructions.read_text(encoding="utf-8").splitlines()
+    ]
+    precomputed = np.stack(
+        [language.encode(record["text"]) for record in records]
+    )
+
+    result = build_feature_cache(
+        episode,
+        supervision,
+        instructions,
+        tmp_path / "features",
+        language_encoder=None,
+        visual_encoder=FakeVisualEncoder(),
+        language_model=ModelFingerprint("fake-language", SHA_A),
+        visual_model=ModelFingerprint("fake-visual", SHA_B),
+        git_sha="deadbeef",
+        precomputed_language_embeddings=precomputed,
+    )
+
+    assert result["passed"]
+    assert language.calls == 9
+
+
 def test_changed_weight_is_cache_miss_not_silent_reuse(tmp_path: Path) -> None:
     result, _, _, episode, supervision, instructions = _build(
         tmp_path, output_name="miss"

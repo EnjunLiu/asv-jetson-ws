@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import gc
 import hashlib
 import json
 import math
@@ -19,6 +20,7 @@ from pathlib import Path
 import shutil
 from types import SimpleNamespace
 import tempfile
+import time
 from typing import Any, Iterable
 
 import numpy as np
@@ -373,6 +375,30 @@ def _load_supervision_samples(path: Path) -> list[dict[str, Any]]:
     return samples
 
 
+def encode_language_instructions(
+    instructions: list[dict[str, Any]],
+    language_encoder: Any,
+) -> np.ndarray:
+    """Encode every instruction exactly once with the frozen language model."""
+
+    embeddings = []
+    for instruction in instructions:
+        embedding = np.asarray(
+            language_encoder.encode(str(instruction.get("text", ""))),
+            dtype=np.float32,
+        ).reshape(-1)
+        if embedding.shape != (LANGUAGE_FEATURE_DIM,):
+            raise FeatureCacheError(
+                f"language embedding shape {embedding.shape} is invalid"
+            )
+        if not np.all(np.isfinite(embedding)):
+            raise FeatureCacheError("language embedding contains NaN or Inf")
+        embeddings.append(embedding)
+    if not embeddings:
+        raise FeatureCacheError("instruction dataset is empty")
+    return np.stack(embeddings).astype(np.float32, copy=False)
+
+
 def _build_sample_arrays(
     samples: list[dict[str, Any]],
     *,
@@ -455,12 +481,13 @@ def build_feature_cache(
     instructions_path: str | Path,
     output_root: str | Path,
     *,
-    language_encoder: Any,
+    language_encoder: Any | None,
     visual_encoder: Any,
     language_model: ModelFingerprint,
     visual_model: ModelFingerprint,
     git_sha: str,
     preprocess_version: str = PREPROCESS_VERSION,
+    precomputed_language_embeddings: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Build or validate one Run's immutable feature cache."""
 
@@ -514,20 +541,31 @@ def build_feature_cache(
         raise FeatureCacheError("instruction dataset contains an empty ID")
     if len(instruction_ids) != len(set(instruction_ids)):
         raise FeatureCacheError("instruction dataset contains duplicate IDs")
-    language_embeddings = []
-    for instruction in instructions:
-        embedding = np.asarray(
-            language_encoder.encode(str(instruction.get("text", ""))),
-            dtype=np.float32,
-        ).reshape(-1)
-        if embedding.shape != (LANGUAGE_FEATURE_DIM,):
+    if precomputed_language_embeddings is None:
+        if language_encoder is None:
             raise FeatureCacheError(
-                f"language embedding shape {embedding.shape} is invalid"
+                "language_encoder is required without precomputed embeddings"
             )
-        if not np.all(np.isfinite(embedding)):
-            raise FeatureCacheError("language embedding contains NaN or Inf")
-        language_embeddings.append(embedding)
-    language_array = np.stack(language_embeddings).astype(np.float32, copy=False)
+        language_array = encode_language_instructions(
+            instructions, language_encoder
+        )
+    else:
+        language_array = np.ascontiguousarray(
+            precomputed_language_embeddings, dtype=np.float32
+        )
+        expected_language_shape = (
+            len(instructions),
+            LANGUAGE_FEATURE_DIM,
+        )
+        if language_array.shape != expected_language_shape:
+            raise FeatureCacheError(
+                f"precomputed language shape {language_array.shape}; "
+                f"expected {expected_language_shape}"
+            )
+        if not np.all(np.isfinite(language_array)):
+            raise FeatureCacheError(
+                "precomputed language embeddings contain NaN or Inf"
+            )
     instruction_index = {
         instruction_id: index
         for index, instruction_id in enumerate(instruction_ids)
@@ -971,16 +1009,77 @@ def _resolve_sha(value: str, model_path: Path | None = None) -> str:
     return value.strip().casefold()
 
 
+def _clear_torch_cuda() -> None:
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+def _run_with_cuda_retry(
+    operation: Any,
+    *,
+    component: str,
+    device: str,
+    attempts: int,
+) -> Any:
+    if attempts <= 0:
+        raise ValueError("CUDA load attempts must be positive")
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            last_error = exc
+            if not device.startswith("cuda") or attempt >= attempts:
+                raise
+            print(
+                "DAY13_CUDA_RETRY "
+                f"component={component} attempt={attempt}/{attempts} "
+                f"error={type(exc).__name__}"
+            )
+            _clear_torch_cuda()
+            time.sleep(1.0)
+    raise FeatureCacheError(
+        f"{component} failed after {attempts} attempts: {last_error}"
+    )
+
+
 def _main_build(args: argparse.Namespace) -> int:
     language_sha = _resolve_sha(
         args.language_weights_sha256, args.language_model_path
     )
-    language_encoder = USVLanguageEncoder(
-        str(args.language_model_path),
+    instructions = read_jsonl(args.instructions.resolve())
+
+    def encode_language_stage() -> np.ndarray:
+        encoder = USVLanguageEncoder(
+            str(args.language_model_path),
+            device=args.device,
+            cache_size=max(90, args.language_cache_size),
+        )
+        return encode_language_instructions(instructions, encoder)
+
+    language_embeddings = _run_with_cuda_retry(
+        encode_language_stage,
+        component="language",
         device=args.device,
-        cache_size=max(90, args.language_cache_size),
+        attempts=args.cuda_load_attempts,
     )
-    visual_encoder = FrozenMobileNetEncoder(device=args.device)
+    # Qwen is no longer needed after the 90 unique instructions are encoded.
+    # Release it before MobileNet is constructed so both frozen models never
+    # compete for Jetson unified memory.
+    _clear_torch_cuda()
+
+    visual_encoder = _run_with_cuda_retry(
+        lambda: FrozenMobileNetEncoder(device=args.device),
+        component="visual",
+        device=args.device,
+        attempts=args.cuda_load_attempts,
+    )
     visual_sha = (
         hash_torch_module_state(visual_encoder.backbone)
         if args.visual_weights_sha256.casefold() == "auto"
@@ -991,13 +1090,14 @@ def _main_build(args: argparse.Namespace) -> int:
         args.supervision,
         args.instructions,
         args.output_root,
-        language_encoder=language_encoder,
+        language_encoder=None,
         visual_encoder=visual_encoder,
         language_model=ModelFingerprint(
             args.language_model_id, language_sha
         ),
         visual_model=ModelFingerprint(args.visual_model_id, visual_sha),
         git_sha=args.git_sha,
+        precomputed_language_embeddings=language_embeddings,
     )
     print(
         "DAY13_FEATURE_CACHE_PASS "
@@ -1029,6 +1129,7 @@ def main() -> int:
     build.add_argument("--git-sha", required=True)
     build.add_argument("--device", default="cuda")
     build.add_argument("--language-cache-size", type=int, default=128)
+    build.add_argument("--cuda-load-attempts", type=int, default=2)
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("cache", type=Path)
