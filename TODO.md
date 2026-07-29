@@ -89,17 +89,20 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11–13 已完成，下一步进入 Day 14：
+Day 11–14 已完成，下一步进入 Day 15：
 
-1. PR #16 已合并；PC 与 Jetson `main` 已同步到 `3e8b979`，Day 12
-   分支已删除；
+1. PR #17 已合并；PC 与 Jetson `main` 已同步到 `56859f3`，Day 13
+   本地/远端分支已删除；
 2. Day 12 的 12 个 Run 已全部迁移 PC，registry/split 为
    `12 Runs / 8/2/2 / training_ready=true`；
 3. Day 13 冻结 cache、每实体视觉 token、颜色防泄漏、cache miss 和
    无图像 fail closed 均已实现；
 4. 同一 L2 Run 已由 Jetson CUDA 与 PC RTX 5060 CUDA 独立重算，
    20 帧最小余弦 `0.999994539 >= 0.999`；
-5. 下一步只做 Day 14 的小型单轨迹融合策略，不继续盲目补采或扩大模型。
+5. Day 14 小型融合策略已通过 PC/Jetson CUDA 合约：457258 个可训练
+   参数、约 1.84 MB checkpoint、结构性 0.3 m 最大步长；
+6. 下一步只做 Day 15 的三 seed 训练与基线比较，不接 UE5 闭环，
+   不继续盲目补采或扩大模型。
 
 Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 13–16，
 再根据 held-out 与干预测试结果决定是否补采。
@@ -167,8 +170,8 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 
 ## 2. 当前状态
 
-基线提交：`408318c`（PR #14 merge）
-工作分支：`feature/day12-designed-collection`
+基线提交：`56859f3`（PR #17 merge）
+工作分支：`feature/day14-fusion-policy`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -185,7 +188,7 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
 | Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
 | Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
-| Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
+| Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
 | Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
 | Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
@@ -388,6 +391,38 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
   entity visual `0.9999994225`，总门槛 `>=0.999`
 - `DAY13_FEATURE_CACHE_PASS` 与 `DAY13_CONSISTENCY_PASS` 均已获得真实
   PC/Jetson 证据；Day 13 全部通过条件已关闭，可以进入 Day 14
+
+### Day 14 完成证据（2026-07-29）
+
+- 新增 `training/model.py`、`dataset.py`、`losses.py`、
+  `day14_contract.py` 和冻结配置 `model_small_v1.yaml`
+- 融合头只读取 Day 13 缓存的语言、全局视觉、对齐实体视觉/几何、ego
+  和 mask；dataset 不返回结构化任务标签、颜色真值、实体 ID 或专家
+  选中实体 ID
+- 语言和视觉缓存张量在模型边界显式 `detach`；反向测试确认三类冻结
+  输入均无梯度，全部 457258 个可训练策略参数均获得有限梯度
+- 轨迹头只输出一条 `[B,20,2]`；先以 `tanh` 将每个 0.2 s 增量限制为
+  0.3 m，再 `cumsum` 得到累计位移；不存在候选轨迹、世界模型状态或
+  推进器输出
+- batch size 1、2、8 均通过；实体 mask 全 false 时使用零池化 token，
+  不产生 NaN；必需模态无效时输出 `valid_mask=false`、零轨迹和停止
+  logit
+- PC RTX 5060：`DAY14_POLICY_CONTRACT_PASS`；PyTorch 2.8.0+cu129，
+  457258 参数，checkpoint 1841115 bytes，CUDA 峰值 24608256 bytes
+- Jetson CUDA：`DAY14_POLICY_CONTRACT_PASS`；NVIDIA PyTorch
+  2.5.0a0，457258 参数，checkpoint 1840710 bytes，CUDA 峰值
+  24608256 bytes；没有量化、CPU 降级或同时加载冻结骨干
+- Day 14 定向测试在 PC 与 Jetson 均为 12/12；Jetson 全回归
+  126/126；WSL 无 Torch 环境的既有纯 Python 回归为
+  113 passed、2 skipped
+- Windows 全 training 回归为 44 passed、1 failed；唯一失败是既有
+  Day 12 符号链接测试因 Windows 未授予 `SeCreateSymbolicLinkPrivilege`
+  抛出 `WinError 1314`，不是 Day 14 模型或数据代码失败
+- PC 报告位于外部数据目录
+  `pc_datasets/reports/day14_policy_contract_pc.json`；Jetson 报告位于
+  ignored `artifacts/day14_policy_contract_jetson.json`，均不进入 Git
+- Day 14 不需要 UE5 Play 或修改蓝图；Day 15 继续只在 PC 使用已冻结
+  特征训练，不提前接入 ROS/UE5 闭环
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
