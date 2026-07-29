@@ -178,7 +178,7 @@ Day 11 已完成，Day 12 已开始：
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
-| Day 12 | 进行中 | 采集代码和 12 槽计划已实现；真实合格 Run 尚为 0/12 |
+| Day 12 | 进行中 | L1_S0_R1 已通过；真实合格 Run 为 1/12 |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
@@ -273,6 +273,19 @@ Day 11 已完成，Day 12 已开始：
   `/ue/kinematic_setpoint` 1 pub + 1 sub，`/ue/thruster_command` 不存在
 - Day 11 遗留的 3 套重复 launch 已终止；STOP 参数覆盖已在目标机读取为
   `action=stop / target_attribute=none / distance_bucket=none`
+- Day 12 首个真实 Run：slot `L1_S0_R1`，Run ID
+  `E5BEEC4C4620383F4647A58381581C64`，Scene Seed `120101`，
+  Frame Index `0–99`，100 帧、0 缺口，episode 质量门通过
+- 首个 Run 监督数据：9000 样本、100 帧、90/90 指令、9/9 标签，
+  `DAY10_SUPERVISED_DATASET_PASS`
+- 首个 Run 几何门：第一帧红近蓝远、`target_left` 位于
+  `target_right` 左侧，`DAY12_COLLECTION_INCOMPLETE passed=1/12`
+- 首次 live 验收修复：`latest` 符号链接不再被误计为重复 Run；布局关系
+  只检查运动前第一帧，因为专家为保持 3 m 会令本船转向 180°，随后
+  body-frame 左右关系自然反转
+- 首个 PC 迁移包：`day12_L1_S0_R1_E5BEEC4C4620383F4647A58381581C64.tar.gz`，
+  Jetson/PC SHA-256 均为
+  `db8c402a34764787eff203a6cecdc1d2d6e7aec0d8dda63abbcd4b87b4169094`
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
