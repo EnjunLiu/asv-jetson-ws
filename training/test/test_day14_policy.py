@@ -107,6 +107,18 @@ def test_v2_entity_attention_is_language_conditioned() -> None:
     assert not torch.equal(score_a, score_b)
 
 
+def test_language_only_attention_configuration_is_validated() -> None:
+    config = SmallPolicyConfig(
+        language_conditioned_entity_attention=True,
+        entity_attention_mode="language_only",
+    )
+    model = SmallTrajectoryPolicy(config)
+
+    assert model.entity_language_query is not None
+    with pytest.raises(ValueError, match="requires"):
+        SmallPolicyConfig(entity_attention_mode="language_only")
+
+
 def test_geometry_remains_available_when_entity_visual_is_not_projectable() -> None:
     torch.manual_seed(19)
     model = SmallTrajectoryPolicy().eval()

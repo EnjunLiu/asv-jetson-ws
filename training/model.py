@@ -28,6 +28,7 @@ class SmallPolicyConfig:
     invalid_stop_logit: float = 20.0
     maximum_trainable_parameters: int = 2_000_000
     language_conditioned_entity_attention: bool = False
+    entity_attention_mode: str = "legacy"
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SmallPolicyConfig":
@@ -63,6 +64,22 @@ class SmallPolicyConfig:
             raise ValueError("maximum_step_m must be positive")
         if not torch.isfinite(torch.tensor(self.invalid_stop_logit)):
             raise ValueError("invalid_stop_logit must be finite")
+        if self.entity_attention_mode not in {
+            "legacy",
+            "language_additive",
+            "language_only",
+        }:
+            raise ValueError(
+                f"unsupported entity_attention_mode={self.entity_attention_mode!r}"
+            )
+        if (
+            self.entity_attention_mode != "legacy"
+            and not self.language_conditioned_entity_attention
+        ):
+            raise ValueError(
+                "language attention mode requires "
+                "language_conditioned_entity_attention=true"
+            )
 
 
 @dataclass(frozen=True)
@@ -345,9 +362,17 @@ class SmallTrajectoryPolicy(nn.Module):
         attention_score = self.entity_attention(entity_token).squeeze(-1)
         if self.entity_language_query is not None:
             language_query = self.entity_language_query(language_token)
-            attention_score = attention_score + torch.sum(
+            language_score = torch.sum(
                 entity_token * language_query.unsqueeze(1), dim=-1
             ) / (cfg.entity_hidden**0.5)
+            mode = cfg.entity_attention_mode
+            # The first v2 checkpoint predates the explicit mode field and
+            # used the additive form.  Preserve that behavior when its boolean
+            # flag is true and the new field retains the legacy default.
+            if mode in {"legacy", "language_additive"}:
+                attention_score = attention_score + language_score
+            else:
+                attention_score = language_score
         attention_weight = torch.exp(attention_score.clamp(-20.0, 20.0))
         attention_weight = attention_weight * geometry_entity_mask.to(
             dtype=dtype

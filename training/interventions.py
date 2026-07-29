@@ -728,13 +728,24 @@ def evaluate(args: argparse.Namespace) -> int:
     config = _read_yaml(config_path)
     _validate_config(config)
     summary_path = args.day15_output.resolve() / "summary.json"
-    if _sha256_file(summary_path) != str(
-        config["expected_day15_summary_sha256"]
-    ):
-        raise ValueError("frozen Day 15 summary SHA-256 mismatch")
+    expected_summary_sha256 = str(
+        config.get(
+            "expected_training_summary_sha256",
+            config.get("expected_day15_summary_sha256", ""),
+        )
+    )
+    if not expected_summary_sha256:
+        raise ValueError("expected training summary SHA-256 is missing")
+    if _sha256_file(summary_path) != expected_summary_sha256:
+        raise ValueError("frozen training summary SHA-256 mismatch")
     day15_summary = _read_json(summary_path)
-    if not bool(day15_summary.get("test", {}).get("gate_passed")):
+    require_test_gate = bool(config.get("require_sealed_test_gate", True))
+    if require_test_gate and not bool(
+        day15_summary.get("test", {}).get("gate_passed")
+    ):
         raise ValueError("Day 15 sealed test gate was not passed")
+    if not bool(day15_summary.get("validation_gate_passed")):
+        raise ValueError("training validation gate was not passed")
     expected_git_sha = str(config["expected_checkpoint_git_sha"])
     if day15_summary.get("git_sha") != expected_git_sha:
         raise ValueError("Day 15 training Git SHA mismatch")
@@ -746,9 +757,12 @@ def evaluate(args: argparse.Namespace) -> int:
     assignments = load_split_assignments(args.split.resolve())
     instructions = load_instruction_metadata(args.instructions.resolve())
     frame_stride = int(config["frame_stride"])
+    evaluation_split = str(
+        config["language_interventions"]["evaluation_run_split"]
+    )
     test_all_base = FrozenFeatureDataset(
         caches,
-        selected_split="test",
+        selected_split=evaluation_split,
         split_assignments=assignments,
         allowed_language_splits=config["language_interventions"][
             "evaluation_language_splits"
@@ -758,7 +772,7 @@ def evaluate(args: argparse.Namespace) -> int:
     test_all = AnnotatedFeatureDataset(test_all_base, instructions)
     test_standard_base = FrozenFeatureDataset(
         caches,
-        selected_split="test",
+        selected_split=evaluation_split,
         split_assignments=assignments,
         allowed_language_splits=["test"],
         frame_stride=frame_stride,
@@ -1002,6 +1016,7 @@ def evaluate(args: argparse.Namespace) -> int:
         "dataset": {
             "feature_root": str(feature_root),
             "feature_cache_count": len(caches),
+            "evaluation_run_split": evaluation_split,
             "standard_test_sample_count": len(test_standard),
             "all_language_test_sample_count": len(test_all),
             "color_swap_left_slot": left_slot,
