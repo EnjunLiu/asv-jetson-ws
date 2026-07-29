@@ -27,6 +27,7 @@ def _run(run_id: str, scene_seed: int) -> dict[str, Any]:
         "frame_count": 100,
         "sample_count": 900,
         "coverage_complete": True,
+        "training_eligible": True,
     }
 
 
@@ -106,10 +107,10 @@ class TestSceneSeedGrouping:
         assert len(unique_splits) >= 2
 
 
-class TestMinimalTrainingReady:
-    """With 3 distinct Scene Seeds we can reach training_ready=true."""
+class TestMinimumTrainingGate:
+    """Three seeds can populate splits but cannot bypass the 12-Run gate."""
 
-    def test_three_seeds_three_runs_is_ready(self) -> None:
+    def test_three_seeds_three_runs_is_not_ready(self) -> None:
         entries = [
             _run("run_a", 100),
             _run("run_b", 200),
@@ -121,8 +122,8 @@ class TestMinimalTrainingReady:
             train_ratio=0.34,
             validation_ratio=0.33,
         )
-        assert result["training_ready"] is True, (
-            f"3 seeds should be ready; got reason={result['reason']}"
+        assert result["training_ready"] is False, (
+            f"3 Runs must not be ready; got reason={result['reason']}"
         )
         for s in ("train", "validation", "test"):
             assert result["split_run_counts"][s] >= 1, (
@@ -201,6 +202,11 @@ class TestTwelveRunMinimum:
         assert result["training_ready"] is True
         assert result["run_count"] == 12
         assert result["scene_seed_count"] == 12  # each Run has distinct seed
+        assert result["split_run_counts"] == {
+            "train": 8,
+            "validation": 2,
+            "test": 2,
+        }
 
 
 class TestThirtyRunRecommended:
@@ -218,10 +224,25 @@ class TestThirtyRunRecommended:
         assert len(entries) == 30
         result = make_splits(entries, split_seed=42)
         assert result["training_ready"] is True
-        # 30 seeds with 0.6/0.2 → ~18/6/6
-        assert result["split_run_counts"]["train"] >= 12
-        assert result["split_run_counts"]["validation"] >= 3
-        assert result["split_run_counts"]["test"] >= 3
+        assert result["split_run_counts"] == {
+            "train": 18,
+            "validation": 6,
+            "test": 6,
+        }
+
+
+class TestEligibilityGate:
+    def test_ineligible_run_is_not_split(self) -> None:
+        entries = [_run(f"run_{index}", index) for index in range(13)]
+        entries[-1]["training_eligible"] = False
+
+        result = make_splits(entries)
+
+        assert result["registry_run_count"] == 13
+        assert result["run_count"] == 12
+        assert result["training_ready"] is True
+        assert result["rejected_run_ids"] == ["run_12"]
+        assert "run_12" not in result["assignments"]
 
 
 class TestLanguageTemplateValidation:

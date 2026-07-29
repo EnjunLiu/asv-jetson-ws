@@ -241,12 +241,15 @@ def make_manifest(
     stamp_values: Iterable[int],
     status: str,
     execution_mode: str = "observation_only",
+    collection_slot: str = "",
+    layout_id: str = "",
+    motion_state: str = "",
 ) -> dict[str, Any]:
     if execution_mode not in EXECUTION_MODES:
         raise EpisodeError(f"invalid execution_mode: {execution_mode!r}")
     indices = list(frame_indices)
     stamps = list(stamp_values)
-    return {
+    manifest = {
         "schema_version": EPISODE_MANIFEST_VERSION,
         "frame_record_schema": SCHEMA_VERSION,
         "run_id": run_id,
@@ -267,6 +270,20 @@ def make_manifest(
             "mount_rpy_ue_deg": list(CAMERA_MOUNT_RPY_UE_DEG),
         },
     }
+    collection_values = (collection_slot, layout_id, motion_state)
+    if any(collection_values):
+        if not all(str(value).strip() for value in collection_values):
+            raise EpisodeError(
+                "collection_slot, layout_id and motion_state must either "
+                "all be set or all be empty"
+            )
+        manifest["collection"] = {
+            "schema_version": "day12_collection_slot_v1",
+            "slot_id": str(collection_slot).strip(),
+            "layout_id": str(layout_id).strip(),
+            "motion_state": str(motion_state).strip(),
+        }
+    return manifest
 
 
 def load_episode_records(episode_dir: Path) -> list[dict[str, Any]]:

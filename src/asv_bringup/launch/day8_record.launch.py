@@ -19,6 +19,10 @@ def generate_launch_description():
     max_frames = LaunchConfiguration("max_frames")
     start_ue_bridge = LaunchConfiguration("start_ue_bridge")
     execution_mode = LaunchConfiguration("execution_mode")
+    collection_slot = LaunchConfiguration("collection_slot")
+    layout_id = LaunchConfiguration("layout_id")
+    motion_state = LaunchConfiguration("motion_state")
+    expected_scene_seed = LaunchConfiguration("expected_scene_seed")
     ue_bridge_config = os.path.join(
         get_package_share_directory("asv_ue_bridge"),
         "config",
@@ -51,6 +55,10 @@ def generate_launch_description():
                 "Set false when another launch already owns TCP port 8080."
             ),
         ),
+        DeclareLaunchArgument("collection_slot", default_value=""),
+        DeclareLaunchArgument("layout_id", default_value=""),
+        DeclareLaunchArgument("motion_state", default_value=""),
+        DeclareLaunchArgument("expected_scene_seed", default_value="-1"),
 
         Node(
             package="asv_ue_bridge",
@@ -79,6 +87,19 @@ def generate_launch_description():
                 "execution_mode": ParameterValue(
                     execution_mode,
                     value_type=str,
+                ),
+                "collection_slot": ParameterValue(
+                    collection_slot,
+                    value_type=str,
+                ),
+                "layout_id": ParameterValue(layout_id, value_type=str),
+                "motion_state": ParameterValue(
+                    motion_state,
+                    value_type=str,
+                ),
+                "expected_scene_seed": ParameterValue(
+                    expected_scene_seed,
+                    value_type=int,
                 ),
                 "sync_cache_size": 64,
                 "use_sim_time": False,

@@ -25,9 +25,16 @@ from typing import Any
 
 REGISTRY_SCHEMA_VERSION = "dataset_registry_v1"
 _EXPECTED_EXECUTION_MODES = {
+    # Read-only compatibility for Day 8/10 manifests created before the
+    # recorder renamed this mode to observation_only.
     "static",
+    "observation_only",
     "ue5_kinematic_expert_v1",
+    "legacy_thruster",
 }
+MINIMUM_TRAINING_RUNS = 12
+MINIMUM_FRAMES_PER_RUN = 80
+MINIMUM_SCENE_SEEDS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +111,10 @@ def _discover_episodes(data_root: Path) -> dict[str, Path]:
             manifest = entry / "manifest.json"
             if not manifest.is_file():
                 continue
+            if run_id in episodes:
+                raise ValueError(
+                    f"duplicate episode run_id across bundles: {run_id}"
+                )
             episodes[run_id] = entry
     return episodes
 
@@ -123,6 +134,10 @@ def _discover_supervisions(data_root: Path) -> dict[str, Path]:
             manifest = entry / "manifest.json"
             if not manifest.is_file():
                 continue
+            if run_id in supervisions:
+                raise ValueError(
+                    f"duplicate supervision run_id across bundles: {run_id}"
+                )
             supervisions[run_id] = entry
     return supervisions
 
@@ -160,6 +175,12 @@ def scan_run(
     entry["scene_seed"] = ep_manifest.get("scene_seed")
     entry["frame_count"] = ep_manifest.get("frame_count", 0)
     entry["episode_manifest_sha256"] = _sha256_file(ep_manifest_path)
+    if ep_manifest.get("run_id") != run_id:
+        entry["episode_valid"] = False
+        entry["episode_error"] = "manifest run_id does not match directory"
+    if ep_manifest.get("status") != "complete":
+        entry["episode_valid"] = False
+        entry["episode_error"] = "episode status is not complete"
 
     execution_mode = str(ep_manifest.get("execution_mode", "static"))
     if execution_mode not in _EXPECTED_EXECUTION_MODES:
@@ -168,6 +189,33 @@ def scan_run(
             f"expected one of {sorted(_EXPECTED_EXECUTION_MODES)}"
         )
     entry["execution_mode"] = execution_mode
+    collection = ep_manifest.get("collection")
+    if isinstance(collection, dict):
+        entry["collection_slot"] = str(
+            collection.get("slot_id", "")
+        ).strip()
+        entry["layout_id"] = str(
+            collection.get("layout_id", "")
+        ).strip()
+        entry["motion_state"] = str(
+            collection.get("motion_state", "")
+        ).strip()
+    else:
+        entry["collection_slot"] = ""
+        entry["layout_id"] = ""
+        entry["motion_state"] = ""
+
+    quality_path = episode_dir / "quality_report.json"
+    if quality_path.is_file():
+        quality = _load_json(quality_path)
+        entry["quality_report_sha256"] = _sha256_file(quality_path)
+        entry["quality_passed"] = bool(quality.get("passed", False))
+        if quality.get("run_id") != run_id:
+            entry["quality_passed"] = False
+            entry["quality_error"] = "quality report run_id mismatch"
+    else:
+        entry["quality_passed"] = False
+        entry["quality_error"] = "quality_report.json is missing"
 
     # -- supervision manifest (optional for registry; required for training) --
     if supervision_dir is not None and supervision_dir.is_dir():
@@ -192,6 +240,16 @@ def scan_run(
         entry["supervision_valid"] = False
         entry["supervision_error"] = "no supervision directory"
 
+    entry["training_eligible"] = bool(
+        entry.get("episode_valid")
+        and entry.get("quality_passed")
+        and entry.get("supervision_valid")
+        and entry.get("coverage_complete")
+        and int(entry.get("frame_count", 0)) >= MINIMUM_FRAMES_PER_RUN
+        and entry.get("collection_slot")
+        and entry.get("layout_id")
+        and entry.get("motion_state")
+    )
     return entry
 
 
@@ -238,6 +296,9 @@ def build_registry(
     total_frames = 0
     total_samples = 0
     scene_seeds: set[int] = set()
+    eligible_run_count = 0
+    eligible_scene_seeds: set[int] = set()
+    eligible_slots: set[str] = set()
 
     for entry in entries:
         lines.append(
@@ -251,6 +312,13 @@ def build_registry(
         if entry.get("supervision_valid"):
             valid_supervisions += 1
             total_samples += entry.get("sample_count", 0)
+        if entry.get("training_eligible"):
+            eligible_run_count += 1
+            eligible_scene_seeds.add(int(entry["scene_seed"]))
+            slot = str(entry["collection_slot"])
+            if slot in eligible_slots:
+                raise ValueError(f"duplicate eligible collection slot: {slot}")
+            eligible_slots.add(slot)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -266,11 +334,15 @@ def build_registry(
         "total_sample_count": total_samples,
         "scene_seed_count": len(scene_seeds),
         "scene_seeds": sorted(scene_seeds),
-        "min_scene_seeds_for_training": 3,
+        "eligible_run_count": eligible_run_count,
+        "eligible_scene_seed_count": len(eligible_scene_seeds),
+        "eligible_scene_seeds": sorted(eligible_scene_seeds),
+        "minimum_runs_for_training": MINIMUM_TRAINING_RUNS,
+        "minimum_frames_per_run": MINIMUM_FRAMES_PER_RUN,
+        "min_scene_seeds_for_training": MINIMUM_SCENE_SEEDS,
         "training_ready": (
-            len(scene_seeds) >= 3
-            and valid_episodes >= 3
-            and valid_supervisions >= 3
+            eligible_run_count >= MINIMUM_TRAINING_RUNS
+            and len(eligible_scene_seeds) >= MINIMUM_SCENE_SEEDS
         ),
         "registry_path": str(output_path.resolve()),
         "registry_sha256": _sha256_file(output_path),
@@ -332,13 +404,16 @@ def main() -> int:
         f"frames={manifest['total_frame_count']} "
         f"samples={manifest['total_sample_count']} "
         f"scene_seeds={manifest['scene_seed_count']} "
+        f"eligible_runs={manifest['eligible_run_count']} "
         f"training_ready={manifest['training_ready']}"
     )
     if not manifest["training_ready"]:
         print(
             f"DAY11_TRAINING_NOT_READY: "
-            f"need at least 3 scene seeds; "
-            f"current seeds={manifest['scene_seeds']}"
+            f"need at least {MINIMUM_TRAINING_RUNS} eligible Runs and "
+            f"{MINIMUM_SCENE_SEEDS} scene seeds; "
+            f"eligible_runs={manifest['eligible_run_count']} "
+            f"eligible_seeds={manifest['eligible_scene_seeds']}"
         )
     print(f"  registry: {manifest['registry_path']}")
     print(f"  sha256:   {manifest['registry_sha256']}")

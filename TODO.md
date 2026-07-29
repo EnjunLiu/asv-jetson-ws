@@ -89,14 +89,13 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11 已完成。下一阶段只做 Day 12：
+Day 11 已完成，Day 12 已开始：
 
-1. 确认 PR #14 已合并到 main；
-2. 在 Jetson 同步 main 并删除 feature/day11-kinematic-executor 分支；
-3. 在 PC 建立干净的 asv_vla_pc 目录结构，运行 DAY11_PC_PILOT_PASS；
-4. 按 Day 12 布局矩阵采集 12 Run 最小集（4 布局 × 3 Scene Seed）；
-5. 每 Run 通过质量门后打包迁移 PC 并核对 SHA-256；
-6. 12 Run 注册表 training_ready=true 后进入 Day 13。
+1. PR #14 已合并；Jetson `main` 已同步到 `408318c`，Day 11 分支已删除；
+2. 已建立 Day 12 的版本化 12 槽采集计划、单 launch 入口和几何质量门；
+3. 接下来按 L1–L4 各采 3 个 Run，每个 Run 立即校验和生成监督数据；
+4. 每 Run 通过质量门后打包迁移 PC 并核对 SHA-256；
+5. 12 Run 注册表、8/2/2 split 和集合几何三个 gate 全部通过后进入 Day 13。
 
 不要跳过 Day 12 直接训练，也不要盲目采集 30 Run。一次只推进一个 gate。
 
@@ -163,8 +162,8 @@ Day 11 已完成。下一阶段只做 Day 12：
 
 ## 2. 当前状态
 
-基线提交：`793d027`
-工作分支：`feature/day11-kinematic-executor`
+基线提交：`408318c`（PR #14 merge）
+工作分支：`feature/day12-designed-collection`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -179,7 +178,7 @@ Day 11 已完成。下一阶段只做 Day 12：
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
-| Day 12 | 未开始 | 12 Run 最小集；30 Run 为最终推荐集 |
+| Day 12 | 进行中 | 采集代码和 12 槽计划已实现；真实合格 Run 尚为 0/12 |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
@@ -260,6 +259,20 @@ Day 11 已完成。下一阶段只做 Day 12：
   splits seeds=1 training_ready=False；pilot SHA-256 与 Day 10 一致
 - Day 11B 切分测试：跨 split 泄漏和同 Run 重复均被主动拒绝
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
+- Day 12 静态实现：单一 `day12_collect.launch.py` 同时拥有 bridge、
+  专家、运动学执行和 recorder；版本化 L1–L4 × 3 Seed 计划已建立
+- Day 12 质量门：校验四个实体 ID/颜色/可见性和真实相对几何，不能只靠
+  manifest 声称布局已交换；注册表不足 12 个合格 Run 时保持
+  `training_ready=false`
+- Day 12 split 修正：12 Run 固定 8/2/2，30 Run 固定 18/6/6；不合格
+  Run 不进入 split
+- Day 12 当前只完成代码与单元测试，不代表 UE5 真实采集已通过
+- Day 12 Jetson 构建：`asv_jetson_interfaces`、`asv_ue_bridge`、
+  `asv_vla`、`asv_bringup` 共 4 包通过；目标机 pytest 102 项通过
+- Day 12 launch 拓扑：8080 仅 1 个 listener，恰有 4 个节点；
+  `/ue/kinematic_setpoint` 1 pub + 1 sub，`/ue/thruster_command` 不存在
+- Day 11 遗留的 3 套重复 launch 已终止；STOP 参数覆盖已在目标机读取为
+  `action=stop / target_attribute=none / distance_bucket=none`
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
@@ -351,12 +364,12 @@ ros2 launch asv_bringup day8_record.launch.py \
 
 ### 已知问题
 
-1. launch 参数的 `action:=stop` 和 `distance_bucket:=10m` 可能未正确覆盖
-   节点默认值，实测中始终显示 `action: follow, desired_distance_m: 3.0`。
-   下一个 AI 需检查 launch 文件中的 ParameterValue 参数传递路径。
-2. PC 端 asv_vla_pc 目录尚未建立，DAY11_PC_PILOT_PASS 尚未在 Windows 本地执行。
-3. pilot 数据只有 1 个 Scene Seed（12345），training_ready=false 是正确结果，
+1. PC 端 asv_vla_pc 目录尚未建立，DAY11_PC_PILOT_PASS 尚未在 Windows 本地执行。
+2. pilot 数据只有 1 个 Scene Seed（12345），training_ready=false 是正确结果，
    不是 bug。
+
+原参数覆盖疑问已在 Day 12 接管审计中关闭：目标机 `ros2 param get`
+确认 STOP 三个参数均正确覆盖。
 
 ### 下一个 AI 接管第一步
 
@@ -1173,32 +1186,23 @@ Day 11B 通过条件：
 - 颜色和位置按布局变化，不能只移动 Actor 但仍复用同一位置变量。
 
 Day 12 默认使用专家运动学 rollout，底层控制器不参与。Jetson 单 Run
-流程分两个终端；终端 1 独占 TCP bridge 和 UE5 outbound：
+只启动一个 launch，由它同时独占 TCP bridge、专家、运动学执行器和
+recorder，避免第二个 bridge 抢占 8080：
 
 ```bash
 cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-# 终端 1：先启动并看到 bridge listening，再在 UE5 中 Play
-ros2 launch asv_bringup day11_expert_kinematic.launch.py \
-  action:=follow target_attribute:=color:red distance_bucket:=3m
+# 先查询下一个未完成槽位及命令
+python3 -m training.day12_collection next --data-root .
+
+# 示例：先启动 Jetson，看到 listening/RECORDER_READY 后再 Play
+ros2 launch asv_bringup day12_collect.launch.py \
+  slot_id:=L1_S0_R1 layout_id:=L1 motion_state:=S0 scene_seed:=120101
 ```
 
-```bash
-# 终端 2：复用终端 1 的 bridge，不得再次占用 8080
-cd ~/jetson_asv_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch asv_bringup day8_record.launch.py \
-  start_ue_bridge:=false \
-  execution_mode:=ue5_kinematic_expert_v1 \
-  task_text:="day12 counterbalanced multimodal scene" \
-  max_frames:=100
-```
-
-录满后停止两个 launch，再校验和生成监督数据：
+录满后停止当前 launch，再校验和生成监督数据：
 
 ```bash
 cd ~/jetson_asv_ws
@@ -1219,6 +1223,10 @@ ros2 run asv_vla evaluate_supervised_dataset \
 
 每个 Run 通过后立刻打包、复制 PC 并核对 SHA-256。不要等 12 个 Run
 全部录完才检查。失败 Run 保留失败日志，但不进入训练注册表。
+
+四个布局的 UE5 参考坐标、12 个固定 Scene Seed、逐 Run 命令和三个最终
+gate 见 `docs/DAY12_COLLECTION.md`。记录器会核对实际 Scene Seed；
+错误 Seed 会 fail closed，不会写成可训练 Run。
 
 如果只需验证单帧标签或场景矩阵，可用静态/脚本化本船位姿采集；这同样
 不依赖底层控制。凡是声称“expert rollout”的 Run，manifest 必须记录

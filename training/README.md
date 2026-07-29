@@ -59,10 +59,10 @@ $env:PYTHONPATH = "src\asv_vla"
 python -m training.dataset_registry --data-root data\extracted\pilot --output data\registry\dataset_registry_v1.jsonl
 ```
 
-**Expected output for pilot:**
+**Expected output for the old 50-frame pilot:**
 ```text
-DAY11_REGISTRY_PASS runs=1 frames=50 samples=4500 scene_seeds=1 training_ready=False
-DAY11_TRAINING_NOT_READY: need at least 3 scene seeds; current seeds=[12345]
+DAY11_REGISTRY_PASS ... eligible_runs=0 training_ready=False
+DAY11_TRAINING_NOT_READY: need at least 12 eligible Runs ...
 ```
 
 ## Create splits
@@ -73,24 +73,27 @@ python -m training.make_group_splits --registry data\registry\dataset_registry_v
 
 **Expected output for pilot:**
 ```text
-DAY11_SPLIT_PASS runs=1 seeds=1 train=1 val=0 test=0 training_ready=False
-DAY11_TRAINING_NOT_READY: need >=3 Scene Seeds and ≥1 Run per split; ...
+DAY11_SPLIT_PASS runs=0 seeds=0 train=0 val=0 test=0 training_ready=False
+DAY11_TRAINING_NOT_READY: registry has no training-eligible Runs
 ```
 
 ## Run tests
 
 ```powershell
 $env:PYTHONPATH = "src\asv_vla"
-python -m pytest -q training\test\test_group_splits.py
+python -m pytest -q training\test
 ```
 
 ## When `training_ready` becomes `true`
 
-After Day 12 collects at least 12 Runs across ≥3 Scene Seeds, re-run
-`dataset_registry.py` with the expanded `data/extracted/` and re-create
-splits.  The split output will then contain non-empty `train_run_ids`,
-`validation_run_ids`, and `test_run_ids` lists ready for Day 13 feature
-caching.
+An eligible Run must have at least 80 frames, a passing quality report,
+complete 9/9 supervision, and Day 12 collection-slot metadata. The registry
+requires at least 12 eligible Runs across at least three Scene Seeds.
+The 12-Run split is frozen to 8/2/2; the 30-Run split is 18/6/6.
+
+Use `training/day12_collection.py` to verify that the recorded entity
+geometry really matches the counterbalanced plan. Full instructions are in
+`docs/DAY12_COLLECTION.md`.
 
 ## Environment report
 
