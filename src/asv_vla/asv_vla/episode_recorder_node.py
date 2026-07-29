@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import os
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
@@ -349,13 +350,13 @@ class EpisodeRecorderNode(Node):
             self.get_logger().info(
                 "DAY8_RECORDER_EXIT requested after successful recording"
             )
-            self.exit_timer = self.create_timer(
+            self.exit_timer = threading.Timer(
                 0.25, self._shutdown_after_complete
             )
+            self.exit_timer.daemon = True
+            self.exit_timer.start()
 
     def _shutdown_after_complete(self) -> None:
-        if self.exit_timer is not None:
-            self.exit_timer.cancel()
         if rclpy.ok():
             rclpy.shutdown()
 

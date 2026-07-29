@@ -99,11 +99,43 @@ if ! grep -q "DAY8_RECORDER_READY" "$launch_log" \
   exit 1
 fi
 
-if ! wait "$launch_pid"; then
-  echo "DAY12_REMOTE_FAIL ROS launch returned a non-zero status" >&2
+completion_seen=false
+while kill -0 "$launch_pid" 2>/dev/null; do
+  if grep -q "DAY8_RECORDING_COMPLETE episode=" "$launch_log"; then
+    completion_seen=true
+    break
+  fi
+  sleep 0.2
+done
+
+if [[ $completion_seen == true ]] && kill -0 "$launch_pid" 2>/dev/null; then
+  recorder_pid=$(
+    pgrep -P "$launch_pid" -f "record_episode" | head -n 1 || true
+  )
+  if [[ -n $recorder_pid ]]; then
+    kill -TERM "$recorder_pid" 2>/dev/null || true
+  fi
+
+  shutdown_deadline=$((SECONDS + 10))
+  while kill -0 "$launch_pid" 2>/dev/null \
+    && (( SECONDS < shutdown_deadline )); do
+    sleep 0.2
+  done
+  if kill -0 "$launch_pid" 2>/dev/null; then
+    kill -TERM -- "-$launch_pid" 2>/dev/null || true
+  fi
+fi
+
+set +e
+wait "$launch_pid"
+launch_status=$?
+set -e
+launch_pid=
+
+if [[ $completion_seen != true ]]; then
+  echo "DAY12_REMOTE_FAIL ROS launch exited before recording completed status=$launch_status" >&2
   exit 1
 fi
-launch_pid=
 
 if [[ -n ${tail_pid:-} ]]; then
   wait "$tail_pid" 2>/dev/null || true

@@ -164,8 +164,8 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $output = Get-Content $remoteStdout -Raw
     $errors = Get-Content $remoteStderr -Raw -ErrorAction SilentlyContinue
     Write-Host $output
-    if ($remoteProcess.ExitCode -ne 0) {
-        throw "Jetson collection failed with exit code $($remoteProcess.ExitCode).`n$errors"
+    if ($output -notmatch "DAY12_REMOTE_COMPLETE") {
+        throw "Jetson collection did not emit its success marker.`n$errors"
     }
 
     $packageMatch = [regex]::Match(
