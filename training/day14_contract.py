@@ -195,7 +195,11 @@ def run_contract(
             raise AssertionError("policy stop_logit contains NaN or Inf")
         if not torch.equal(first.trajectory, second.trajectory):
             raise AssertionError("repeated forward pass is not deterministic")
-        observed = float(torch.max(torch.abs(first.increments)).detach().cpu())
+        observed = float(
+            torch.max(
+                torch.linalg.vector_norm(first.increments, dim=-1)
+            ).detach().cpu()
+        )
         maximum_observed_increment = max(maximum_observed_increment, observed)
         if observed > model_config.maximum_step_m + 1.0e-6:
             raise AssertionError("trajectory increment exceeded structural bound")

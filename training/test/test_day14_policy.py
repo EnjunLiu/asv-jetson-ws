@@ -62,7 +62,10 @@ def test_policy_shapes_bounds_and_finite_values(batch_size: int) -> None:
     assert output.valid_mask.shape == (batch_size,)
     assert torch.isfinite(output.trajectory).all()
     assert torch.isfinite(output.stop_logit).all()
-    assert torch.max(torch.abs(output.increments)) <= 0.3 + 1.0e-6
+    assert (
+        torch.max(torch.linalg.vector_norm(output.increments, dim=-1))
+        <= 0.3 + 1.0e-6
+    )
 
 
 def test_all_entity_masks_false_remains_finite_and_deterministic() -> None:
@@ -116,6 +119,22 @@ def test_missing_required_modality_fails_closed_without_nan() -> None:
     assert torch.count_nonzero(output.trajectory[0]) == 0
     assert output.stop_logit[0, 0] == 20.0
     assert torch.isfinite(output.trajectory).all()
+
+
+def test_stop_logit_continuously_suppresses_trajectory_motion() -> None:
+    torch.manual_seed(29)
+    model = SmallTrajectoryPolicy().eval()
+    inputs = _inputs(1)
+    with torch.no_grad():
+        model.stop_head.weight.zero_()
+        model.stop_head.bias.fill_(-20.0)
+    moving = model(**inputs)
+    with torch.no_grad():
+        model.stop_head.bias.fill_(20.0)
+    stopped = model(**inputs)
+
+    assert torch.max(torch.abs(moving.trajectory)) > 1.0e-3
+    assert torch.max(torch.abs(stopped.trajectory)) < 1.0e-6
 
 
 def test_active_nan_is_rejected() -> None:

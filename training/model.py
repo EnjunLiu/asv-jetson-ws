@@ -351,12 +351,26 @@ class SmallTrajectoryPolicy(nn.Module):
                 dim=-1,
             )
         )
+        stop_logit = self.stop_head(fused)
         raw_increments = self.trajectory_head(fused).reshape(
             batch_size, cfg.horizon, cfg.action_dim
         )
-        increments = torch.tanh(raw_increments) * cfg.maximum_step_m
+        raw_norm = torch.linalg.vector_norm(
+            raw_increments, dim=-1, keepdim=True
+        )
+        radial_scale = torch.where(
+            raw_norm > 1.0e-6,
+            torch.tanh(raw_norm) / raw_norm.clamp_min(1.0e-6),
+            torch.ones_like(raw_norm),
+        )
+        movement_gate = torch.sigmoid(-stop_logit).unsqueeze(1)
+        increments = (
+            raw_increments
+            * radial_scale
+            * cfg.maximum_step_m
+            * movement_gate
+        )
         trajectory = torch.cumsum(increments, dim=1)
-        stop_logit = self.stop_head(fused)
 
         sample_mask = valid_mask.view(batch_size, 1, 1)
         increments = torch.where(
