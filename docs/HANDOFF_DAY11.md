@@ -8,6 +8,7 @@ Updated: 2026-07-29
 - Jetson checkout: `/home/jetson/jetson_asv_ws`
 - Merged base: `ddc1489` (PR #13)
 - Active branch: `feature/day11-kinematic-executor`
+- Draft PR: `https://github.com/EnjunLiu/asv-jetson-ws/pull/14`
 - Scope: Day 11A UE5-only expert execution and Day 12 recording-mode identity
 
 Read these files first:
