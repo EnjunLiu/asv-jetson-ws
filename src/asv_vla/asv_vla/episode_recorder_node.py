@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections import OrderedDict
 import os
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -100,6 +102,11 @@ class EpisodeRecorderNode(Node):
             .get_parameter_value()
             .integer_value
         )
+        self.exit_on_complete = bool(
+            self.declare_parameter("exit_on_complete", False)
+            .get_parameter_value()
+            .bool_value
+        )
         self.cache_size = int(
             self.declare_parameter("sync_cache_size", 64)
             .get_parameter_value()
@@ -163,6 +170,7 @@ class EpisodeRecorderNode(Node):
         self.started_monotonic = time.monotonic()
         self.finished = False
         self.finalized = False
+        self.exit_timer = None
         self.cache_evictions = 0
         self.invalid_drops = 0
         self.get_logger().info(
@@ -338,6 +346,19 @@ class EpisodeRecorderNode(Node):
             f"frames={report['frame_count']} gaps={report['frame_gaps']} "
             f"quality_pass={report['passed']}"
         )
+        if complete.data and self.exit_on_complete:
+            self.get_logger().info(
+                "DAY8_RECORDER_EXIT requested after successful recording"
+            )
+            self.exit_timer = threading.Timer(
+                0.25, self._shutdown_after_complete
+            )
+            self.exit_timer.daemon = True
+            self.exit_timer.start()
+
+    def _shutdown_after_complete(self) -> None:
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def destroy_node(self) -> bool:
         if not self.finalized:
@@ -350,7 +371,7 @@ def main(args=None) -> None:
     node = EpisodeRecorderNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

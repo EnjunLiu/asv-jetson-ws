@@ -81,6 +81,10 @@ def load_plan(path: Path) -> dict[str, Any]:
         motion_state = str(slot.get("motion_state", "")).strip()
         if not all((slot_id, layout_id, motion_state)):
             raise ValueError(f"slot[{index}] has incomplete identity")
+        if motion_state not in {"S0", "S1"}:
+            raise ValueError(
+                f"slot {slot_id} has unsupported motion_state={motion_state!r}"
+            )
         if slot_id in slot_ids:
             raise ValueError(f"duplicate slot_id: {slot_id}")
         slot_ids.add(slot_id)
@@ -123,6 +127,7 @@ def discover_slots(
 ) -> tuple[dict[str, tuple[Path, Path | None]], list[str]]:
     discovered: dict[str, tuple[Path, Path | None]] = {}
     errors: list[str] = []
+    seen_episode_paths: set[Path] = set()
     for bundle in _iter_bundles(data_root):
         episode_root = bundle / "artifacts" / "day8_episode"
         supervision_root = bundle / "artifacts" / "day10_supervised"
@@ -132,6 +137,12 @@ def discover_slots(
             manifest_path = episode_dir / "manifest.json"
             if not episode_dir.is_dir() or not manifest_path.is_file():
                 continue
+            resolved_episode = episode_dir.resolve()
+            if resolved_episode in seen_episode_paths:
+                # Jetson maintains artifacts/day8_episode/latest as a
+                # convenience symlink. It is not a second recorded Run.
+                continue
+            seen_episode_paths.add(resolved_episode)
             try:
                 manifest = _load_object(manifest_path)
             except ValueError as exc:
@@ -179,6 +190,21 @@ def _position(entity: dict[str, Any]) -> tuple[float, float]:
     if not math.isfinite(x_value) or not math.isfinite(y_value):
         raise ValueError("entity position is not finite")
     return x_value, y_value
+
+
+def _pairwise_target_distances(
+    entities: dict[str, dict[str, Any]],
+    required_ids: set[str],
+) -> list[float]:
+    positions = [
+        _position(entities[entity_id])
+        for entity_id in sorted(required_ids)
+    ]
+    return [
+        math.hypot(first[0] - second[0], first[1] - second[1])
+        for index, first in enumerate(positions)
+        for second in positions[index + 1 :]
+    ]
 
 
 def _relation_passes(
@@ -281,6 +307,13 @@ def validate_slot(
     complete_entity_frames = 0
     relation_evaluated_frames = 0
     relation_window = int(plan.get("relation_evaluation_frames", 10))
+    motion_evaluated_frames = 0
+    motion_pass_frames = 0
+    motion_window = int(plan.get("motion_evaluation_frames", 50))
+    minimum_distance_change = float(
+        plan.get("minimum_pairwise_distance_change_m", 0.05)
+    )
+    initial_pairwise_distances: list[float] | None = None
     frame_paths = sorted((episode_dir / "frames").glob("*.json"))
     for frame_path in frame_paths:
         try:
@@ -313,6 +346,24 @@ def validate_slot(
                     if _relation_passes(relation, entities, margin_m):
                         relation_counts[index] += 1
                 relation_evaluated_frames += 1
+            if (
+                slot["motion_state"] == "S1"
+                and motion_evaluated_frames < motion_window
+            ):
+                distances = _pairwise_target_distances(
+                    entities, required_ids
+                )
+                if initial_pairwise_distances is None:
+                    initial_pairwise_distances = distances
+                else:
+                    if any(
+                        abs(current - initial) >= minimum_distance_change
+                        for current, initial in zip(
+                            distances, initial_pairwise_distances
+                        )
+                    ):
+                        motion_pass_frames += 1
+                    motion_evaluated_frames += 1
         except (OSError, ValueError, TypeError) as exc:
             errors.append(f"{frame_path.name}: {exc}")
 
@@ -335,6 +386,23 @@ def validate_slot(
                 f"required >= {minimum_fraction:.3f}"
             )
 
+    motion_fraction: float | None = None
+    if slot["motion_state"] == "S1":
+        motion_fraction = (
+            motion_pass_frames / motion_evaluated_frames
+            if motion_evaluated_frames
+            else 0.0
+        )
+        minimum_motion_fraction = float(
+            plan.get("minimum_motion_pass_fraction", 0.6)
+        )
+        if motion_fraction < minimum_motion_fraction:
+            errors.append(
+                "pairwise target-distance motion passed "
+                f"{motion_fraction:.3f}, "
+                f"required >= {minimum_motion_fraction:.3f}"
+            )
+
     return {
         "slot_id": slot["slot_id"],
         "run_id": manifest.get("run_id"),
@@ -343,6 +411,8 @@ def validate_slot(
         "complete_entity_frame_count": complete_entity_frames,
         "relation_evaluated_frame_count": relation_evaluated_frames,
         "relation_pass_fractions": relation_fractions,
+        "motion_evaluated_frame_count": motion_evaluated_frames,
+        "motion_pass_fraction": motion_fraction,
         "passed": not errors,
         "errors": errors,
     }
@@ -409,6 +479,11 @@ def main() -> int:
         default=Path("training/config/day12_collection_plan_v1.json"),
     )
     parser.add_argument("--report", type=Path, default=None)
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the next slot as one machine-readable JSON object",
+    )
     args = parser.parse_args()
 
     try:
@@ -431,16 +506,34 @@ def main() -> int:
     ]
     if args.command == "next":
         if not pending:
-            print("DAY12_NEXT: all planned slots have passed")
+            if args.json:
+                print(json.dumps({"complete": True}, sort_keys=True))
+            else:
+                print("DAY12_NEXT: all planned slots have passed")
         else:
             slot = pending[0]
-            print(
-                f"DAY12_NEXT slot={slot['slot_id']} "
-                f"layout={slot['layout_id']} "
-                f"motion={slot['motion_state']} "
-                f"scene_seed={slot['scene_seed']}"
-            )
-            print(_slot_command(slot))
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "complete": False,
+                            "slot_id": slot["slot_id"],
+                            "layout_id": slot["layout_id"],
+                            "motion_state": slot["motion_state"],
+                            "scene_seed": slot["scene_seed"],
+                            "launch_command": _slot_command(slot),
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    f"DAY12_NEXT slot={slot['slot_id']} "
+                    f"layout={slot['layout_id']} "
+                    f"motion={slot['motion_state']} "
+                    f"scene_seed={slot['scene_seed']}"
+                )
+                print(_slot_command(slot))
         return 0
 
     marker = (

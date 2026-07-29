@@ -8,7 +8,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -30,6 +32,30 @@ def generate_launch_description():
         get_package_share_directory("asv_ue_bridge"),
         "config",
         "ue_bridge.yaml",
+    )
+
+    recorder = Node(
+        package="asv_vla",
+        executable="record_episode",
+        name="day12_episode_recorder",
+        output="screen",
+        parameters=[{
+            "output_root": ParameterValue(output_root, value_type=str),
+            "task_text": ParameterValue(task_text, value_type=str),
+            "max_frames": ParameterValue(max_frames, value_type=int),
+            "exit_on_complete": True,
+            "execution_mode": "ue5_kinematic_expert_v1",
+            "collection_slot": ParameterValue(slot_id, value_type=str),
+            "layout_id": ParameterValue(layout_id, value_type=str),
+            "motion_state": ParameterValue(
+                motion_state, value_type=str
+            ),
+            "expected_scene_seed": ParameterValue(
+                scene_seed, value_type=int
+            ),
+            "sync_cache_size": 64,
+            "use_sim_time": False,
+        }],
     )
 
     return LaunchDescription([
@@ -105,26 +131,17 @@ def generate_launch_description():
                 "use_sim_time": False,
             }],
         ),
-        Node(
-            package="asv_vla",
-            executable="record_episode",
-            name="day12_episode_recorder",
-            output="screen",
-            parameters=[{
-                "output_root": ParameterValue(output_root, value_type=str),
-                "task_text": ParameterValue(task_text, value_type=str),
-                "max_frames": ParameterValue(max_frames, value_type=int),
-                "execution_mode": "ue5_kinematic_expert_v1",
-                "collection_slot": ParameterValue(slot_id, value_type=str),
-                "layout_id": ParameterValue(layout_id, value_type=str),
-                "motion_state": ParameterValue(
-                    motion_state, value_type=str
-                ),
-                "expected_scene_seed": ParameterValue(
-                    scene_seed, value_type=int
-                ),
-                "sync_cache_size": 64,
-                "use_sim_time": False,
-            }],
+        recorder,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=recorder,
+                on_exit=[
+                    EmitEvent(
+                        event=Shutdown(
+                            reason="Day 12 recorder process exited"
+                        )
+                    )
+                ],
+            )
         ),
     ])
