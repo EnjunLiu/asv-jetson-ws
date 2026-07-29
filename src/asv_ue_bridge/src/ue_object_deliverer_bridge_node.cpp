@@ -8,6 +8,7 @@
 #include <asv_jetson_interfaces/msg/ueasv_state.hpp>
 #include <asv_jetson_interfaces/msg/ue_entity.hpp>
 #include <asv_jetson_interfaces/msg/ue_entity_array.hpp>
+#include <asv_jetson_interfaces/msg/ue_kinematic_setpoint.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -210,6 +211,12 @@ public:
     max_camera_bytes_ = declare_parameter<int>("max_camera_bytes", 8 * 1024 * 1024);
     log_raw_json_ = declare_parameter<bool>("log_raw_json", false);
     publish_clock_ = declare_parameter<bool>("publish_clock", true);
+    outbound_command_mode_ =
+      declare_parameter<std::string>("outbound_command_mode", "thruster");
+    kinematic_position_scale_ =
+      declare_parameter<double>("kinematic_position_scale", 100.0);
+    kinematic_lateral_sign_ =
+      declare_parameter<double>("kinematic_lateral_sign", -1.0);
 
     if (port_ <= 0 || port_ > 65535) {
       throw std::runtime_error("port must be in 1..65535");
@@ -227,6 +234,28 @@ public:
     }
     if (max_entities_ <= 0) {
       throw std::runtime_error("max_entities must be positive");
+    }
+    if (
+      outbound_command_mode_ != "thruster" &&
+      outbound_command_mode_ != "kinematic" &&
+      outbound_command_mode_ != "disabled")
+    {
+      throw std::runtime_error(
+              "outbound_command_mode must be thruster, kinematic or disabled");
+    }
+    if (
+      !std::isfinite(kinematic_position_scale_) ||
+      kinematic_position_scale_ <= 0.0)
+    {
+      throw std::runtime_error(
+              "kinematic_position_scale must be positive and finite");
+    }
+    if (
+      !std::isfinite(kinematic_lateral_sign_) ||
+      kinematic_lateral_sign_ == 0.0)
+    {
+      throw std::runtime_error(
+              "kinematic_lateral_sign must be finite and non-zero");
     }
 
     asv_state_pub_ = create_publisher<asv_jetson_interfaces::msg::UEASVState>(
@@ -248,13 +277,27 @@ public:
     clock_pub_ = create_publisher<rosgraph_msgs::msg::Clock>(
       "/clock", rclcpp::QoS(1).best_effort());
 
-    command_sub_ =
-      create_subscription<asv_jetson_interfaces::msg::ThrusterCommand>(
-      "/ue/thruster_command",
-      rclcpp::QoS(10).reliable(),
-      [this](const asv_jetson_interfaces::msg::ThrusterCommand::SharedPtr message) {
-        send_thruster_command(*message);
-      });
+    if (outbound_command_mode_ == "thruster") {
+      thruster_command_sub_ =
+        create_subscription<asv_jetson_interfaces::msg::ThrusterCommand>(
+          "/ue/thruster_command",
+          rclcpp::QoS(10).reliable(),
+          [this](
+            const asv_jetson_interfaces::msg::ThrusterCommand::SharedPtr message)
+          {
+            send_thruster_command(*message);
+          });
+    } else if (outbound_command_mode_ == "kinematic") {
+      kinematic_setpoint_sub_ =
+        create_subscription<asv_jetson_interfaces::msg::UEKinematicSetpoint>(
+          "/ue/kinematic_setpoint",
+          rclcpp::QoS(10).reliable(),
+          [this](
+            const asv_jetson_interfaces::msg::UEKinematicSetpoint::SharedPtr message)
+          {
+            send_kinematic_setpoint(*message);
+          });
+    }
 
     publish_connected(false);
     running_.store(true);
@@ -262,8 +305,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Listening for UE5 ObjectDeliverer on %s:%d, terminator='%s'",
-      listen_address_.c_str(), port_, terminator_.c_str());
+      "Listening for UE5 ObjectDeliverer on %s:%d, terminator='%s', "
+      "outbound_command_mode='%s'",
+      listen_address_.c_str(), port_, terminator_.c_str(),
+      outbound_command_mode_.c_str());
   }
 
   ~UeObjectDelivererBridgeNode() override
@@ -811,6 +856,50 @@ private:
       {"Valid", command.valid}
     };
 
+    send_json_payload(response, "thruster command");
+  }
+
+  void send_kinematic_setpoint(
+    const asv_jetson_interfaces::msg::UEKinematicSetpoint & command)
+  {
+    const bool finite_step =
+      std::isfinite(command.step_dt) && command.step_dt > 0.0F &&
+      std::isfinite(command.delta_x_m) &&
+      std::isfinite(command.delta_y_m);
+    const bool executable =
+      command.valid && finite_step && command.frame_id == "base_link";
+    const bool hold_position = command.hold_position || !executable;
+    const double delta_x_cm = hold_position ? 0.0 :
+      static_cast<double>(command.delta_x_m) * kinematic_position_scale_;
+    const double delta_y_cm = hold_position ? 0.0 :
+      static_cast<double>(command.delta_y_m) *
+      kinematic_position_scale_ * kinematic_lateral_sign_;
+    const std::string reason = finite_step ? command.reason :
+      "BRIDGE_REJECTED_NONFINITE_OR_INVALID_STEP";
+
+    const json response = {
+      {"Command_Type", "Kinematic_Setpoint"},
+      {"Stamp_Us", command.stamp_us},
+      {"Source_Stamp_Us", command.source_stamp_us},
+      {"Run_ID", command.run_id},
+      {"Scene_Seed", command.scene_seed},
+      {"Source_Frame_Index", command.source_frame_index},
+      {"Sequence", command.sequence},
+      {"Frame_ID", "ue_actor_local"},
+      {"Source_Model_Version", command.source_model_version},
+      {"Step_Dt", finite_step ? command.step_dt : 0.0F},
+      {"Delta_X_Cm", delta_x_cm},
+      {"Delta_Y_Cm", delta_y_cm},
+      {"Hold_Position", hold_position},
+      {"Valid", executable},
+      {"Reason", reason}
+    };
+
+    send_json_payload(response, "kinematic setpoint");
+  }
+
+  void send_json_payload(const json & response, const char * label)
+  {
     std::string payload = response.dump() + terminator_;
     payload.push_back('\0');
 
@@ -818,7 +907,7 @@ private:
     if (client_fd_ < 0) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Dropping thruster command: UE5 client is not connected");
+        "Dropping %s: UE5 client is not connected", label);
       return;
     }
 
@@ -836,13 +925,14 @@ private:
       if (sent <= 0) {
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "Failed to send command to UE5: %s", std::strerror(errno));
+          "Failed to send %s to UE5: %s", label, std::strerror(errno));
         return;
       }
       sent_total += static_cast<std::size_t>(sent);
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 1000,
-        "Sent to UE5: bytes=%zu, payload=%s",
+        "Sent %s to UE5: bytes=%zu, payload=%s",
+        label,
         sent_total,
         payload.c_str());
     }
@@ -863,6 +953,9 @@ private:
   int max_camera_bytes_{8 * 1024 * 1024};
   bool log_raw_json_{false};
   bool publish_clock_{true};
+  std::string outbound_command_mode_{"thruster"};
+  double kinematic_position_scale_{100.0};
+  double kinematic_lateral_sign_{-1.0};
 
   std::atomic<bool> running_{false};
   std::thread server_thread_;
@@ -881,7 +974,10 @@ private:
   rclcpp::Publisher<asv_jetson_interfaces::msg::UEEntityArray>::SharedPtr entities_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connected_pub_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
-  rclcpp::Subscription<asv_jetson_interfaces::msg::ThrusterCommand>::SharedPtr command_sub_;
+  rclcpp::Subscription<asv_jetson_interfaces::msg::ThrusterCommand>::SharedPtr
+    thruster_command_sub_;
+  rclcpp::Subscription<asv_jetson_interfaces::msg::UEKinematicSetpoint>::SharedPtr
+    kinematic_setpoint_sub_;
 };
 
 int main(int argc, char ** argv)

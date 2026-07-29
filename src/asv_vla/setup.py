@@ -55,6 +55,10 @@ setup(
             "day8_replay_probe = asv_vla.day8_replay_probe:main",
             "expert_trajectory = asv_vla.expert_trajectory_node:main",
             (
+                "expert_kinematic_executor = "
+                "asv_vla.expert_kinematic_executor_node:main"
+            ),
+            (
                 "expert_trajectory_probe = "
                 "asv_vla.expert_trajectory_probe:main"
             ),

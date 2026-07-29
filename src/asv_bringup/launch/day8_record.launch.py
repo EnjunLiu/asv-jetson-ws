@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import (
     EnvironmentVariable,
     LaunchConfiguration,
@@ -16,6 +17,8 @@ def generate_launch_description():
     output_root = LaunchConfiguration("output_root")
     task_text = LaunchConfiguration("task_text")
     max_frames = LaunchConfiguration("max_frames")
+    start_ue_bridge = LaunchConfiguration("start_ue_bridge")
+    execution_mode = LaunchConfiguration("execution_mode")
     ue_bridge_config = os.path.join(
         get_package_share_directory("asv_ue_bridge"),
         "config",
@@ -37,6 +40,17 @@ def generate_launch_description():
             default_value="follow the red boat",
         ),
         DeclareLaunchArgument("max_frames", default_value="50"),
+        DeclareLaunchArgument(
+            "execution_mode",
+            default_value="observation_only",
+        ),
+        DeclareLaunchArgument(
+            "start_ue_bridge",
+            default_value="true",
+            description=(
+                "Set false when another launch already owns TCP port 8080."
+            ),
+        ),
 
         Node(
             package="asv_ue_bridge",
@@ -47,6 +61,7 @@ def generate_launch_description():
                 ue_bridge_config,
                 {"use_sim_time": True},
             ],
+            condition=IfCondition(start_ue_bridge),
             respawn=True,
             respawn_delay=2.0,
         ),
@@ -61,6 +76,10 @@ def generate_launch_description():
                 ),
                 "task_text": ParameterValue(task_text, value_type=str),
                 "max_frames": ParameterValue(max_frames, value_type=int),
+                "execution_mode": ParameterValue(
+                    execution_mode,
+                    value_type=str,
+                ),
                 "sync_cache_size": 64,
                 "use_sim_time": False,
             }],

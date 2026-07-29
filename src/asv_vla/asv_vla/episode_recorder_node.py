@@ -66,6 +66,12 @@ class EpisodeRecorderNode(Node):
             .string_value
             .strip()
         )
+        self.execution_mode = (
+            self.declare_parameter("execution_mode", "observation_only")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
         self.max_frames = int(
             self.declare_parameter("max_frames", 50)
             .get_parameter_value()
@@ -78,6 +84,15 @@ class EpisodeRecorderNode(Node):
         )
         if not self.task_text:
             raise ValueError("task_text must be non-empty")
+        if self.execution_mode not in {
+            "observation_only",
+            "ue5_kinematic_expert_v1",
+            "legacy_thruster",
+        }:
+            raise ValueError(
+                "execution_mode must be observation_only, "
+                "ue5_kinematic_expert_v1 or legacy_thruster"
+            )
         if self.max_frames < 1:
             raise ValueError("max_frames must be positive")
         if self.cache_size < 4:
@@ -253,6 +268,7 @@ class EpisodeRecorderNode(Node):
             frame_indices=self.frame_indices,
             stamp_values=self.stamp_values,
             status=status,
+            execution_mode=self.execution_mode,
         )
         manifest["cache_evictions"] = self.cache_evictions
         manifest["invalid_drops"] = self.invalid_drops

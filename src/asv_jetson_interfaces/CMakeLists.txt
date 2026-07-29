@@ -16,6 +16,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PredictedWorldState.msg"
   "msg/DecisionOutput.msg"
   "msg/ThrusterCommand.msg"
+  # UE5-only kinematic execution bypasses the physical controller. The
+  # ObjectDeliverer bridge sends one body-frame displacement per source frame.
+  "msg/UEKinematicSetpoint.msg"
   "msg/SystemStatus.msg"
   "msg/RunContext.msg"
   "msg/TaskEmbedding.msg"
