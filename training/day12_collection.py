@@ -192,29 +192,19 @@ def _position(entity: dict[str, Any]) -> tuple[float, float]:
     return x_value, y_value
 
 
-def _velocity(entity: dict[str, Any]) -> tuple[float, float]:
-    values = entity.get("relative_velocity_mps")
-    if not isinstance(values, list) or len(values) < 2:
-        raise ValueError("entity has no planar relative_velocity_mps")
-    x_value = float(values[0])
-    y_value = float(values[1])
-    if not math.isfinite(x_value) or not math.isfinite(y_value):
-        raise ValueError("entity velocity is not finite")
-    return x_value, y_value
-
-
-def _has_distinct_target_motion(
+def _pairwise_target_distances(
     entities: dict[str, dict[str, Any]],
     required_ids: set[str],
-    minimum_difference_mps: float,
-) -> bool:
-    velocities = [_velocity(entities[entity_id]) for entity_id in required_ids]
-    return any(
+) -> list[float]:
+    positions = [
+        _position(entities[entity_id])
+        for entity_id in sorted(required_ids)
+    ]
+    return [
         math.hypot(first[0] - second[0], first[1] - second[1])
-        >= minimum_difference_mps
-        for index, first in enumerate(velocities)
-        for second in velocities[index + 1 :]
-    )
+        for index, first in enumerate(positions)
+        for second in positions[index + 1 :]
+    ]
 
 
 def _relation_passes(
@@ -320,9 +310,10 @@ def validate_slot(
     motion_evaluated_frames = 0
     motion_pass_frames = 0
     motion_window = int(plan.get("motion_evaluation_frames", 50))
-    minimum_velocity_difference = float(
-        plan.get("minimum_pairwise_velocity_difference_mps", 0.03)
+    minimum_distance_change = float(
+        plan.get("minimum_pairwise_distance_change_m", 0.05)
     )
+    initial_pairwise_distances: list[float] | None = None
     frame_paths = sorted((episode_dir / "frames").glob("*.json"))
     for frame_path in frame_paths:
         try:
@@ -359,13 +350,20 @@ def validate_slot(
                 slot["motion_state"] == "S1"
                 and motion_evaluated_frames < motion_window
             ):
-                if _has_distinct_target_motion(
-                    entities,
-                    required_ids,
-                    minimum_velocity_difference,
-                ):
-                    motion_pass_frames += 1
-                motion_evaluated_frames += 1
+                distances = _pairwise_target_distances(
+                    entities, required_ids
+                )
+                if initial_pairwise_distances is None:
+                    initial_pairwise_distances = distances
+                else:
+                    if any(
+                        abs(current - initial) >= minimum_distance_change
+                        for current, initial in zip(
+                            distances, initial_pairwise_distances
+                        )
+                    ):
+                        motion_pass_frames += 1
+                    motion_evaluated_frames += 1
         except (OSError, ValueError, TypeError) as exc:
             errors.append(f"{frame_path.name}: {exc}")
 
@@ -400,7 +398,7 @@ def validate_slot(
         )
         if motion_fraction < minimum_motion_fraction:
             errors.append(
-                "distinct target motion passed "
+                "pairwise target-distance motion passed "
                 f"{motion_fraction:.3f}, "
                 f"required >= {minimum_motion_fraction:.3f}"
             )

@@ -30,7 +30,7 @@ def _plan() -> dict:
         "minimum_relation_pass_fraction": 0.8,
         "motion_evaluation_frames": 2,
         "minimum_motion_pass_fraction": 0.6,
-        "minimum_pairwise_velocity_difference_mps": 0.03,
+        "minimum_pairwise_distance_change_m": 0.05,
     }
 
 
@@ -105,7 +105,7 @@ def _make_run(
                             "target_red",
                             "red",
                             red_x,
-                            0.0,
+                            0.1 * frame_index if distinct_motion else 0.0,
                             velocity_y=0.08 if distinct_motion else 0.0,
                         ),
                         _entity("target_blue", "blue", blue_x, 0.0),
@@ -188,7 +188,10 @@ def test_s1_slot_requires_observable_distinct_target_motion(
 
     assert not report["passed"]
     assert report["motion_pass_fraction"] == 0.0
-    assert any("distinct target motion" in error for error in report["errors"])
+    assert any(
+        "pairwise target-distance motion" in error
+        for error in report["errors"]
+    )
 
 
 def test_s1_slot_accepts_distinct_target_motion(tmp_path: Path) -> None:

@@ -303,7 +303,8 @@ Day 11 已完成，Day 12 已开始：
   `BP_ASV_C`、`Connection_C` 和四个目标，在 BeginPlay 前写入
   Scene Seed，并输出 `DAY12_UE_READY`
 - 自动化计划改为 5 个 S0 + 7 个 S1；现有 L1 两个 S0 Run 保留，其余
-  场景由 Seed 施加确定性位置扰动，S1 直接检查记录中不同目标的速度差
+  场景由 Seed 施加确定性位置扰动，S1 直接检查不受本船运动影响的目标
+  两两间距变化
 - recorder 完成后主动退出并关闭整套 Day 12 launch；Jetson 单槽脚本
   自动生成监督数据、运行全部 gate、打包并输出 SHA-256；Windows
   PowerShell 编排器负责 UE 启停、SCP 和连续槽位

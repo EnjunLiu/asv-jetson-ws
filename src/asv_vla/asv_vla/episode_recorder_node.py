@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -168,6 +169,7 @@ class EpisodeRecorderNode(Node):
         self.started_monotonic = time.monotonic()
         self.finished = False
         self.finalized = False
+        self.exit_timer = None
         self.cache_evictions = 0
         self.invalid_drops = 0
         self.get_logger().info(
@@ -347,10 +349,13 @@ class EpisodeRecorderNode(Node):
             self.get_logger().info(
                 "DAY8_RECORDER_EXIT requested after successful recording"
             )
-            self.create_timer(0.25, self._shutdown_after_complete)
+            self.exit_timer = self.create_timer(
+                0.25, self._shutdown_after_complete
+            )
 
-    @staticmethod
-    def _shutdown_after_complete() -> None:
+    def _shutdown_after_complete(self) -> None:
+        if self.exit_timer is not None:
+            self.exit_timer.cancel()
         if rclpy.ok():
             rclpy.shutdown()
 
@@ -365,7 +370,7 @@ def main(args=None) -> None:
     node = EpisodeRecorderNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

@@ -15,7 +15,7 @@
   "minimum_relation_pass_fraction": 1.0,
   "motion_evaluation_frames": 50,
   "minimum_motion_pass_fraction": 0.6,
-  "minimum_pairwise_velocity_difference_mps": 0.03,
+  "minimum_pairwise_distance_change_m": 0.05,
   "slots": [
     {
       "slot_id": "L1_S0_R1",
