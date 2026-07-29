@@ -30,6 +30,11 @@ from .frame_record import (
 EPISODE_MANIFEST_VERSION = "episode_manifest_v1"
 QUALITY_REPORT_VERSION = "episode_quality_v1"
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+EXECUTION_MODES = frozenset({
+    "observation_only",
+    "ue5_kinematic_expert_v1",
+    "legacy_thruster",
+})
 
 
 class EpisodeError(ValueError):
@@ -235,7 +240,10 @@ def make_manifest(
     frame_indices: Iterable[int],
     stamp_values: Iterable[int],
     status: str,
+    execution_mode: str = "observation_only",
 ) -> dict[str, Any]:
+    if execution_mode not in EXECUTION_MODES:
+        raise EpisodeError(f"invalid execution_mode: {execution_mode!r}")
     indices = list(frame_indices)
     stamps = list(stamp_values)
     return {
@@ -245,6 +253,7 @@ def make_manifest(
         "scene_seed": int(scene_seed),
         "task_text": task_text,
         "status": status,
+        "execution_mode": execution_mode,
         "frame_count": len(indices),
         "first_frame_index": indices[0] if indices else None,
         "last_frame_index": indices[-1] if indices else None,
@@ -358,6 +367,7 @@ def evaluate_episode(
 
     manifest_path = episode_dir / "manifest.json"
     manifest: dict[str, Any] | None = None
+    execution_mode = "observation_only"
     if not manifest_path.is_file():
         errors.append("manifest.json is missing")
     else:
@@ -368,6 +378,12 @@ def evaluate_episode(
         else:
             if manifest.get("schema_version") != EPISODE_MANIFEST_VERSION:
                 errors.append("manifest schema_version is invalid")
+            execution_mode = manifest.get(
+                "execution_mode",
+                "observation_only",
+            )
+            if execution_mode not in EXECUTION_MODES:
+                errors.append("manifest execution_mode is invalid")
             if manifest.get("frame_count") != len(records):
                 errors.append("manifest frame_count does not match records")
             if run_ids and manifest.get("run_id") != next(iter(run_ids)):
@@ -401,6 +417,7 @@ def evaluate_episode(
         "scene_seed": (
             next(iter(scene_seeds)) if len(scene_seeds) == 1 else None
         ),
+        "execution_mode": execution_mode,
         "first_frame_index": frame_indices[0] if frame_indices else None,
         "last_frame_index": frame_indices[-1] if frame_indices else None,
         "frame_gaps": frame_gaps,

@@ -4,7 +4,9 @@ Status: Day 4 complete.
 
 This document records the packet that is currently emitted by the UE5
 ObjectDeliverer blueprint and the conversion performed by the Jetson bridge.
-It does not define a trajectory or actuator interface.
+It does not define an outbound trajectory or actuator interface. The
+simulation-only outbound displacement contract is documented separately in
+`docs/ue5_kinematic_command_v1.md`.
 
 ## Transport
 

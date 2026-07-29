@@ -111,11 +111,32 @@ def test_complete_episode_round_trip_and_quality_report(tmp_path):
     assert report["frame_gaps"] == 0
     assert report["all_modalities_valid"]
     assert report["all_numbers_finite"]
+    assert report["execution_mode"] == "observation_only"
     assert report["camera_shape_px"] == [1280, 720]
     assert json.loads(
         (episode_dir / "quality_report.json").read_text(encoding="utf-8")
     ) == report
     assert not list(episode_dir.rglob("*.tmp"))
+
+
+def test_manifest_records_and_validates_execution_mode(tmp_path):
+    episode_dir = tmp_path / "episode"
+    write_test_episode(episode_dir)
+    manifest_path = episode_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["execution_mode"] = "ue5_kinematic_expert_v1"
+    write_json_atomic(manifest_path, manifest)
+
+    report = evaluate_episode(episode_dir, min_frames=2)
+
+    assert report["passed"]
+    assert report["execution_mode"] == "ue5_kinematic_expert_v1"
+
+    manifest["execution_mode"] = "mixed_or_unknown"
+    write_json_atomic(manifest_path, manifest)
+    failed = evaluate_episode(episode_dir, min_frames=2)
+    assert not failed["passed"]
+    assert "manifest execution_mode is invalid" in failed["errors"]
 
 
 def test_frame_gap_is_reported_as_warning_not_corruption(tmp_path):

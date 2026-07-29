@@ -93,13 +93,16 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 
 ```text
 自然语言 ──> 冻结语言编码器 ─┐
-图像 ──────> 冻结视觉编码器 ─┼─> 单轨迹策略 ─> 轨迹安全门 ─> 轨迹控制器
-任务实体 ──> 任务特征编码器 ─┘       [20,2]                  |
-                                                            v
-                                              desired_x / desired_y
-                                                            |
-                                                            v
-                                               现有控制器 / ESP32
+图像 ──────> 冻结视觉编码器 ─┼─> 单轨迹策略 ─> 轨迹安全门 ─┬─> UE5 单点执行器
+任务实体 ──> 任务特征编码器 ─┘       [20,2]              │    （仅仿真）
+                                                        │
+                                                        └─> 轨迹控制器
+                                                               |
+                                                               v
+                                                    desired_x / desired_y
+                                                               |
+                                                               v
+                                                    现有控制器 / ESP32
 ```
 
 - 策略直接输出一条 `H=20、dt=0.2 s` 的二维位移轨迹。
@@ -107,6 +110,11 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 - 只有轨迹安全门可以发布最终安全轨迹，禁止两个节点发布同一话题。
 - 上层永远不发布左右推进器命令；Jetson VLA 与底层的边界始终是
   `desired_x / desired_y`。
+- UE5 数据采集允许使用独立运动学执行模式：Jetson 从最新专家轨迹只取
+  第一个相对位移点，UE5 直接设置位姿。该模式不经过 `DecisionOutput`、
+  wrench、推进器分配或 ESP32，不能作为底层控制性能证据。
+- UE5 运动学模式和左右推进器模式互斥，任何时刻只能有一个
+  ObjectDeliverer outbound command owner。
 - 旧 `state_predictor_node -> decision_node` 是可回归测试的 legacy
   正式路径，不是 VLA 世界模型。完成 VLA 正式接入前保留它。
 
@@ -133,6 +141,8 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
   但控制器必须发布 `DecisionOutput.valid=false`，最终得到无效零 wrench。
 - 未来慢停：安全门根据健康的本船状态生成可执行减速轨迹。
 - E-STOP、状态缺失、NaN、控制反馈超时：无效命令和零 wrench。
+- UE5 运动学模式：STOP 是有效的 `hold_position=true`；非法或陈旧
+  专家轨迹是 `valid=false, hold_position=true`，两者都不改变仿真位姿。
 - 禁止用“`desired_x=0, desired_y=0, valid=true`”冒充通用安全停止，
   因为底层可能把它解释为位置保持。
 
@@ -140,8 +150,8 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 
 ## 2. 当前状态
 
-基线提交：`3748164`
-工作分支：`docs/day11-21-roadmap`
+基线提交：`ddc1489`
+工作分支：`feature/day11-kinematic-executor`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -155,7 +165,7 @@ Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个
 | Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
-| Day 11 | 未开始 | PC 环境、数据注册表、按 Run 切分和防泄漏测试 |
+| Day 11 | 进行中 | 11A Jetson 构建/ROS 合成探针通过，UE5 待验收；11B PC 数据基座待实现 |
 | Day 12 | 未开始 | 12 Run 最小集；30 Run 为最终推荐集 |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
@@ -818,7 +828,73 @@ PC 接收后先核对 SHA-256，再解压到 PC 训练仓库根目录。PC 必�
 
 ## 6. Day 11–21 详细执行路线
 
-### Day 11：PC 数据基座、注册表和严格切分
+### Day 11A：控制解耦与 UE5 专家运动学执行
+
+#### 决策
+
+监督标签和运动执行分开。Day 10 的单帧专家标签不要求底层控制器工作；
+但为了采到连续闭环状态，Day 12 默认使用 UE5-only 专家 rollout：
+
+```text
+/ue/entities
+      |
+      v
+/vla/expert_trajectory  [20,2], dt=0.2 s
+      |
+      v
+expert_kinematic_executor
+      |
+      v
+/ue/kinematic_setpoint  只含最新轨迹第 1 点
+      |
+      v
+ObjectDeliverer JSON -> UE5 直接设置位置和航向
+```
+
+这里不遍历整条 20 点轨迹。每个新 UE5 Frame 重新生成专家轨迹，Jetson
+以 5 Hz 最多消费该源帧一次，只取 waypoint 0。若 `0.5 s` 没有新专家
+输入则发送一次 invalid hold。这样频率和去重由 Jetson 负责，UE5 蓝图
+不维护轨迹索引、队列或插值时钟。
+
+固定接口见 `docs/ue5_kinematic_command_v1.md`。关键边界：
+
+- `/ue/kinematic_setpoint` 只允许 UE5 仿真消费；
+- `outbound_command_mode=kinematic` 时 bridge 不订阅 thruster command；
+- ROS `base_link` 米转换为 UE actor-local 厘米，并执行 Y 轴反号；
+- 同一 `(Run_ID, Scene_Seed, Frame_Index)` 只执行一次；
+- STOP、断流、非法 shape、NaN 和超步长全部保持位姿；
+- UE5 应用位姿后清零物理速度，仍持续发送递增 `Frame_Index`；
+- 该路径证明上层轨迹与数据管线，不证明真实控制器可跟踪。
+
+Day 11A 通过条件：
+
+- Jetson `colcon build` 和相关 pytest 通过；
+- launch 中不启动 control manager、allocator 或 ESP32；
+- `/vla/expert_trajectory` 为 20 点，`/ue/kinematic_setpoint` 为单点；
+- UE5 每个 `Sequence` 最多应用一次；
+- FOLLOW 单步不超过 35 cm，STOP 与陈旧输入均不移动；
+- 运行时 `/ue/thruster_command` 在本 launch 中无 subscriber；
+- 保存 ROS topic 和 UE5 位姿变化证据。
+
+当前状态（2026-07-29）：
+
+- Jetson 目标机构建通过：`asv_jetson_interfaces`、`asv_ue_bridge`、
+  `asv_vla`、`asv_bringup` 共 4 包；
+- Jetson pytest 通过，新增 first-point、STOP、shape、NaN、frame 和
+  step-limit fail-closed 测试；
+- ROS 合成 20 点专家输入得到单点
+  `delta_x_m=0.3, delta_y_m=0, valid=true`；
+- TCP bridge 合成探针输出 `Delta_X_Cm=30`、`Delta_Y_Cm=-10`，
+  证明米/厘米和 Y 轴反号转换；
+- 专用 launch 中 `/ue/kinematic_setpoint` 恰有 1 publisher 和
+  1 subscriber，`/ue/thruster_command` 不存在；
+- recorder manifest 新增并校验
+  `execution_mode=ue5_kinematic_expert_v1`，防止与静态/推进器 Run 混写。
+
+UE5 Blueprint 尚未按新 JSON 契约修改和实测，因此不得把 Day 11A 标为
+完成。当前可复现状态见 `docs/HANDOFF_DAY11.md`。
+
+### Day 11B：PC 数据基座、注册表和严格切分
 
 #### 目标
 
@@ -906,7 +982,7 @@ Day 11 应新增：
 4. Primary test 同时 hold out Run 和语言模板。
 5. pilot 只有一个 Run，注册表必须输出 `training_ready=false`。
 
-Day 11 通过条件：
+Day 11B 通过条件：
 
 - PC 打印 `DAY11_PC_PILOT_PASS`；
 - pilot SHA-256 和 Day 10 记录一致；
@@ -953,19 +1029,38 @@ Day 11 通过条件：
 - 四个目标 ID 唯一、持续可见、`is_target=true`；
 - 颜色和位置按布局变化，不能只移动 Actor 但仍复用同一位置变量。
 
-Jetson 单 Run 流程：
+Day 12 默认使用专家运动学 rollout，底层控制器不参与。Jetson 单 Run
+流程分两个终端；终端 1 独占 TCP bridge 和 UE5 outbound：
 
 ```bash
 cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-# 先轻量预检，确认坐标
-ros2 launch asv_bringup communication_only.launch.py
+# 终端 1：先启动并看到 bridge listening，再在 UE5 中 Play
+ros2 launch asv_bringup day11_expert_kinematic.launch.py \
+  action:=follow target_attribute:=color:red distance_bucket:=3m
+```
 
-# 停止预检后再正式记录
+```bash
+# 终端 2：复用终端 1 的 bridge，不得再次占用 8080
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
 ros2 launch asv_bringup day8_record.launch.py \
-  task_text:="day12 counterbalanced multimodal scene" max_frames:=100
+  start_ue_bridge:=false \
+  execution_mode:=ue5_kinematic_expert_v1 \
+  task_text:="day12 counterbalanced multimodal scene" \
+  max_frames:=100
+```
+
+录满后停止两个 launch，再校验和生成监督数据：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 
 ros2 run asv_vla evaluate_episode \
   artifacts/day8_episode/<RUN_ID> --min-frames 80
@@ -981,6 +1076,10 @@ ros2 run asv_vla evaluate_supervised_dataset \
 
 每个 Run 通过后立刻打包、复制 PC 并核对 SHA-256。不要等 12 个 Run
 全部录完才检查。失败 Run 保留失败日志，但不进入训练注册表。
+
+如果只需验证单帧标签或场景矩阵，可用静态/脚本化本船位姿采集；这同样
+不依赖底层控制。凡是声称“expert rollout”的 Run，manifest 必须记录
+`execution_mode=ue5_kinematic_expert_v1`，不得与静态采集混写。
 
 Day 12 通过条件：
 
@@ -1302,6 +1401,10 @@ Day 17 通过条件：
 
 ### Day 18：安全轨迹到二维控制边界
 
+Day 18 是真实底层控制路径，和 Day 11A 的 UE5 运动学执行器并行存在但
+绝不同时运行。Day 11A 用于数据采集和仿真上层验收；Day 18 才评估
+`desired_x/y` 是否能被控制器跟踪。底层参数未调好不阻塞 Day 11–17。
+
 控制桥只消费 `/vla/selected_trajectory`。每次重规划只执行前
 `0.2–0.5 s` 的短前缀，然后等待新轨迹，不能一次盲目执行 4 s。
 
@@ -1521,14 +1624,17 @@ Day 21 通过条件：
 1. `TODO.md`
 2. `docs/interfaces.md`
 3. `README.md`
-4. PR #12 及之后的 PR
-5. 当前 Jetson 和 PC 的 `git status --short --branch`
+4. `docs/ue5_kinematic_command_v1.md`
+5. PR #12 及之后的 PR
+6. 当前 Jetson 和 PC 的 `git status --short --branch`
 
 已知真值：
 
 - GitHub：`EnjunLiu/asv-jetson-ws`
 - Jetson checkout：`/home/jetson/jetson_asv_ws`
 - Day 10 合并基线：`3748164`
+- Day 11–21 路线图合并提交：`ddc1489`
+- 当前控制解耦分支：`feature/day11-kinematic-executor`
 - Day 10 pilot Run ID：
   `A1D7BAAE49F39E3BB7B1808AB8443CA9`
 - pilot 数据包 SHA-256：
@@ -1598,7 +1704,9 @@ Agent 每次汇报必须区分：
 
 - UE5 蓝图和场景逻辑
 - 从 UE5 发送相机、本船、目标和障碍数据
-- UE5 中执行 Jetson 返回的控制结果
+- UE5 运动学模式中按
+  `docs/ue5_kinematic_command_v1.md` 执行单个相对位移命令
+- UE5 运动学模式不施加左右控制力，并对每个 `Sequence` 只应用一次
 - 按 Day 12 矩阵改变布局、Scene Seed 和目标运动
 - 审查并合并每个阶段 PR
 
