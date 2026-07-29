@@ -192,6 +192,18 @@ def _checkpoint_selection_eligible(
     )
 
 
+def _checkpoint_selection_eligible_for_modality(
+    metrics: Mapping[str, Any],
+    training_config: Mapping[str, Any],
+    modality: str,
+) -> bool:
+    if modality == "entity_only":
+        return True
+    if modality != "full":
+        raise ValueError(f"unsupported training modality: {modality}")
+    return _checkpoint_selection_eligible(metrics, training_config)
+
+
 def _build_dataset_bundle(
     *,
     feature_root: Path,
@@ -579,8 +591,8 @@ def _train_one(
             validation_metrics["ade_m"]
             + 0.5 * validation_metrics["fde_m"]
         )
-        selection_eligible = _checkpoint_selection_eligible(
-            validation_metrics, training_config
+        selection_eligible = _checkpoint_selection_eligible_for_modality(
+            validation_metrics, training_config, modality
         )
         history.append(
             {

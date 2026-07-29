@@ -19,6 +19,7 @@ from training.metrics import (  # noqa: E402
 from training.train import (  # noqa: E402
     _acceptance,
     _checkpoint_selection_eligible,
+    _checkpoint_selection_eligible_for_modality,
 )
 
 
@@ -157,6 +158,9 @@ def test_checkpoint_selection_requires_both_stop_gates() -> None:
     metrics["stop_classification"]["f1"] = 0.97
     metrics["stop_drift"]["within_0_10m_rate"] = 0.94
     assert not _checkpoint_selection_eligible(metrics, config)
+    assert _checkpoint_selection_eligible_for_modality(
+        metrics, config, "entity_only"
+    )
 
 
 def test_acceptance_requires_every_frozen_gate() -> None:
