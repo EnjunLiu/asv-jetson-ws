@@ -182,7 +182,7 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
 | Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
-| Day 13 | 进行中 | cache v1、每实体 token、颜色防泄漏与一致性工具已实现；待真实模型缓存验收 |
+| Day 13 | 进行中 | 真实 Qwen+MobileNet CUDA cache 已通过；待独立 PC CUDA 重算与 20 帧一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
 | Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
@@ -347,8 +347,28 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
   与 Day 7 entity ID 顺序一致的 `[16,576]` 每实体视觉 token、
   policy 实体颜色列 14/15 强制清零、无图像 fail closed、不可变 cache
   key、独立 PC/Jetson 20 帧余弦一致性检查
-- PC 合成回归目前为 111 passed、1 skipped；真实 Qwen/MobileNet 缓存
-  和至少 20 帧 PC/Jetson 一致性仍是 Day 13 未关闭的 gate
+- PC 合成回归目前为 113 passed、1 skipped；Jetson 为 114 passed
+- Jetson 独立 Qwen CUDA 探针通过：FP16 模型 8.65 秒装载，真实中文
+  指令输出 `[256] float32`，L2 范数约 1.0；无需量化或 CPU 降级
+- 为避免 Jetson 统一内存瞬时 `NvMap` 分配失败，正式 CLI 已改为：
+  CUDA 编码 90 条唯一指令后释放 Qwen、清空 CUDA cache，再加载
+  MobileNet；CUDA 装载只做有限重试，持续失败时 hard fail，绝不静默
+  切换 CPU
+- 真实 CUDA reference cache：slot `L2_S0_R1`，Run ID
+  `0FCC05104CD8B7388994E9B5477ED769`，100 帧、90 条指令、9000 样本，
+  237 个有效实体 crop，cache key
+  `30df3953d78462353417000600a53b764e848d9155e6e7b3a878d0e94695f55e`
+- 最终 reference 包已迁移 PC 并再次通过 cache validator：
+  `day13_features_eb832f3_0FCC05104CD8B7388994E9B5477ED769.tar.gz`，
+  Jetson/PC SHA-256 均为
+  `6d2381243d3b55a809630c673d4e453f56883263923845f0ff591c16bf8b6162`
+- 12 Run 投影扫描发现 crop 覆盖随专家轨迹变化显著：L2 三个 Run
+  均为 100/100 帧至少一个实体可投影；L1 静态 Run 仅 1/100。
+  出界实体严格保持 mask=false/token=0，不伪造视觉特征；固定 20 帧
+  跨机一致性选择高覆盖的 `L2_S0_R1`
+- Day 13 尚未关闭：Windows/WSL 进程桥当前报
+  `UtilBindVsockAnyPort`，因此独立 PC CUDA 重算和余弦 `>=0.999`
+  仍待完成，不能用 Jetson 迁移包自比冒充跨机验收
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
