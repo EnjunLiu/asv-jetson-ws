@@ -6,11 +6,13 @@ from types import SimpleNamespace
 from PIL import Image
 
 from asv_vla.episode import (
+    EpisodeError,
     evaluate_episode,
     make_manifest,
     write_episode_frame,
     write_json_atomic,
 )
+import pytest
 
 
 def jpeg_bytes(width=1280, height=720):
@@ -137,6 +139,41 @@ def test_manifest_records_and_validates_execution_mode(tmp_path):
     failed = evaluate_episode(episode_dir, min_frames=2)
     assert not failed["passed"]
     assert "manifest execution_mode is invalid" in failed["errors"]
+
+
+def test_manifest_records_complete_day12_collection_identity():
+    manifest = make_manifest(
+        run_id="RUN_DAY12",
+        scene_seed=120101,
+        task_text="day12 counterbalanced multimodal scene",
+        frame_indices=[0, 1],
+        stamp_values=[100, 200],
+        status="complete",
+        execution_mode="ue5_kinematic_expert_v1",
+        collection_slot="L1_S0_R1",
+        layout_id="L1",
+        motion_state="S0",
+    )
+
+    assert manifest["collection"] == {
+        "schema_version": "day12_collection_slot_v1",
+        "slot_id": "L1_S0_R1",
+        "layout_id": "L1",
+        "motion_state": "S0",
+    }
+
+
+def test_manifest_rejects_partial_day12_collection_identity():
+    with pytest.raises(EpisodeError, match="must either all be set"):
+        make_manifest(
+            run_id="RUN_DAY12",
+            scene_seed=120101,
+            task_text="day12",
+            frame_indices=[0],
+            stamp_values=[100],
+            status="complete",
+            collection_slot="L1_S0_R1",
+        )
 
 
 def test_frame_gap_is_reported_as_warning_not_corruption(tmp_path):

@@ -40,6 +40,7 @@ from typing import Any
 
 SPLIT_SCHEMA_VERSION = "group_split_v1"
 VALID_SPLITS = ("train", "validation", "test")
+MINIMUM_TRAINING_RUNS = 12
 
 
 # ---------------------------------------------------------------------------
@@ -141,17 +142,38 @@ def make_splits(
     Returns a dict with the full split assignment, metadata, and the
     ``training_ready`` flag.
     """
-    if not entries:
+    eligible_entries = [
+        entry
+        for entry in entries
+        if entry.get("training_eligible", True) is not False
+    ]
+    rejected_run_ids = sorted(
+        str(entry.get("run_id", ""))
+        for entry in entries
+        if entry.get("training_eligible", True) is False
+    )
+    if not eligible_entries:
         return {
             "schema_version": SPLIT_SCHEMA_VERSION,
             "training_ready": False,
-            "reason": "registry is empty",
+            "reason": (
+                "registry is empty"
+                if not entries
+                else "registry has no training-eligible Runs"
+            ),
+            "registry_run_count": len(entries),
             "run_count": 0,
             "scene_seed_count": 0,
+            "split_run_counts": {
+                "train": 0,
+                "validation": 0,
+                "test": 0,
+            },
             "assignments": {},
+            "rejected_run_ids": rejected_run_ids,
         }
 
-    groups = _group_by_scene_seed(entries)
+    groups = _group_by_scene_seed(eligible_entries)
     seeds = sorted(groups)
     n_seeds = len(seeds)
 
@@ -160,13 +182,24 @@ def make_splits(
     shuffled = list(seeds)
     rng.shuffle(shuffled)
 
-    # Compute split boundaries on Scene Seeds (not Runs).
-    n_train = max(1, round(n_seeds * train_ratio))
-    n_val = max(1, round(n_seeds * validation_ratio))
+    # Day 12 freezes exact acceptance splits for the two planned scales.
+    # Other sizes retain the configured ratio behavior.
+    if n_seeds == 12:
+        n_train, n_val, n_test = 8, 2, 2
+    elif n_seeds == 30:
+        n_train, n_val, n_test = 18, 6, 6
+    else:
+        n_train = max(1, round(n_seeds * train_ratio))
+        n_val = max(1, round(n_seeds * validation_ratio))
+        n_test = n_seeds - n_train - n_val
     # Guard against rounding that exceeds available seeds.
     if n_train + n_val >= n_seeds:
-        n_val = max(1, n_seeds - n_train - 1) if n_seeds >= 3 else max(1, n_seeds - n_train)
-    n_test = n_seeds - n_train - n_val
+        n_val = (
+            max(1, n_seeds - n_train - 1)
+            if n_seeds >= 3
+            else max(1, n_seeds - n_train)
+        )
+        n_test = n_seeds - n_train - n_val
 
     if n_test < 1 and n_seeds >= 3:
         # Safety: ensure at least one seed in test when we have enough.
@@ -201,7 +234,8 @@ def make_splits(
 
     run_count = len(assignments)
     training_ready = bool(
-        n_seeds >= 3
+        run_count >= MINIMUM_TRAINING_RUNS
+        and n_seeds >= 3
         and split_counts["train"] >= 1
         and split_counts["validation"] >= 1
         and split_counts["test"] >= 1
@@ -211,7 +245,9 @@ def make_splits(
         "ready for training"
         if training_ready
         else (
-            f"need >=3 Scene Seeds and ≥1 Run per split; "
+            f"need >={MINIMUM_TRAINING_RUNS} eligible Runs, "
+            f">=3 Scene Seeds and >=1 Run per split; "
+            f"runs={run_count}, "
             f"seeds={n_seeds}, "
             f"train={split_counts['train']}, "
             f"val={split_counts['validation']}, "
@@ -225,6 +261,7 @@ def make_splits(
         "split_seed": split_seed,
         "train_ratio": train_ratio,
         "validation_ratio": validation_ratio,
+        "registry_run_count": len(entries),
         "run_count": run_count,
         "scene_seed_count": n_seeds,
         "scene_seeds": seeds,
@@ -235,6 +272,7 @@ def make_splits(
         "train_run_ids": sorted(split_run_ids["train"]),
         "validation_run_ids": sorted(split_run_ids["validation"]),
         "test_run_ids": sorted(split_run_ids["test"]),
+        "rejected_run_ids": rejected_run_ids,
     }
 
     # Cross-validate language-template families if the file is available.

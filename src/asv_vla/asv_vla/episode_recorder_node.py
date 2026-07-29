@@ -72,6 +72,29 @@ class EpisodeRecorderNode(Node):
             .string_value
             .strip()
         )
+        self.collection_slot = (
+            self.declare_parameter("collection_slot", "")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+        self.layout_id = (
+            self.declare_parameter("layout_id", "")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+        self.motion_state = (
+            self.declare_parameter("motion_state", "")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+        self.expected_scene_seed = int(
+            self.declare_parameter("expected_scene_seed", -1)
+            .get_parameter_value()
+            .integer_value
+        )
         self.max_frames = int(
             self.declare_parameter("max_frames", 50)
             .get_parameter_value()
@@ -97,6 +120,16 @@ class EpisodeRecorderNode(Node):
             raise ValueError("max_frames must be positive")
         if self.cache_size < 4:
             raise ValueError("sync_cache_size must be at least 4")
+        collection_values = (
+            self.collection_slot,
+            self.layout_id,
+            self.motion_state,
+        )
+        if any(collection_values) and not all(collection_values):
+            raise ValueError(
+                "collection_slot, layout_id and motion_state must either "
+                "all be set or all be empty"
+            )
 
         self.task_pub = self.create_publisher(String, "/task/text", LATCHED_QOS)
         self.complete_pub = self.create_publisher(
@@ -171,6 +204,14 @@ class EpisodeRecorderNode(Node):
     def _create_episode(self, key: tuple[str, int, int, int]) -> None:
         run_id, scene_seed, _, _ = key
         validate_run_id_path(run_id)
+        if (
+            self.expected_scene_seed >= 0
+            and scene_seed != self.expected_scene_seed
+        ):
+            raise EpisodeError(
+                f"Scene_Seed mismatch: expected "
+                f"{self.expected_scene_seed}, got {scene_seed}"
+            )
         self.output_root.mkdir(parents=True, exist_ok=True)
         episode_dir = self.output_root / run_id
         if episode_dir.exists():
@@ -269,6 +310,9 @@ class EpisodeRecorderNode(Node):
             stamp_values=self.stamp_values,
             status=status,
             execution_mode=self.execution_mode,
+            collection_slot=self.collection_slot,
+            layout_id=self.layout_id,
+            motion_state=self.motion_state,
         )
         manifest["cache_evictions"] = self.cache_evictions
         manifest["invalid_drops"] = self.invalid_drops
