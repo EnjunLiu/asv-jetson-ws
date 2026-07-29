@@ -371,6 +371,17 @@ class SmallTrajectoryPolicy(nn.Module):
             * movement_gate
         )
         trajectory = torch.cumsum(increments, dim=1)
+        # A positive STOP decision is an execution contract, not merely a
+        # request to move less. Keep the continuous gate above for useful
+        # training gradients, then make the published policy output exactly
+        # stationary whenever the classifier selects STOP.
+        movement_selected = (stop_logit < 0.0).view(batch_size, 1, 1)
+        increments = torch.where(
+            movement_selected, increments, torch.zeros_like(increments)
+        )
+        trajectory = torch.where(
+            movement_selected, trajectory, torch.zeros_like(trajectory)
+        )
 
         sample_mask = valid_mask.view(batch_size, 1, 1)
         increments = torch.where(

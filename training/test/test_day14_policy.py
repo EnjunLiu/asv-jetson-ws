@@ -121,7 +121,7 @@ def test_missing_required_modality_fails_closed_without_nan() -> None:
     assert torch.isfinite(output.trajectory).all()
 
 
-def test_stop_logit_continuously_suppresses_trajectory_motion() -> None:
+def test_stop_logit_hard_gates_published_trajectory_motion() -> None:
     torch.manual_seed(29)
     model = SmallTrajectoryPolicy().eval()
     inputs = _inputs(1)
@@ -134,7 +134,8 @@ def test_stop_logit_continuously_suppresses_trajectory_motion() -> None:
     stopped = model(**inputs)
 
     assert torch.max(torch.abs(moving.trajectory)) > 1.0e-3
-    assert torch.max(torch.abs(stopped.trajectory)) < 1.0e-6
+    assert torch.count_nonzero(stopped.increments) == 0
+    assert torch.count_nonzero(stopped.trajectory) == 0
 
 
 def test_active_nan_is_rejected() -> None:
