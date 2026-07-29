@@ -151,6 +151,18 @@ PYTHONPATH=src/asv_vla python3 -m training.feature_cache compare \
   --sample-count 20 --cosine-threshold 0.999
 ```
 
+For the frozen Windows reference paths used by this project, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File `
+  .\tools\day13\run_pc_reference.ps1
+```
+
+The script runs offline, uses the external `.venv-day13`, Qwen and Torch
+checkpoint directories under `pc_datasets`, rebuilds the fixed high-coverage
+`L2_S0_R1` cache on PC CUDA, and compares it against the independently
+generated Jetson cache over 20 frames at the frozen `0.999` threshold.
+
 A missing/corrupt image sets the global visual mask false and every visual
 token to zero. The complete cache gate rejects such a Run; it never fabricates
 a valid policy input.

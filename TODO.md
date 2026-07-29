@@ -89,15 +89,17 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11、Day 12 已完成，下一步进入 Day 13：
+Day 11–13 已完成，下一步进入 Day 14：
 
-1. PR #14 已合并；Jetson `main` 已同步到 `408318c`，Day 11 分支已删除；
-2. Day 12 的 L1–L4 × 3 个 Run 已全部自动采集，集合质量门为 `12/12`；
-3. 12 个 Run 均已生成监督数据、打包迁移 PC 并核对 SHA-256；
-4. registry 为 12 个合格 Run，固定 split 为 `8/2/2`，
-   `training_ready=true`；
-5. 下一步只做 Day 13：在 PC 缓存冻结特征，并验证视觉、语言和 Jetson/PC
-   特征一致性；不要继续盲目增加采集量。
+1. PR #16 已合并；PC 与 Jetson `main` 已同步到 `3e8b979`，Day 12
+   分支已删除；
+2. Day 12 的 12 个 Run 已全部迁移 PC，registry/split 为
+   `12 Runs / 8/2/2 / training_ready=true`；
+3. Day 13 冻结 cache、每实体视觉 token、颜色防泄漏、cache miss 和
+   无图像 fail closed 均已实现；
+4. 同一 L2 Run 已由 Jetson CUDA 与 PC RTX 5060 CUDA 独立重算，
+   20 帧最小余弦 `0.999994539 >= 0.999`；
+5. 下一步只做 Day 14 的小型单轨迹融合策略，不继续盲目补采或扩大模型。
 
 Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 13–16，
 再根据 held-out 与干预测试结果决定是否补采。
@@ -182,7 +184,7 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
 | Day 12 | 已完成 | 自动采集与迁移 12/12；registry/split 为 12 Runs、8/2/2，training_ready=true |
-| Day 13 | 进行中 | 真实 Qwen+MobileNet CUDA cache 已通过；待独立 PC CUDA 重算与 20 帧一致性 |
+| Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
 | Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
@@ -366,9 +368,26 @@ Day 12 已满足最小训练基线；不要立即扩到 30 Run。先完成 Day 1
   均为 100/100 帧至少一个实体可投影；L1 静态 Run 仅 1/100。
   出界实体严格保持 mask=false/token=0，不伪造视觉特征；固定 20 帧
   跨机一致性选择高覆盖的 `L2_S0_R1`
-- Day 13 尚未关闭：Windows/WSL 进程桥当前报
-  `UtilBindVsockAnyPort`，因此独立 PC CUDA 重算和余弦 `>=0.999`
-  仍待完成，不能用 Jetson 迁移包自比冒充跨机验收
+- Windows interop 问题已定位为 Codex 网络沙箱而非 WSL 损坏；受控
+  PowerShell 在沙箱外正常运行，无需再次重启 WSL
+- PC Day 13 环境已固定在外部数据目录 `.venv-day13`：Windows 11、
+  Python 3.13.5、RTX 5060、PyTorch 2.8.0+cu129、torchvision
+  0.23.0+cu129；sentence-transformers/transformers/tokenizers 与
+  Jetson 对齐为 `4.1.0 / 4.51.3 / 0.21.1`
+- Qwen 与 MobileNet checkpoint 已从 Jetson 迁移 PC，原始文件
+  SHA-256 分别为
+  `0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd`
+  和
+  `047dcff4addef86ea5bc2eff13c9614dc11f47ab1160d0a71a25e7db994f4e1f`
+- PC RTX 5060 已独立重算 `L2_S0_R1`；PC/Jetson manifest 的 cache key
+  同为
+  `30df3953d78462353417000600a53b764e848d9155e6e7b3a878d0e94695f55e`，
+  language/visual 权重指纹也完全一致
+- 固定 20 帧跨机一致性最终通过：
+  language 最小余弦 `0.9999945388`、global visual `0.9999994874`、
+  entity visual `0.9999994225`，总门槛 `>=0.999`
+- `DAY13_FEATURE_CACHE_PASS` 与 `DAY13_CONSISTENCY_PASS` 均已获得真实
+  PC/Jetson 证据；Day 13 全部通过条件已关闭，可以进入 Day 14
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
