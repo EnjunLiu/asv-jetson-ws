@@ -25,6 +25,9 @@ from typing import Any
 
 REGISTRY_SCHEMA_VERSION = "dataset_registry_v1"
 _EXPECTED_EXECUTION_MODES = {
+    # Read-only compatibility for Day 8/10 manifests created before the
+    # recorder renamed this mode to observation_only.
+    "static",
     "observation_only",
     "ue5_kinematic_expert_v1",
     "legacy_thruster",

@@ -177,3 +177,22 @@ def test_registry_requires_day12_metadata_and_twelve_runs(
     assert report["eligible_run_count"] == 1
     assert report["training_ready"] is False
     assert report["minimum_runs_for_training"] == 12
+
+
+def test_registry_reads_legacy_static_pilot_but_does_not_count_it(
+    tmp_path: Path,
+) -> None:
+    episode, _ = _make_run(tmp_path)
+    manifest_path = episode / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["execution_mode"] = "static"
+    manifest.pop("collection")
+    _write(manifest_path, manifest)
+
+    registry = tmp_path / "registry" / "legacy.jsonl"
+    report = build_registry(tmp_path, registry)
+    entry = json.loads(registry.read_text(encoding="utf-8"))
+
+    assert entry["execution_mode"] == "static"
+    assert entry["training_eligible"] is False
+    assert report["eligible_run_count"] == 0
