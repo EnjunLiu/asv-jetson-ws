@@ -119,8 +119,10 @@ def _resolve_device(name: str) -> torch.device:
 def _validate_config(config: Mapping[str, Any]) -> None:
     if config.get("schema_version") != CONFIG_SCHEMA_VERSION:
         raise ValueError("Day 16 configuration schema mismatch")
-    if int(config.get("expected_run_count", 0)) not in (8, 30):
-        raise ValueError("Day 16 requires either the frozen 30-Run set or 8-Run holdout")
+    if int(config.get("expected_run_count", 0)) not in (2, 8, 30):
+        raise ValueError(
+            "Day 16 requires the frozen 30-Run set or a 2/8-Run holdout"
+        )
     seeds = tuple(int(seed) for seed in config.get("seeds", ()))
     if seeds != (17, 23, 42):
         raise ValueError("Day 16 requires frozen seeds [17, 23, 42]")

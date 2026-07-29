@@ -175,6 +175,20 @@ def test_repository_extended_plan_inherits_twelve_and_reaches_thirty() -> None:
     assert counts == {"L1": 8, "L2": 8, "L3": 7, "L4": 7}
 
 
+def test_day16_color_swap_plan_holds_ego_with_stop_rollout() -> None:
+    plan_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "day16_color_swap_plan_v1.json"
+    )
+    plan = load_plan(plan_path)
+
+    assert plan["rollout_action"] == "stop"
+    assert plan["minimum_complete_runs"] == 2
+    assert [slot["layout_id"] for slot in plan["slots"]] == ["L3", "L4"]
+    assert {slot["scene_seed"] for slot in plan["slots"]} == {161301, 161401}
+
+
 def test_collection_plan_inheritance_cycle_is_rejected(
     tmp_path: Path,
 ) -> None:

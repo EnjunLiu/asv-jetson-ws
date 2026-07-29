@@ -77,14 +77,18 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $layout = [string]$next.layout_id
     $motion = [string]$next.motion_state
     $seed = [int]$next.scene_seed
-    Write-Host "DAY12_BATCH_SLOT slot=$slot layout=$layout motion=$motion scene_seed=$seed"
+    $rolloutAction = [string]$next.rollout_action
+    if (-not $rolloutAction) {
+        $rolloutAction = "follow"
+    }
+    Write-Host "DAY12_BATCH_SLOT slot=$slot layout=$layout motion=$motion scene_seed=$seed rollout_action=$rolloutAction"
 
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $remoteStdout = Join-Path $env:TEMP "day12-$slot-$stamp.stdout.log"
     $remoteStderr = Join-Path $env:TEMP "day12-$slot-$stamp.stderr.log"
     $ueStdout = Join-Path $env:TEMP "day12-$slot-$stamp.ue.stdout.log"
     $ueStderr = Join-Path $env:TEMP "day12-$slot-$stamp.ue.stderr.log"
-    $remoteCommand = "cd '$RemoteRepo' && bash scripts/day12_remote_collect.sh '$slot' '$layout' '$motion' '$seed' '$RemotePlan'"
+    $remoteCommand = "cd '$RemoteRepo' && bash scripts/day12_remote_collect.sh '$slot' '$layout' '$motion' '$seed' '$RemotePlan' '$rolloutAction'"
 
     $remoteProcess = Start-Process $sshExe `
         -ArgumentList @(

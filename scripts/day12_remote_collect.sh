@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 4 || $# -gt 5 ]]; then
-  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH]" >&2
+if [[ $# -lt 4 || $# -gt 6 ]]; then
+  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION]" >&2
   exit 2
 fi
 
@@ -11,6 +11,7 @@ layout_id=$2
 motion_state=$3
 scene_seed=$4
 collection_plan=${5:-training/config/day12_collection_plan_v1.json}
+rollout_action=${6:-follow}
 
 [[ $slot_id =~ ^L[1-9]_S[01]_R[1-9][0-9]*$ ]] || {
   echo "DAY12_REMOTE_FAIL invalid slot_id=$slot_id" >&2
@@ -26,6 +27,10 @@ collection_plan=${5:-training/config/day12_collection_plan_v1.json}
 }
 [[ $scene_seed =~ ^[0-9]+$ ]] || {
   echo "DAY12_REMOTE_FAIL invalid scene_seed=$scene_seed" >&2
+  exit 2
+}
+[[ $rollout_action == follow || $rollout_action == stop ]] || {
+  echo "DAY12_REMOTE_FAIL invalid rollout_action=$rollout_action" >&2
   exit 2
 }
 
@@ -66,13 +71,14 @@ if ss -ltnH 'sport = :8080' | grep -q .; then
   exit 1
 fi
 
-echo "DAY12_REMOTE_START slot=$slot_id layout=$layout_id motion=$motion_state scene_seed=$scene_seed"
+echo "DAY12_REMOTE_START slot=$slot_id layout=$layout_id motion=$motion_state scene_seed=$scene_seed rollout_action=$rollout_action"
 
 setsid env PYTHONUNBUFFERED=1 ros2 launch asv_bringup day12_collect.launch.py \
   slot_id:="$slot_id" \
   layout_id:="$layout_id" \
   motion_state:="$motion_state" \
   scene_seed:="$scene_seed" \
+  action:="$rollout_action" \
   >"$launch_log" 2>&1 &
 launch_pid=$!
 
