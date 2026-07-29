@@ -100,6 +100,11 @@ class EpisodeRecorderNode(Node):
             .get_parameter_value()
             .integer_value
         )
+        self.exit_on_complete = bool(
+            self.declare_parameter("exit_on_complete", False)
+            .get_parameter_value()
+            .bool_value
+        )
         self.cache_size = int(
             self.declare_parameter("sync_cache_size", 64)
             .get_parameter_value()
@@ -338,6 +343,16 @@ class EpisodeRecorderNode(Node):
             f"frames={report['frame_count']} gaps={report['frame_gaps']} "
             f"quality_pass={report['passed']}"
         )
+        if complete.data and self.exit_on_complete:
+            self.get_logger().info(
+                "DAY8_RECORDER_EXIT requested after successful recording"
+            )
+            self.create_timer(0.25, self._shutdown_after_complete)
+
+    @staticmethod
+    def _shutdown_after_complete() -> None:
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def destroy_node(self) -> bool:
         if not self.finalized:

@@ -81,6 +81,10 @@ def load_plan(path: Path) -> dict[str, Any]:
         motion_state = str(slot.get("motion_state", "")).strip()
         if not all((slot_id, layout_id, motion_state)):
             raise ValueError(f"slot[{index}] has incomplete identity")
+        if motion_state not in {"S0", "S1"}:
+            raise ValueError(
+                f"slot {slot_id} has unsupported motion_state={motion_state!r}"
+            )
         if slot_id in slot_ids:
             raise ValueError(f"duplicate slot_id: {slot_id}")
         slot_ids.add(slot_id)
@@ -188,6 +192,31 @@ def _position(entity: dict[str, Any]) -> tuple[float, float]:
     return x_value, y_value
 
 
+def _velocity(entity: dict[str, Any]) -> tuple[float, float]:
+    values = entity.get("relative_velocity_mps")
+    if not isinstance(values, list) or len(values) < 2:
+        raise ValueError("entity has no planar relative_velocity_mps")
+    x_value = float(values[0])
+    y_value = float(values[1])
+    if not math.isfinite(x_value) or not math.isfinite(y_value):
+        raise ValueError("entity velocity is not finite")
+    return x_value, y_value
+
+
+def _has_distinct_target_motion(
+    entities: dict[str, dict[str, Any]],
+    required_ids: set[str],
+    minimum_difference_mps: float,
+) -> bool:
+    velocities = [_velocity(entities[entity_id]) for entity_id in required_ids]
+    return any(
+        math.hypot(first[0] - second[0], first[1] - second[1])
+        >= minimum_difference_mps
+        for index, first in enumerate(velocities)
+        for second in velocities[index + 1 :]
+    )
+
+
 def _relation_passes(
     relation: list[str],
     entities: dict[str, dict[str, Any]],
@@ -288,6 +317,12 @@ def validate_slot(
     complete_entity_frames = 0
     relation_evaluated_frames = 0
     relation_window = int(plan.get("relation_evaluation_frames", 10))
+    motion_evaluated_frames = 0
+    motion_pass_frames = 0
+    motion_window = int(plan.get("motion_evaluation_frames", 50))
+    minimum_velocity_difference = float(
+        plan.get("minimum_pairwise_velocity_difference_mps", 0.03)
+    )
     frame_paths = sorted((episode_dir / "frames").glob("*.json"))
     for frame_path in frame_paths:
         try:
@@ -320,6 +355,17 @@ def validate_slot(
                     if _relation_passes(relation, entities, margin_m):
                         relation_counts[index] += 1
                 relation_evaluated_frames += 1
+            if (
+                slot["motion_state"] == "S1"
+                and motion_evaluated_frames < motion_window
+            ):
+                if _has_distinct_target_motion(
+                    entities,
+                    required_ids,
+                    minimum_velocity_difference,
+                ):
+                    motion_pass_frames += 1
+                motion_evaluated_frames += 1
         except (OSError, ValueError, TypeError) as exc:
             errors.append(f"{frame_path.name}: {exc}")
 
@@ -342,6 +388,23 @@ def validate_slot(
                 f"required >= {minimum_fraction:.3f}"
             )
 
+    motion_fraction: float | None = None
+    if slot["motion_state"] == "S1":
+        motion_fraction = (
+            motion_pass_frames / motion_evaluated_frames
+            if motion_evaluated_frames
+            else 0.0
+        )
+        minimum_motion_fraction = float(
+            plan.get("minimum_motion_pass_fraction", 0.6)
+        )
+        if motion_fraction < minimum_motion_fraction:
+            errors.append(
+                "distinct target motion passed "
+                f"{motion_fraction:.3f}, "
+                f"required >= {minimum_motion_fraction:.3f}"
+            )
+
     return {
         "slot_id": slot["slot_id"],
         "run_id": manifest.get("run_id"),
@@ -350,6 +413,8 @@ def validate_slot(
         "complete_entity_frame_count": complete_entity_frames,
         "relation_evaluated_frame_count": relation_evaluated_frames,
         "relation_pass_fractions": relation_fractions,
+        "motion_evaluated_frame_count": motion_evaluated_frames,
+        "motion_pass_fraction": motion_fraction,
         "passed": not errors,
         "errors": errors,
     }
@@ -416,6 +481,11 @@ def main() -> int:
         default=Path("training/config/day12_collection_plan_v1.json"),
     )
     parser.add_argument("--report", type=Path, default=None)
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the next slot as one machine-readable JSON object",
+    )
     args = parser.parse_args()
 
     try:
@@ -438,16 +508,34 @@ def main() -> int:
     ]
     if args.command == "next":
         if not pending:
-            print("DAY12_NEXT: all planned slots have passed")
+            if args.json:
+                print(json.dumps({"complete": True}, sort_keys=True))
+            else:
+                print("DAY12_NEXT: all planned slots have passed")
         else:
             slot = pending[0]
-            print(
-                f"DAY12_NEXT slot={slot['slot_id']} "
-                f"layout={slot['layout_id']} "
-                f"motion={slot['motion_state']} "
-                f"scene_seed={slot['scene_seed']}"
-            )
-            print(_slot_command(slot))
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "complete": False,
+                            "slot_id": slot["slot_id"],
+                            "layout_id": slot["layout_id"],
+                            "motion_state": slot["motion_state"],
+                            "scene_seed": slot["scene_seed"],
+                            "launch_command": _slot_command(slot),
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    f"DAY12_NEXT slot={slot['slot_id']} "
+                    f"layout={slot['layout_id']} "
+                    f"motion={slot['motion_state']} "
+                    f"scene_seed={slot['scene_seed']}"
+                )
+                print(_slot_command(slot))
         return 0
 
     marker = (

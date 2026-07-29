@@ -13,6 +13,9 @@
   "relation_margin_m": 0.25,
   "relation_evaluation_frames": 1,
   "minimum_relation_pass_fraction": 1.0,
+  "motion_evaluation_frames": 50,
+  "minimum_motion_pass_fraction": 0.6,
+  "minimum_pairwise_velocity_difference_mps": 0.03,
   "slots": [
     {
       "slot_id": "L1_S0_R1",
@@ -35,9 +38,9 @@
       ]
     },
     {
-      "slot_id": "L1_S0_R3",
+      "slot_id": "L1_S1_R3",
       "layout_id": "L1",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120103,
       "relations": [
         ["nearer", "target_red", "target_blue"],
@@ -55,9 +58,9 @@
       ]
     },
     {
-      "slot_id": "L2_S0_R2",
+      "slot_id": "L2_S1_R2",
       "layout_id": "L2",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120202,
       "relations": [
         ["nearer", "target_blue", "target_red"],
@@ -65,9 +68,9 @@
       ]
     },
     {
-      "slot_id": "L2_S0_R3",
+      "slot_id": "L2_S1_R3",
       "layout_id": "L2",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120203,
       "relations": [
         ["nearer", "target_blue", "target_red"],
@@ -85,9 +88,9 @@
       ]
     },
     {
-      "slot_id": "L3_S0_R2",
+      "slot_id": "L3_S1_R2",
       "layout_id": "L3",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120302,
       "relations": [
         ["left_of", "target_red", "target_blue"],
@@ -95,9 +98,9 @@
       ]
     },
     {
-      "slot_id": "L3_S0_R3",
+      "slot_id": "L3_S1_R3",
       "layout_id": "L3",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120303,
       "relations": [
         ["left_of", "target_red", "target_blue"],
@@ -115,9 +118,9 @@
       ]
     },
     {
-      "slot_id": "L4_S0_R2",
+      "slot_id": "L4_S1_R2",
       "layout_id": "L4",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120402,
       "relations": [
         ["left_of", "target_blue", "target_red"],
@@ -125,9 +128,9 @@
       ]
     },
     {
-      "slot_id": "L4_S0_R3",
+      "slot_id": "L4_S1_R3",
       "layout_id": "L4",
-      "motion_state": "S0",
+      "motion_state": "S1",
       "scene_seed": 120403,
       "relations": [
         ["left_of", "target_blue", "target_red"],

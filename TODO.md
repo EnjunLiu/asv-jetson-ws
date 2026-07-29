@@ -298,6 +298,18 @@ Day 11 已完成，Day 12 已开始：
   `day12_L1_S0_R2_1BB38BD848FB042EDFAD2CB9E65BF092.tar.gz`，
   Jetson/PC SHA-256 均为
   `5a5c4d5cfae932c03fb0c15976233790399b465c81ab07b35e00fd9d750e3b5b`
+- Day 12 自动化重构（待 live 采集验收）：UE5 `EDGEEditor` 已完成真实
+  UHT/C++ 编译；命令行 `-game -RenderOffscreen` 干跑能够自动找到
+  `BP_ASV_C`、`Connection_C` 和四个目标，在 BeginPlay 前写入
+  Scene Seed，并输出 `DAY12_UE_READY`
+- 自动化计划改为 5 个 S0 + 7 个 S1；现有 L1 两个 S0 Run 保留，其余
+  场景由 Seed 施加确定性位置扰动，S1 直接检查记录中不同目标的速度差
+- recorder 完成后主动退出并关闭整套 Day 12 launch；Jetson 单槽脚本
+  自动生成监督数据、运行全部 gate、打包并输出 SHA-256；Windows
+  PowerShell 编排器负责 UE 启停、SCP 和连续槽位
+- PC 回归：`src/asv_vla/test + training/test` 为 105 passed、1 skipped；
+  UE 命令行干跑：slot `L1_S1_R3`、Scene Seed `120103`，10 秒后按安全
+  上限自动退出；尚需 Jetson 部署和首个端到端自动 Run 才能宣称完成
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
@@ -1210,40 +1222,33 @@ Day 11B 通过条件：
 - 四个目标 ID 唯一、持续可见、`is_target=true`；
 - 颜色和位置按布局变化，不能只移动 Actor 但仍复用同一位置变量。
 
-Day 12 默认使用专家运动学 rollout，底层控制器不参与。Jetson 单 Run
-只启动一个 launch，由它同时独占 TCP bridge、专家、运动学执行器和
-recorder，避免第二个 bridge 抢占 8080：
+Day 12 默认使用专家运动学 rollout，底层控制器不参与。推荐使用 PC
+一键编排器；它会自动查询槽位、启动 Jetson、等待 ready、命令行启动
+UE5、完成 100 帧后停止 UE、执行全部 gate、打包、SCP 并验证哈希：
 
-```bash
-cd ~/jetson_asv_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+```powershell
+# 采下一个槽位
+powershell -ExecutionPolicy Bypass -File `
+  .\tools\ue5_day12\collect_day12.ps1
 
-# 先查询下一个未完成槽位及命令
-python3 -m training.day12_collection next --data-root .
-
-# 示例：先启动 Jetson，看到 listening/RECORDER_READY 后再 Play
-ros2 launch asv_bringup day12_collect.launch.py \
-  slot_id:=L1_S0_R1 layout_id:=L1 motion_state:=S0 scene_seed:=120101
+# 首次端到端验收通过后，连续采完所有剩余槽位
+powershell -ExecutionPolicy Bypass -File `
+  .\tools\ue5_day12\collect_day12.ps1 -Count 0
 ```
 
-录满后停止当前 launch，再校验和生成监督数据：
+手工方式仅用于诊断。Jetson 单 Run 仍只允许一个 launch，由它同时
+独占 TCP bridge、专家、运动学执行器和 recorder，避免第二个 bridge
+抢占 8080：
 
 ```bash
 cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-ros2 run asv_vla evaluate_episode \
-  artifacts/day8_episode/<RUN_ID> --min-frames 80
+python3 -m training.day12_collection next --data-root .
 
-ros2 run asv_vla build_supervised_dataset \
-  --episode artifacts/day8_episode/<RUN_ID> \
-  --instructions dataset/language/instructions.jsonl \
-  --output artifacts/day10_supervised/<RUN_ID>
-
-ros2 run asv_vla evaluate_supervised_dataset \
-  artifacts/day10_supervised/<RUN_ID> --require-all-labels
+ros2 launch asv_bringup day12_collect.launch.py \
+  slot_id:=L1_S1_R3 layout_id:=L1 motion_state:=S1 scene_seed:=120103
 ```
 
 每个 Run 通过后立刻打包、复制 PC 并核对 SHA-256。不要等 12 个 Run
