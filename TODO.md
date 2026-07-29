@@ -178,7 +178,7 @@ Day 11 已完成，Day 12 已开始：
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
 | Day 11 | 已完成 | 11A UE5 运动学执行 live 验收通过；11B PC registry/split 代码+tests 已 push |
-| Day 12 | 进行中 | L1_S0_R1 已通过；真实合格 Run 为 1/12 |
+| Day 12 | 进行中 | L1_S0_R1、L1_S0_R2 已通过；真实合格 Run 为 2/12 |
 | Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
 | Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
 | Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
@@ -286,6 +286,18 @@ Day 11 已完成，Day 12 已开始：
 - 首个 PC 迁移包：`day12_L1_S0_R1_E5BEEC4C4620383F4647A58381581C64.tar.gz`，
   Jetson/PC SHA-256 均为
   `db8c402a34764787eff203a6cecdc1d2d6e7aec0d8dda63abbcd4b87b4169094`
+- Day 12 第二个真实 Run：slot `L1_S0_R2`，Run ID
+  `1BB38BD848FB042EDFAD2CB9E65BF092`，Scene Seed `120102`，
+  Frame Index `0–99`，100 帧、0 缺口，episode 质量门通过
+- 第二个 Run 监督数据：9000 样本、100 帧、90/90 指令、9/9 标签；
+  几何门通过，`DAY12_COLLECTION_INCOMPLETE passed=2/12`
+- 当前 registry：6 个可读 Run、350 帧、25000 样本，其中 Day 12
+  合格 Run 为 2 个；按 Scene Seed 分组后的 split 为 train/val/test
+  `1/1/0`，因此 `training_ready=false` 符合预期
+- 第二个 PC 迁移包：
+  `day12_L1_S0_R2_1BB38BD848FB042EDFAD2CB9E65BF092.tar.gz`，
+  Jetson/PC SHA-256 均为
+  `5a5c4d5cfae932c03fb0c15976233790399b465c81ab07b35e00fd9d750e3b5b`
 
 ## 2.5 Day 11 完成交接（2026-07-29）
 
