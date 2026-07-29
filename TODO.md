@@ -1,12 +1,91 @@
-# Jetson 无人船 VLA：21 天执行计划
+# 无人船 VLA：Day 1–21 执行与交接总蓝图
 
-更新日期：2026-07-28
-目标平台：Jetson Orin Nano 8 GB、ROS 2 Humble
+更新日期：2026-07-29
+采集/部署平台：Jetson Orin Nano 8 GB、ROS 2 Humble
+数据/训练平台：Windows PC 独立训练目录
 当前研究范围：FOLLOW、STOP、UE5 仿真、单条二维轨迹、确定性安全回退
 
-本文件是 Jetson 端唯一的执行计划和验收清单，必须纳入 Git
-版本控制。UE5 蓝图由用户单独研究和实现；本计划只定义 Jetson
-需要接收的数据契约，不修改或假设具体蓝图实现。
+本文件是项目唯一的执行计划、验收清单和接管入口，必须纳入 Git
+版本控制。UE5 蓝图由用户单独研究和实现；Jetson 负责采集、回放和
+部署；PC 负责数据汇总、特征缓存、训练和离线评价。
+
+## 0. 先看这里：现在不是白做，也不能现在就训练
+
+### 0.1 当前到底完成了什么
+
+Day 10 的 1 个 Run、50 个真实帧和 4500 条语言配对样本证明了：
+
+- UE5 的图像、本船状态和四目标实体能被 Jetson 同步接收；
+- 每帧都能用完整 Run/Scene/Frame/Timestamp 身份追踪；
+- 90 条语言指令能覆盖 9 种 FOLLOW/STOP 标签；
+- 专家轨迹可以逐值重算，源图片或 JSON 被修改后会被哈希门拒绝；
+- 数据能打包迁移到 PC，Jetson 和 PC 包的 SHA-256 一致。
+
+这叫“数据管线已验证”，不叫“训练数据已经足够”。禁止用这个单 Run
+训练后宣称泛化，也禁止把 4500 条高度相关的配对记录当成 4500 个独立
+场景。
+
+### 0.2 为什么项目仍然可行
+
+本项目不从零训练语言模型或视觉骨干。Qwen 语言编码器和 MobileNet
+视觉骨干保持冻结，只训练一个小型融合轨迹头；监督目标又来自确定性
+专家，而不是开放世界人工标注。因此最终演示需要的是几十个经过设计的
+独立 UE5 Run，而不是百万级互联网数据。
+
+数据量分为三档：
+
+| 档位 | 独立 Run | 每 Run 帧数 | 用途 | 允许的结论 |
+| --- | ---: | ---: | --- | --- |
+| 管线 pilot | 1 | 50 | 验证记录、标签、哈希和迁移 | 只能说数据链打通 |
+| 最小工程基线 | 12 | 100 | 调通 PC 特征、训练、评估和闭环 | 可做项目演示，不声称强泛化 |
+| 最终推荐规模 | 30 | 100–200 | 严格 Run 切分、颜色换位和动态场景 | 可报告 UE5 范围内的 held-out 结果 |
+
+每帧可与 9 种任务标签和对应语言改写配对。训练加载器不能把同一帧的
+10 条同义句当作 10 个独立视觉样本；应按
+`(frame_key, task_label)` 分组，每个 epoch 从当前 split 的同义句中抽取
+一条。12 个 Run × 100 帧 × 9 标签约为 10800 个逻辑监督样本；
+30 个 Run 对应约 27000 个逻辑监督样本。
+
+### 0.3 最终要交付什么
+
+最终项目不是“大模型自动驾驶”，而是一个边界清楚、可解释、可复现的
+UE5 无人船 VLA 原型：
+
+```text
+自然语言 + 图像 + 实体几何 + 本船状态
+                    |
+                    v
+       冻结编码器 + 小型学习策略
+                    |
+                    v
+          单条 20x2 二维轨迹
+                    |
+                    v
+          确定性轨迹安全门
+                    |
+                    v
+          desired_x / desired_y
+                    |
+                    v
+           现有控制器 / ESP32
+```
+
+最终必须能在未进入训练集的 UE5 Run 中演示：跟随红/蓝/左/右目标、
+保持 3 m 或 10 m、执行 STOP、拒绝危险轨迹、断流后安全回退。上层始终
+不输出左右推进器命令。
+
+### 0.4 路线图合并后先做什么
+
+不要一上来采 30 个 Run，也不要立即训练。下一阶段只做 Day 11：
+
+1. 确认本路线图 PR 已合并；
+2. 在 PC 新建干净 checkout 和外部数据目录；
+3. 记录 PC 的 GPU、驱动、Python 和 PyTorch 环境；
+4. 解压并校验现有 pilot；
+5. 实现 registry 和 Run-level split 测试；
+6. 看到 `training_ready=false` 是正确结果，不是失败。
+
+Day 11 通过后再开始 Day 12 的 12 Run 最小采集。一次只推进一个 gate。
 
 ## 1. 结论与固定边界
 
@@ -61,8 +140,8 @@
 
 ## 2. 当前状态
 
-基线提交：`f273d07`
-工作分支：`feature/day10-supervised-dataset`
+基线提交：`3748164`
+工作分支：`docs/day11-21-roadmap`
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -76,7 +155,17 @@
 | Day 8 | 已完成 | 50 帧真实 UE5 episode、质量门和全模态 ROS 回放通过 |
 | Day 9 | 已完成 | FOLLOW/STOP 专家、9 种标签、独立 ROS 话题和 fail-closed probe 通过 |
 | Day 10 | 已完成 | 真实四目标 50 帧、4500 个样本、90 条指令和 9/9 标签通过 |
-| Day 11–21 | 未开始 | 不以 stub、空文件或下载完成冒充实现完成 |
+| Day 11 | 未开始 | PC 环境、数据注册表、按 Run 切分和防泄漏测试 |
+| Day 12 | 未开始 | 12 Run 最小集；30 Run 为最终推荐集 |
+| Day 13 | 未开始 | 冻结特征缓存、每实体视觉 token 和 PC/Jetson 一致性 |
+| Day 14 | 未开始 | 小型单轨迹融合策略、shape/梯度/约束单元测试 |
+| Day 15 | 未开始 | 三 seed 训练、基线比较、checkpoint 和曲线 |
+| Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
+| Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
+| Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
+| Day 19 | 未开始 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
+| Day 20 | 未开始 | ONNX/Jetson 部署、2 Hz、故障注入和 30 分钟压力 |
+| Day 21 | 未开始 | README、模型卡、演示视频、已知问题、最终 tag |
 
 当前设备快照（2026-07-28）：
 
@@ -304,18 +393,18 @@ Day 4 以后每一天都必须满足“输入明确、输出可提交、验收�
 | 7 | 任务实体张量 | N 上限、mask、目标/风险实体保留规则 | 坐标变换和 Top-K 单元测试通过 |
 | 8 | 首次完整数据回放 | 一段合成/UE5 episode 和质量报告 | 全模态同步回放，无 shape/NaN 错误，仍安全停止 |
 | 9 | FOLLOW/STOP 专家 | 确定性专家轨迹生成器 | STOP、3/10 m、红/蓝或左右目标产生正确标签 |
-| 10 | 批量采集入口 | recorder、episode manifest、失败日志 | scene_seed 可追踪；原始图像与结构数据都保留 |
-| 11 | 数据切分与缓存 | 固定 split、语言/视觉缓存、哈希 | 无 scene_seed 泄漏；在线/缓存特征一致 |
-| 12 | 单轨迹策略 | 轻量融合模型、参数报告、前后向测试 | `[B,20,2]`、无 NaN；冻结骨干无梯度 |
-| 13 | 第一版训练 | checkpoint、配置、曲线、固定 seed | 验证 ADE/FDE 改善；STOP 不持续前进 |
-| 14 | 离线语言/视觉干预 | 干预轨迹、held-out 指标、失败清单 | 换语言能改变目标/距离/停止；去视觉有可解释退化 |
-| 15 | 轨迹安全门 | 单一最终发布者、硬约束、状态机、测试 | 碰撞/超限/超时必拒绝；日志给出明确原因 |
-| 16 | 轨迹控制桥 | safe trajectory→`desired_x/y` 滚动执行 | 只执行前 0.2–0.5 s；旧 ESP32 边界不变 |
-| 17 | UE5 闭环 | 独立 VLA launch、60 s 日志 | 至少 3 个 scene_seed 不发散；断流进入回退 |
-| 18 | Jetson 部署 | ONNX/TensorRT 或 PyTorch 混合部署、benchmark | 策略至少 2 Hz；无 OOM；engine 在目标机生成 |
-| 19 | 定向修复 | grounding/视觉/坐标失败的最小修复 | 至少解决一个高频失败；STOP 和安全测试不退化 |
-| 20 | 压力与演示 | 30 min tegrastats、故障注入、演示脚本 | 无持续 OOM；所有故障进入预期状态 |
-| 21 | 缓冲与归档 | 已知问题、最终 tag、复现说明 | 不增加新架构；他人可按 README 完成回放/仿真 |
+| 10 | 可复现监督样本 | 真实四目标 episode、builder、validator | 50 帧、4500 配对、90 指令、9/9 标签通过 |
+| 11 | PC 数据基座 | 新鲜 checkout、注册表、group split、采样器 | pilot 校验通过；Run 和语言模板无泄漏 |
+| 12 | 设计性采集 | 12 Run 最小集，30 Run 推荐集 | 每 Run 单独质量门；颜色/位置相关性被打破 |
+| 13 | 特征与视觉 grounding | cache v1、每实体 crop token、特权字段屏蔽 | PC/Jetson 特征相似；颜色不能从实体真值泄漏 |
+| 14 | 单轨迹策略 | 小型融合模型、参数报告、前后向测试 | `[B,20,2]`、无 NaN；冻结骨干无梯度 |
+| 15 | 第一版训练 | 三 seed checkpoint、配置、曲线、基线 | held-out 指标优于零/均值基线；STOP 不前进 |
+| 16 | 干预与消融 | 语言/视觉/实体干预、失败清单 | 红蓝换位仍正确；去掉任一关键模态指标退化 |
+| 17 | 轨迹安全门 | 唯一最终发布者、硬约束、状态机 | 碰撞/超限/超时必拒绝；原因可追踪 |
+| 18 | 轨迹控制桥 | safe trajectory→`desired_x/y` 滚动执行 | 只执行短前缀；ESP32 边界不变 |
+| 19 | UE5 闭环 | 独立 VLA launch、held-out 场景日志 | 3 个未见 seed 不发散；断流进入回退 |
+| 20 | Jetson 部署与压力 | ONNX、benchmark、故障注入、30 min 日志 | 至少 2 Hz、无 OOM、所有故障状态正确 |
+| 21 | 归档与演示 | README、模型卡、视频、tag、已知问题 | 他人能复现；不夸大成实船或开放世界结果 |
 
 ### Day 6：视觉编码最小实现
 
@@ -727,36 +816,826 @@ PC 接收后先核对 SHA-256，再解压到 PC 训练仓库根目录。PC 必�
 不得开始特征预计算或训练。模型在 PC 导出 ONNX 后回传 Jetson，Jetson
 再做数值一致性、至少 2 Hz、内存和 30 分钟稳定性验证。
 
-## 6. UE5 与 Jetson 分工
+## 6. Day 11–21 详细执行路线
+
+### Day 11：PC 数据基座、注册表和严格切分
+
+#### 目标
+
+建立一个干净的 PC 训练 checkout 和外部数据根目录。Day 11 不训练，
+只保证同一份数据在 PC 可校验、可索引、可按 Run 分组，且不会发生
+训练/验证/测试泄漏。
+
+PC 推荐目录：
+
+```text
+C:\Users\LIU\Documents\asv_vla_pc\
+├── repo\                         # Git checkout，只放代码
+└── data\                         # 永不进入 Git
+    ├── incoming\                 # Jetson 原始 tar.gz
+    ├── extracted\                # 保留原相对路径的数据
+    ├── registry\                 # Run 注册表和 split
+    ├── features\                 # Day 13 特征缓存
+    ├── checkpoints\              # Day 15 模型
+    └── reports\                  # 指标、曲线和失败案例
+```
+
+不要使用已有的脏 checkout 覆盖数据。新建 checkout：
+
+```powershell
+cd C:\Users\LIU\Documents
+git clone https://github.com/EnjunLiu/asv-jetson-ws.git asv_vla_pc\repo
+cd asv_vla_pc\repo
+git switch main
+git pull --ff-only origin main
+git status --short --branch
+
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install pytest jsonschema pillow numpy pyyaml
+```
+
+PC PyTorch 安装必须先记录硬件：
+
+```powershell
+nvidia-smi
+python --version
+```
+
+有 NVIDIA GPU 时按 PyTorch 官方与本机驱动匹配的命令安装；没有 GPU
+时先使用 CPU。不要把 PC 的 PyTorch wheel 复制到 Jetson，也不要修改
+Jetson 的 NVIDIA PyTorch。
+
+把已经迁移到 PC 的 pilot 复制到外部数据目录并验证：
+
+```powershell
+cd C:\Users\LIU\Documents\asv_vla_pc
+New-Item -ItemType Directory -Force data\incoming | Out-Null
+New-Item -ItemType Directory -Force data\extracted\pilot | Out-Null
+Copy-Item `
+  C:\Users\LIU\Documents\jetson_ws\pc_datasets\day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz `
+  data\incoming\
+
+tar -xzf `
+  data\incoming\day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz `
+  -C data\extracted\pilot
+
+$env:PYTHONPATH = "C:\Users\LIU\Documents\asv_vla_pc\repo\src\asv_vla"
+python -c `
+  "from asv_vla.supervised_dataset import evaluate_main; raise SystemExit(evaluate_main())" `
+  data\extracted\pilot\artifacts\day10_supervised\A1D7BAAE49F39E3BB7B1808AB8443CA9 `
+  --require-all-labels
+```
+
+Day 11 应新增：
+
+- `training/dataset_registry.py`：扫描多个 episode 和 supervision
+  manifest，生成 `dataset_registry_v1.jsonl`；
+- `training/make_group_splits.py`：只按 Run ID/Scene Seed 分组；
+- `training/config/dataset_v1.yaml`：数据根、帧步长和 split seed；
+- `training/test/test_group_splits.py`：验证 Run、Scene Seed、Frame
+  和语言模板都不泄漏；
+- `training/README.md`：PC 命令和目录约定。
+
+切分规则：
+
+1. 同一 Run 的所有帧只能属于一个 split。
+2. 同一 Scene Seed 默认只能属于一个 split。
+3. 训练、验证、测试使用各自的 Day 3 语言模板族。
+4. Primary test 同时 hold out Run 和语言模板。
+5. pilot 只有一个 Run，注册表必须输出 `training_ready=false`。
+
+Day 11 通过条件：
+
+- PC 打印 `DAY11_PC_PILOT_PASS`；
+- pilot SHA-256 和 Day 10 记录一致；
+- split 测试能主动拒绝同一 Run 出现在两个 split；
+- 没有数据、特征或 checkpoint 被 Git 跟踪；
+- 保存 PC OS、Python、GPU、驱动、PyTorch 版本到报告。
+
+### Day 12：设计性采集，而不是盲目堆帧
+
+#### 为什么还需要采集
+
+当前 pilot 中红船位置、蓝船位置和颜色是固定绑定的。若直接训练，模型
+可能用“近处就是红船”这种位置捷径，而不是看图识别颜色。Day 12 的重点
+不是总帧数，而是打破颜色、位置、距离、速度和背景之间的相关性。
+
+#### 最小与推荐采集矩阵
+
+最小工程基线：4 种布局 × 每布局 3 个独立 Scene Seed = 12 Runs。
+
+最终推荐规模：5 种布局 × 每布局 3 个独立 Scene Seed ×
+2 种运动状态 = 30 Runs。
+
+建议布局：
+
+| 布局 | 红/蓝设置 | 左/右设置 | 目的 |
+| --- | --- | --- | --- |
+| L1 | 红近、蓝远 | 左右等距 | 基准 |
+| L2 | 红远、蓝近 | 左右等距 | 打破颜色-深度相关 |
+| L3 | 红偏左死区内、蓝偏右死区内 | 左右深度不同 | 打破颜色-像素位置相关 |
+| L4 | 红蓝交换世界位置 | 左右交换远近 | 强颜色换位 |
+| L5 | 增加非目标船或轻度遮挡 | 仍保持四目标可追踪 | 测试干扰与视觉鲁棒性 |
+
+运动状态：
+
+- S0：四个目标静止或恒定低速；
+- S1：至少两个目标具有不同的有限恒速。
+
+每个 Run：
+
+- 新 Run ID；
+- 每个 Run 使用不同 Scene Seed，不能所有 Run 都为 `12345`；
+- 先通信预检一帧，再正式记录；
+- 记录 100 帧，约 10 秒；
+- 四个目标 ID 唯一、持续可见、`is_target=true`；
+- 颜色和位置按布局变化，不能只移动 Actor 但仍复用同一位置变量。
+
+Jetson 单 Run 流程：
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+# 先轻量预检，确认坐标
+ros2 launch asv_bringup communication_only.launch.py
+
+# 停止预检后再正式记录
+ros2 launch asv_bringup day8_record.launch.py \
+  task_text:="day12 counterbalanced multimodal scene" max_frames:=100
+
+ros2 run asv_vla evaluate_episode \
+  artifacts/day8_episode/<RUN_ID> --min-frames 80
+
+ros2 run asv_vla build_supervised_dataset \
+  --episode artifacts/day8_episode/<RUN_ID> \
+  --instructions dataset/language/instructions.jsonl \
+  --output artifacts/day10_supervised/<RUN_ID>
+
+ros2 run asv_vla evaluate_supervised_dataset \
+  artifacts/day10_supervised/<RUN_ID> --require-all-labels
+```
+
+每个 Run 通过后立刻打包、复制 PC 并核对 SHA-256。不要等 12 个 Run
+全部录完才检查。失败 Run 保留失败日志，但不进入训练注册表。
+
+Day 12 通过条件：
+
+- 最低 12 个合格独立 Run；推荐最终达到 30 个；
+- 每 Run 至少 80 个完整帧、9/9 标签、90/90 指令；
+- 12 Run 初始 split 固定为 8/2/2；30 Run 固定为 18/6/6；
+- 红/蓝在不同 Run 中至少完成一次位置互换；
+- 至少 3 个不同 Scene Seed；
+- 数据注册表 `training_ready=true`；
+- 不把同一 Run 的相邻帧分散到多个 split。
+
+### Day 13：冻结特征缓存与真正的视觉 grounding
+
+#### 必须先解决的防伪问题
+
+当前任务实体张量包含 `color_red/color_blue` 真值。若策略直接读取这两个
+维度，它不看图片也能选择红/蓝目标。这样的高分不能证明视觉参与。
+
+固定边界：
+
+- UE5 的 `color` 保留，用于离线专家生成和质量检查；
+- 在线学习策略输入必须把实体特征第 14、15 维颜色真值清零；
+- `entity_id` 只用于跨模态对齐，不作为可学习语义输入；
+- 不允许把 Day 3 的 `action/target_attribute/distance_bucket` 直接输入
+  在线策略；
+- 在线策略只能收到自然语言 embedding、图像特征、去特权实体几何和
+  本船状态。
+
+Day 6 的“全局 + 单目标 crop”不足以区分四个并存目标。Day 13 应增加
+每实体视觉 token：
+
+```text
+global_visual_token: [576]
+entity_visual_tokens: [16,576]
+entity_visual_mask: [16]
+entity_ids: [16]  # 仅对齐，不进入神经网络
+```
+
+每个可见实体使用 Day 4 相机参数把三维中心投影到图像，再取固定
+`224x224` crop；仍不需要 bbox。视觉 token 顺序必须与 Day 7
+`TaskFeatures.entity_ids` 对齐。投影出界、隐藏、无效或图片损坏时，对应
+mask=false、token 全零。
+
+PC 特征缓存 `feature_cache_v1`：
+
+```text
+features/<RUN_ID>/
+├── manifest.json
+├── language.npz        # 90x256，每条指令只算一次
+├── frames_000.npz      # 按 Run 分片
+└── quality_report.json
+```
+
+每个 frame 缓存：
+
+- global visual `[576]`；
+- per-entity visual `[16,576]` 和 mask；
+- 去除颜色特权后的 entity tensor `[16,16]`；
+- ego `[surge_velocity_mps, yaw_rate_radps]` 及有效性；
+- expert trajectory `[20,2]`；
+- 完整 frame key、源哈希、模型权重哈希和预处理版本。
+
+缓存 key 必须包含：
+
+```text
+source_frame_sha256
+image_sha256
+language_model_id + weights_sha256
+visual_model_id + weights_sha256
+preprocess_version
+feature_schema_version
+git_sha
+```
+
+PC/Jetson 一致性不要求 bitwise 相等，但固定 20 个样本必须 shape 相同、
+数值有限，语言/视觉特征余弦相似度初始门槛为 `>=0.999`。若实测浮点
+差异更大，先记录证据再调整容差，不能静默放宽。
+
+Day 13 通过条件：
+
+- `DAY13_FEATURE_CACHE_PASS`；
+- 所有缓存可从源数据重建，修改权重或预处理版本会 cache miss；
+- 实体颜色维度在 policy input 中始终为零；
+- 每实体视觉 token 与 entity ID/mask 对齐；
+- 至少 20 个样本通过 PC/Jetson 特征一致性；
+- 无图像时整个学习策略输入无效，不伪造有效视觉。
+
+无 NVIDIA PC GPU 的降级：
+
+1. 语言只对 90 条文本编码一次；
+2. 视觉特征可在 Jetson 分批预计算后迁移 PC；
+3. PC 只训练小型融合头；
+4. 不因算力不足删除视觉模态或改用实体颜色真值。
+
+### Day 14：小型单轨迹融合策略
+
+#### 输入与输出
+
+输入：
+
+- language embedding `[256]`；
+- global visual `[576]`；
+- entity visual `[16,576]` + mask；
+- entity geometry `[16,16]` + mask，颜色维度已清零；
+- ego `[2]`；
+- 所有模态有效性和完整 frame key。
+
+输出：
+
+- `delta_p_xy [B,20,2]`；
+- `stop_logit [B,1]`；
+- 不输出候选轨迹、候选分数、世界模型状态或推进器命令。
+
+推荐第一版模型，不超过约 2 M 可训练参数：
+
+```text
+language 256 -> MLP -> 128
+global visual 576 -> Linear -> 128
+entity visual 576 -> shared MLP -> 128
+entity geometry 16 -> shared MLP -> 64
+entity visual+geometry -> masked attention/pooling -> 192
+ego 2 -> MLP -> 32
+concat -> MLP 256 -> MLP 256
+trajectory head -> 20x2 bounded increments
+stop head -> 1 logit
+```
+
+轨迹头预测每 0.2 s 的增量，经 `tanh` 限制到最大步长，再 `cumsum`
+得到累计位移。这样速度上限由结构保证，而不是只靠训练损失。
+
+初始损失：
+
+```text
+L = 1.0 * SmoothL1(all waypoints)
+  + 0.5 * SmoothL1(endpoint)
+  + 0.2 * BCE(stop_logit)
+  + 0.05 * trajectory_smoothness
+```
+
+损失权重只能依据 validation 调整，test 集永远不能用于调参。
+
+Day 14 应新增：
+
+- `training/model.py`
+- `training/dataset.py`
+- `training/losses.py`
+- `training/config/model_small_v1.yaml`
+- shape、mask、NaN、梯度和冻结参数测试
+
+Day 14 通过条件：
+
+- 打印 `DAY14_POLICY_CONTRACT_PASS`；
+- batch size 1、2、8 均输出 `[B,20,2]`；
+- 任意 invalid mask 不产生 NaN；
+- 冻结语言/视觉骨干无梯度；
+- policy input 不含结构化任务标签和实体颜色真值；
+- 同一输入、同一 seed 重复前向一致；
+- 参数量、checkpoint 大小和峰值内存写入报告。
+
+### Day 15：PC 第一版训练和基线
+
+训练只使用 train Run 和 train 语言模板。每个 epoch 对同一个
+`(frame_key, task_label)` 随机选择一条 train 同义句，避免同义句复制
+主导梯度。帧可使用 `frame_stride=2–5` 降低相邻帧相关性。
+
+固定三个训练 seed：
+
+```text
+17, 23, 42
+```
+
+必须比较：
+
+1. 全零 STOP baseline；
+2. 每标签训练集均值轨迹 baseline；
+3. entity-only baseline，颜色维度仍清零；
+4. 完整 language+vision+entity+ego policy；
+5. 确定性 expert 只作为标签上界，不作为学习结果。
+
+每次训练保存：
+
+```text
+checkpoints/<experiment_id>/
+├── config.yaml
+├── dataset_manifest.json
+├── environment.json
+├── metrics.json
+├── train.csv
+├── curves.png
+├── best.pt
+└── last.pt
+```
+
+记录 Git SHA、数据哈希、cache 哈希、seed、epoch、batch size、优化器、
+学习率、训练时间和峰值显存。checkpoint 不进入 Git。
+
+主要指标：
+
+- ADE：20 步平均欧氏误差；
+- FDE：第 20 步终点误差；
+- STOP drift：STOP 轨迹最大位移；
+- stop classification precision/recall；
+- 红/蓝/左/右/3 m/10 m 各标签指标；
+- 速度约束违规率；
+- NaN/invalid 计数。
+
+Day 15 初始通过条件：
+
+- 三个 seed 都能完整训练和复现；
+- held-out validation/test ADE、FDE 至少比“每标签均值轨迹”基线改善
+  30%，否则不得进入闭环；
+- 95% 以上 STOP 样本最大位移不超过 0.10 m；
+- stop F1 不低于 0.95；
+- 速度结构约束违规率为 0；
+- 三 seed 的 test ADE 标准差被报告，不只展示最好 seed；
+- 无 NaN、OOM 或数据泄漏。
+
+若 12 Run 无法通过，先扩充到 30 Run 并检查颜色/位置相关性，不扩大
+模型。若完整模型不优于简单 baseline，优先检查数据、mask、特权泄漏和
+特征对齐。
+
+### Day 16：语言、视觉和实体干预证明
+
+这是项目能否诚实称为 VLA 的关键日。仅仅把三种特征拼接进网络不算
+多模态证据。
+
+必须进行同一 observation 下的语言干预：
+
+- red ↔ blue；
+- left ↔ right；
+- 3 m ↔ 10 m；
+- FOLLOW ↔ STOP；
+- 中文未见模板或英文同义表达。
+
+必须进行视觉/实体干预：
+
+- 在 UE5 held-out Run 中交换红蓝颜色但尽量保持几何位置；
+- 遮挡或替换某一个实体 crop；
+- 将图像特征置零；
+- 将 entity geometry 置零；
+- 打乱 per-entity visual token 与 entity ID 的对齐；
+- 保持图像不变只改语言，保持语言不变只换颜色位置。
+
+报告至少包含：
+
+```text
+reports/day16/
+├── metrics_by_label.csv
+├── intervention_pairs.csv
+├── ablation_summary.json
+├── failure_cases.jsonl
+└── trajectory_plots/
+```
+
+Day 16 通过条件：
+
+- 24 个 Day 3 对比对在 held-out Run 上产生正确方向的轨迹变化；
+- 红蓝位置互换后仍按颜色而不是固定坐标选择目标；
+- 去掉语言、视觉或实体任一关键模态，相关子任务指标出现可解释退化；
+- 完整模型优于 entity-only 且 entity-only 无颜色真值；
+- 无图像或对齐错误时 fail closed，而不是输出高置信有效轨迹；
+- 所有失败按 grounding、视觉、几何、STOP、越界分类。
+
+若完整模型与“无视觉”模型几乎相同，禁止声称视觉 grounding 完成。
+此时保留 deterministic expert 和数据管线成果，把学习策略描述为
+“language-conditioned trajectory imitation”，并回到 Day 12/13 修复
+颜色换位数据或每实体 crop。
+
+### Day 17：确定性轨迹安全门
+
+学习策略发布建议话题：
+
+```text
+/vla/policy_trajectory
+```
+
+安全门是 `/vla/selected_trajectory` 的唯一发布者。专家标签节点仍只
+发布 `/vla/expert_trajectory`，两者均不能直接控制 ESP32。
+
+安全门检查顺序：
+
+1. 模态 valid、完整 frame key 和新鲜度；
+2. shape、frame、dt、horizon、NaN/Inf；
+3. 单步速度、总位移、曲率和控制可实现性；
+4. 用实体相对速度进行常速度占据外推；
+5. 轨迹与动态占据的最小距离；
+6. STOP、软拒绝、硬 E-STOP 状态机；
+7. 发布原因码和可复现日志。
+
+建议原因码：
+
+```text
+PASS
+POLICY_STOP
+STALE_INPUT
+INVALID_MODALITY
+INVALID_SHAPE
+NONFINITE
+SPEED_LIMIT
+CURVATURE_LIMIT
+COLLISION_RISK
+CONTROL_UNREACHABLE
+ESTOP
+```
+
+无健康 ego 状态时不能生成“有效慢停”，必须输出 invalid 零命令。
+健康状态下可生成确定性减速轨迹，但不能把零位移 `valid=true` 当通用
+回退。
+
+Day 17 通过条件：
+
+- `DAY17_SAFETY_GATE_PASS`；
+- `/vla/selected_trajectory` 运行时只有一个 publisher；
+- 每个原因码都有单元测试或 ROS probe；
+- 静态与运动障碍碰撞轨迹必拒绝；
+- stale、NaN、shape 错误和模型异常必 fail closed；
+- 通过轨迹不被数值改变，拒绝轨迹具有确定性结果；
+- 不产生 `DecisionOutput`、wrench 或推进器副作用。
+
+### Day 18：安全轨迹到二维控制边界
+
+控制桥只消费 `/vla/selected_trajectory`。每次重规划只执行前
+`0.2–0.5 s` 的短前缀，然后等待新轨迹，不能一次盲目执行 4 s。
+
+输出仍是：
+
+```text
+DecisionOutput.desired_x
+DecisionOutput.desired_y
+DecisionOutput.valid
+```
+
+禁止学习策略、安全门或控制桥发布左右推进器值。现有 control manager、
+allocator 和 ESP32 保持独立。
+
+控制桥必须处理：
+
+- 正常 FOLLOW 前缀；
+- STOP；
+- 安全门拒绝；
+- ego 超时；
+- 轨迹超时；
+- 重规划中断；
+- legacy/vla 模式切换；
+- 重复 frame key。
+
+Day 18 通过条件：
+
+- `DAY18_TRAJECTORY_CONTROLLER_PASS`；
+- 只执行最新安全轨迹的短前缀；
+- safe_stop/invalid 产生 `DecisionOutput.valid=false`；
+- `desired_x/y` 有限、在控制边界内；
+- 旧 ESP32 消息与控制器接口无修改；
+- Day 1 的 invalid-zero-wrench/thruster 回归仍通过。
+
+### Day 19：UE5 学习策略闭环
+
+新增独立 `vla_full_system.launch.py`，明确：
+
+```text
+mode:=legacy  # 旧正式路径
+mode:=vla     # 学习策略 + 安全门 + 轨迹控制桥
+```
+
+两个模式不能同时发布共享控制话题。smoke、formal、vla launch 不能
+并行运行。
+
+正式闭环场景至少包括：
+
+1. follow red 3 m；
+2. follow blue 10 m；
+3. follow left 3 m；
+4. follow right 10 m；
+5. FOLLOW 中途切换 STOP；
+6. 红蓝位置互换；
+7. 数据断流；
+8. 人工注入不安全轨迹。
+
+必须使用未进入训练集的至少 3 个 Scene Seed，每个任务连续运行
+60 s。记录目标选择、距离误差、轨迹、安全门原因、控制输出和连接状态。
+
+Day 19 通过条件：
+
+- `DAY19_UE5_CLOSED_LOOP_PASS`；
+- 目标选择与指令一致；
+- FOLLOW 不持续发散，距离误差统计完整；
+- STOP 后不继续向目标前进；
+- 断流和不安全轨迹进入预期回退；
+- 没有重复 publisher；
+- 不把 UE5 仿真结果描述成真实感知或实船海试。
+
+若学习策略闭环不稳定，保留离线 checkpoint 和失败日志，使用
+deterministic expert 做系统对照，不允许绕过安全门直接演示。
+
+### Day 20：ONNX、Jetson 部署和压力测试
+
+PC 导出：
+
+```text
+best.pt -> policy.onnx
+```
+
+ONNX 输入必须包含固定 shape 和 mask。导出报告保存 opset、PyTorch
+版本、checkpoint SHA-256、ONNX SHA-256 和测试向量。
+
+先在 PC 对 100 个固定样本比较 PyTorch/ONNX：
+
+- shape 完全相同；
+- 无 NaN/Inf；
+- 轨迹最大绝对误差和余弦相似度写入报告；
+- STOP 分类一致。
+
+Jetson 先用 ONNX Runtime 或兼容 PyTorch 路径验证，再决定是否构建
+TensorRT。TensorRT engine 必须在目标 Jetson 生成，不从 PC 复制 engine。
+如果 TensorRT 转换耗时过高但 PyTorch/ONNX 已达到 2 Hz，TensorRT 可降
+为 P2 优化，不阻塞最终演示。
+
+资源测试：
+
+```bash
+tegrastats
+free -h
+ros2 topic hz /vla/policy_trajectory
+```
+
+故障注入：
+
+- 图像空包/损坏；
+- entity NaN 或重复 ID；
+- language embedding invalid；
+- ego 超时；
+- UE5 断开和重新连接；
+- policy 推理异常；
+- 安全门碰撞拒绝；
+- ESP32/下游反馈超时。
+
+Day 20 通过条件：
+
+- Jetson 策略端到端至少 2 Hz；
+- 连续 30 分钟无 OOM、无持续内存增长；
+- 温度、功耗、RAM、GPU 利用率和最大延迟有日志；
+- PC PyTorch、PC ONNX、Jetson 输出在冻结容差内一致；
+- 每个故障进入预期状态并产生原因码；
+- 重连后不复用过期轨迹。
+
+### Day 21：归档、演示和最终边界
+
+不再增加架构。只修复阻塞复现、演示或安全的缺陷。
+
+最终仓库应包含：
+
+- 完整 README 快速开始；
+- `TODO.md` 全部状态和证据；
+- 接口与架构图；
+- PC 数据/训练说明；
+- 模型卡：数据、指标、限制和伦理边界；
+- 数据清单及哈希，不包含原始大文件；
+- checkpoint/ONNX 下载位置和 SHA-256，不提交二进制；
+- held-out 指标、干预、消融和失败案例；
+- Jetson benchmark 与 30 分钟日志摘要；
+- 3–5 分钟演示脚本和视频；
+- `KNOWN_ISSUES.md`；
+- 最终 Git tag，例如 `v0.1.0-ue5-demo`。
+
+最终演示顺序：
+
+1. 展示 Jetson 先监听、UE5 后 Play；
+2. 红/蓝颜色换位并切换语言；
+3. 3 m/10 m 距离切换；
+4. FOLLOW 切换 STOP；
+5. 注入危险轨迹，由安全门拒绝；
+6. 断开 UE5，系统 fail closed；
+7. 展示日志、指标和模型限制。
+
+Day 21 通过条件：
+
+- 新环境能按 README 校验一个数据包并完成离线推理；
+- Jetson 能按单一 launch 完成 UE5 闭环；
+- commit、tag、配置、数据哈希、模型哈希和日志互相可追踪；
+- README 明确只在 UE5 仿真验证；
+- 不声称开放世界、多船避障、真实视觉泛化或实船海试；
+- 已知失败不隐藏，无法通过的 DoD 标记为未完成。
+
+## 7. 优先级、降级路线和停止规则
+
+### P0：必须完成
+
+- 12 Run 最小数据集及严格 split；
+- 小型策略优于简单 baseline；
+- STOP、FOLLOW 和语言干预；
+- 唯一安全门；
+- `desired_x/y` 控制边界；
+- UE5 held-out 闭环；
+- fail-closed 和复现文档。
+
+### P1：让“VLA”说法可信
+
+- 30 Run 推荐数据集；
+- 颜色/位置换位；
+- 每实体视觉 token；
+- 实体颜色真值对 policy 屏蔽；
+- 视觉、语言和实体消融；
+- 三 seed 统计。
+
+### P2：有时间再做
+
+- TensorRT 极致优化；
+- 更复杂遮挡和非目标船；
+- 精美 UI、视频剪辑和自动报告；
+- 更多语言和场景。
+
+明确不做：
+
+- 六候选轨迹；
+- 候选评分器；
+- 学习型世界模型；
+- 端到端推进器输出；
+- 大规模在线强化学习；
+- 用系统 ID/固定位置偷学颜色；
+- 在 test 集调参；
+- 为追指标绕过安全门。
+
+停止/回退规则：
+
+1. 12 Run 后训练不优于 baseline：先查泄漏、对齐和数据，再扩到 30 Run；
+   不先扩大模型。
+2. 去图像后指标不变：不能声称视觉 grounding；回 Day 12/13。
+3. PC 无 GPU：Jetson/CPU 预计算冻结特征，PC 只训练小头。
+4. Jetson OOM：减 batch、缓存和融合头宽度，不删除模态或安全接口。
+5. ONNX/TensorRT 不稳定：保留达到 2 Hz 的 PyTorch/ONNX 路径。
+6. 学习闭环不稳定：expert 作为对照，学习策略保持离线，不绕过安全门。
+7. 时间不足：完成 P0 并诚实缩小结论，不同时开新研究方向。
+
+## 8. DeepSeek 或其他 Agent 接管清单
+
+新 Agent 必须先读：
+
+1. `TODO.md`
+2. `docs/interfaces.md`
+3. `README.md`
+4. PR #12 及之后的 PR
+5. 当前 Jetson 和 PC 的 `git status --short --branch`
+
+已知真值：
+
+- GitHub：`EnjunLiu/asv-jetson-ws`
+- Jetson checkout：`/home/jetson/jetson_asv_ws`
+- Day 10 合并基线：`3748164`
+- Day 10 pilot Run ID：
+  `A1D7BAAE49F39E3BB7B1808AB8443CA9`
+- pilot 数据包 SHA-256：
+  `621b96dae5791dd1965e7acefe80891dfd7d39579a84971526a29306962eccd4`
+- PC pilot 包：
+  `C:\Users\LIU\Documents\jetson_ws\pc_datasets\`
+  `day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz`
+
+接管后第一组命令：
+
+```bash
+# Jetson
+cd /home/jetson/jetson_asv_ws
+git switch main
+git pull --ff-only origin main
+git status --short --branch
+git log -5 --oneline
+```
+
+```powershell
+# PC
+cd C:\Users\LIU\Documents\asv_vla_pc\repo
+git switch main
+git pull --ff-only origin main
+git status --short --branch
+```
+
+Agent 不得假设：
+
+- Windows 旧 checkout 是干净或最新的；
+- 静态测试等于 Jetson ROS 实测；
+- `latest` 符号链接永远指向目标 Run；
+- 4500 配对等于 4500 个独立场景；
+- 图像被拼进模型就等于模型使用了图像；
+- 有效零位移等于通用安全停止；
+- 模型下载完成等于策略集成完成。
+
+每个 Day 使用完整 Git 流程：
+
+```text
+同步干净 main
+-> feature branch
+-> 最小实现
+-> 单元测试
+-> PC/Jetson 对应运行证据
+-> git diff --check
+-> 明确暂存文件
+-> commit/push
+-> draft PR
+-> 用户合并
+-> 同步 main 并删除分支
+```
+
+Agent 每次汇报必须区分：
+
+- 已实现；
+- 静态/PC 已验证；
+- Jetson 已验证；
+- UE5 闭环已验证；
+- 尚未验证或失败。
+
+任何密码、令牌、模型私有地址和机器私密配置都不能写入仓库、日志或 PR。
+
+## 9. UE5、Jetson 与 PC 分工
 
 用户负责：
 
 - UE5 蓝图和场景逻辑
 - 从 UE5 发送相机、本船、目标和障碍数据
 - UE5 中执行 Jetson 返回的控制结果
+- 按 Day 12 矩阵改变布局、Scene Seed 和目标运动
+- 审查并合并每个阶段 PR
 
 Jetson 负责：
 
 - 定义和校验接收字段
 - TCP/ROS bridge、时间戳、坐标变换和数据记录
-- 语言、视觉、任务实体、单轨迹策略
+- 实际 ROS 节点、回放、推理、单轨迹策略
 - 轨迹安全门、二维控制边界、ROS 健康状态
 - Jetson 构建、测试、资源和故障证据
 
-在 Day 4 接口冻结前，Jetson 不假定 UE5 已经能发送多实体、bbox 或
-障碍速度；缺失字段必须显式 `valid=false`，不得伪造有效观测。
+PC 负责：
 
-## 7. 最终三周 Definition of Done
+- 数据包接收、SHA-256 和 registry；
+- 按 Run/Scene Seed 切分；
+- 冻结特征预计算；
+- 小型策略训练和三 seed 评估；
+- 图表、报告、checkpoint 和 ONNX 导出；
+- 不在 PC 修改 Jetson 专用 NVIDIA PyTorch 环境。
+
+UE5 不需要 bbox。实体中心通过冻结相机模型投影得到 crop。缺失字段必须
+显式 `valid=false`，不得伪造有效观测。
+
+## 10. 最终 Definition of Done
 
 必须同时满足：
 
 - 新自然语言能被边缘模型编码并缓存。
 - 同一 UE5 场景切换目标、距离或 STOP 时，轨迹有可测变化。
 - 图像和任务实体都进入策略，且有干预证据证明不是摆设。
+- 红蓝换位后策略按视觉颜色而不是固定位置选择目标。
+- 训练、验证、测试 Run ID 和 Scene Seed 无泄漏。
 - 策略直接输出单条 `[20,2]` 二维位移轨迹。
 - 轨迹安全门是唯一最终安全轨迹发布者。
 - 不安全轨迹被拒绝，并进入确定性减速或 E-STOP。
 - 轨迹控制器只向现有边界提供 `desired_x / desired_y`。
+- PC checkpoint、ONNX 和 Jetson 推理在冻结容差内一致。
 - Jetson 策略至少 2 Hz，30 分钟无 OOM。
 - 全过程保存 commit、配置、模型/数据哈希、日志和复现命令。
 - README 明确这是 UE5 仿真结果，不声称真实感知或实船海试完成。
