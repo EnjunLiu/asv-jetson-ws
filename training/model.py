@@ -27,6 +27,7 @@ class SmallPolicyConfig:
     maximum_step_m: float = 0.3
     invalid_stop_logit: float = 20.0
     maximum_trainable_parameters: int = 2_000_000
+    language_conditioned_entity_attention: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "SmallPolicyConfig":
@@ -119,6 +120,15 @@ class SmallTrajectoryPolicy(nn.Module):
             nn.GELU(),
         )
         self.entity_attention = nn.Linear(cfg.entity_hidden, 1)
+        if cfg.language_conditioned_entity_attention:
+            self.entity_language_query: nn.Linear | None = nn.Linear(
+                cfg.language_hidden,
+                cfg.entity_hidden,
+                bias=False,
+            )
+        else:
+            # Keep the Day 14/15 v1 state_dict exactly loadable.
+            self.entity_language_query = None
         self.ego_encoder = _mlp(cfg.ego_dim, cfg.ego_hidden, cfg.ego_hidden)
 
         fusion_input_dim = (
@@ -333,6 +343,11 @@ class SmallTrajectoryPolicy(nn.Module):
         )
 
         attention_score = self.entity_attention(entity_token).squeeze(-1)
+        if self.entity_language_query is not None:
+            language_query = self.entity_language_query(language_token)
+            attention_score = attention_score + torch.sum(
+                entity_token * language_query.unsqueeze(1), dim=-1
+            ) / (cfg.entity_hidden**0.5)
         attention_weight = torch.exp(attention_score.clamp(-20.0, 20.0))
         attention_weight = attention_weight * geometry_entity_mask.to(
             dtype=dtype

@@ -86,6 +86,27 @@ def test_all_entity_masks_false_remains_finite_and_deterministic() -> None:
     assert first.valid_mask.all()
 
 
+def test_v2_entity_attention_is_language_conditioned() -> None:
+    config = SmallPolicyConfig(
+        language_conditioned_entity_attention=True,
+    )
+    model = SmallTrajectoryPolicy(config)
+
+    assert model.entity_language_query is not None
+    assert model.trainable_parameter_count() <= config.maximum_trainable_parameters
+
+    language_a = torch.zeros(2, config.language_hidden)
+    language_b = torch.ones(2, config.language_hidden)
+    entity_tokens = torch.randn(2, config.entity_count, config.entity_hidden)
+    query_a = model.entity_language_query(language_a)
+    query_b = model.entity_language_query(language_b)
+    score_a = torch.sum(entity_tokens * query_a.unsqueeze(1), dim=-1)
+    score_b = torch.sum(entity_tokens * query_b.unsqueeze(1), dim=-1)
+
+    assert torch.count_nonzero(score_a) == 0
+    assert not torch.equal(score_a, score_b)
+
+
 def test_geometry_remains_available_when_entity_visual_is_not_projectable() -> None:
     torch.manual_seed(19)
     model = SmallTrajectoryPolicy().eval()
