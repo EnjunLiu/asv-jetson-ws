@@ -33,6 +33,12 @@ rollout_action=${6:-follow}
   echo "DAY12_REMOTE_FAIL invalid rollout_action=$rollout_action" >&2
   exit 2
 }
+rollout_target_attribute=color:red
+rollout_distance_bucket=3m
+if [[ $rollout_action == stop ]]; then
+  rollout_target_attribute=none
+  rollout_distance_bucket=none
+fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
@@ -79,6 +85,8 @@ setsid env PYTHONUNBUFFERED=1 ros2 launch asv_bringup day12_collect.launch.py \
   motion_state:="$motion_state" \
   scene_seed:="$scene_seed" \
   action:="$rollout_action" \
+  target_attribute:="$rollout_target_attribute" \
+  distance_bucket:="$rollout_distance_bucket" \
   >"$launch_log" 2>&1 &
 launch_pid=$!
 

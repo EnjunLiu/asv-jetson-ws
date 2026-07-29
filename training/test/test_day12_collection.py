@@ -186,7 +186,7 @@ def test_day16_color_swap_plan_holds_ego_with_stop_rollout() -> None:
     assert plan["rollout_action"] == "stop"
     assert plan["minimum_complete_runs"] == 2
     assert [slot["layout_id"] for slot in plan["slots"]] == ["L3", "L4"]
-    assert {slot["scene_seed"] for slot in plan["slots"]} == {161301, 161401}
+    assert {slot["scene_seed"] for slot in plan["slots"]} == {161302, 161402}
 
 
 def test_collection_plan_inheritance_cycle_is_rejected(

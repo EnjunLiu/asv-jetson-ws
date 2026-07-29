@@ -57,6 +57,26 @@ def generate_launch_description():
             "use_sim_time": False,
         }],
     )
+    expert = Node(
+        package="asv_vla",
+        executable="expert_trajectory",
+        name="expert_trajectory",
+        output="screen",
+        parameters=[{
+            "run_id": "day12-expert-kinematic",
+            "action": ParameterValue(action, value_type=str),
+            "target_attribute": ParameterValue(
+                target_attribute, value_type=str
+            ),
+            "distance_bucket": ParameterValue(
+                distance_bucket, value_type=str
+            ),
+            "max_speed_mps": ParameterValue(
+                max_speed_mps, value_type=float
+            ),
+            "use_sim_time": False,
+        }],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("slot_id"),
@@ -99,26 +119,7 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
         ),
-        Node(
-            package="asv_vla",
-            executable="expert_trajectory",
-            name="expert_trajectory",
-            output="screen",
-            parameters=[{
-                "run_id": "day12-expert-kinematic",
-                "action": ParameterValue(action, value_type=str),
-                "target_attribute": ParameterValue(
-                    target_attribute, value_type=str
-                ),
-                "distance_bucket": ParameterValue(
-                    distance_bucket, value_type=str
-                ),
-                "max_speed_mps": ParameterValue(
-                    max_speed_mps, value_type=float
-                ),
-                "use_sim_time": False,
-            }],
-        ),
+        expert,
         Node(
             package="asv_vla",
             executable="expert_kinematic_executor",
@@ -139,6 +140,18 @@ def generate_launch_description():
                     EmitEvent(
                         event=Shutdown(
                             reason="Day 12 recorder process exited"
+                        )
+                    )
+                ],
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=expert,
+                on_exit=[
+                    EmitEvent(
+                        event=Shutdown(
+                            reason="Day 12 expert process exited"
                         )
                     )
                 ],
