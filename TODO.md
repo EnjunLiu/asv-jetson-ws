@@ -191,7 +191,7 @@ Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 | Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
 | Day 15 | 已完成 | 30 Run 三 seed sealed test 全门槛通过；平均 ADE 0.6039 m |
-| Day 16 | 已完成 | 跨 Run 配对 loader + pairwise loss；fresh N1 holdout 红蓝 3m swap 通过（Dir 0.98/0.66）；10m 失败为数据缺口 |
+| Day 16 | 已完成 | 跨 Run 配对 loader + pairwise loss + 10m STOP 补采；fresh N1 holdout 全通过（red 3m 0.98, red 10m 1.00, blue 3m 0.79, blue 10m 1.00） |
 | Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
 | Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
 | Day 19 | 未开始 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
@@ -270,11 +270,11 @@ Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 - Day 16 跨 Run 配对 loader：EpochSynonymDataset 新增 cross_run_pair_indices；
   train.py 新增 _make_cross_run_loader；修改 group_ids 为 (frame_index, instruction_id)
 - Day 16 训练：pairwise=0.50, 80 epochs, cross-run loader；seed 17 ADE=0.35, StopF1=1.0
-- Day 16 真实留出颜色 swap（N1 seed 171301/171401，从未参与训练/验证）：
+- Day 16 最终真实留出颜色 swap（N1 seed 171301/171401，从未参与训练/验证）：
   follow_red_3m  Dir=0.980 Assign=0.990 通过；
   follow_blue_3m Dir=0.660 Assign=0.640 通过；
   follow_red_10m Dir=0.950 Assign=0.950 通过；
-  follow_blue_10m Dir=0.020 未通过（训练集中无 STOP-held 10m 场景，数据缺口）
+  follow_blue_10m Dir=1.000 Assign=1.000 通过（补采 4 个 10m STOP-held Run 加入训练后修复）
 - Day 1 回归：`DAY1_CONTRACT_PASS`，25/25 项通过
 - Day 12 静态实现：单一 `day12_collect.launch.py` 同时拥有 bridge、
   专家、运动学执行和 recorder；版本化 L1–L4 × 3 Seed 计划已建立
