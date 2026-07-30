@@ -1882,6 +1882,92 @@ Day 19 通过条件：
 若学习策略闭环不稳定，保留离线 checkpoint 和失败日志，使用
 deterministic expert 做系统对照，不允许绕过安全门直接演示。
 
+
+### Day 19 实施记录与已知问题（2026-07-30）
+
+#### 已交付
+
+| 文件 | 功能 |
+|------|------|
+| `src/asv_vla/asv_vla/vla_policy_node.py` | 加载 Day 16 checkpoint，订阅 encoder 话题，发布 `/vla/policy_trajectory` |
+| `src/asv_vla/asv_vla/language_stub_node.py` | 发布固定零值 TaskEmbedding，避免加载 Qwen（省 CUDA 内存） |
+| `src/asv_bringup/launch/day19_vla_closed_loop.launch.py` | 7 节点全管道 launch |
+
+#### 已修复的问题
+
+1. **CUDA OOM — VLA policy + Visual encoder 同时占 GPU**
+   - 原因：`SmallTrajectoryPolicy` 默认加载到 CUDA，MobileNet 也需要 CUDA
+   - 修复：`vla_policy_node.py` 中 `device = torch.device("cpu")`
+   - 策略仅 481K 参数，CPU 推理不影响性能
+   - 提交：`cb2920e`
+
+2. **QoS 不匹配 — language_stub 与 vla_policy**
+   - 原因：`language_stub` 使用默认 VOLATILE QoS，`vla_policy` 期望 TRANSIENT_LOCAL
+   - 修复：`language_stub_node.py` 显式声明 `DurabilityPolicy.TRANSIENT_LOCAL`
+   - 提交：`cb2920e`
+
+3. **消息字段名不匹配**
+   - 原因：`vla_policy_node.py` 使用了不存在的字段名（`global_token`、`entity_tokens`）
+   - 实际字段：`VisualFeatures.feature`（扁平数组）、`token_count`、`feature_dim`
+   - 修复：从 `feature` 数组中按 `[0:feature_dim]` 取 global token，`[feature_dim:]` 取 entity tokens
+   - 提交：`3fbb773`
+
+4. **训练模块不在 ROS 路径**
+   - 原因：`vla_policy_node.py` 导入 `training.model`，但 `training/` 不是 ROS 包
+   - 修复：在 `_load_model()` 中动态 `sys.path.insert(0, ~/jetson_asv_ws)`
+   - 提交：`3fbb773`
+
+#### 待解决的问题
+
+1. **`-game` 模式下 UE5 连接不稳定**
+   - 症状：UE5 启动后 `ODLog: Socket Connection State before connect: 0`，但未建立 TCP 连接
+   - 根因分析：在 `-game -RenderOffscreen` 模式下，ObjectDeliverer 插件可能需要
+     窗口/渲染上下文才能正确初始化网络子系统。之前的 Day 12 采集成功过（同一模式），
+     但最近几次尝试都失败。可能是 UE5 项目状态变化或网络时序问题。
+   - 调试建议：
+     - 在 UE5 编辑器中手动 Play 一次，确认 ObjectDeliverer 连接正常
+     - 检查 `Connection_C` Blueprint 中的 IP/Port 变量是否持久化到 `-game` 模式
+     - 尝试不带 `-RenderOffscreen` 启动（需要 Windows 桌面环境）
+     - 在 Jetson 上用 `tcpdump -i any port 8080` 抓包确认是否收到 TCP SYN
+
+2. **Jetson 重启后 `/tmp/` 被清空**
+   - 影响：checkpoint 文件 (`/tmp/best_day16.pt`) 丢失
+   - 解决：将 checkpoint 放到持久路径如 `~/jetson_asv_ws/models/`
+
+3. **Jetson GPU 内存泄漏**
+   - 症状：多次启动 ROS 节点后 CUDA 内存不足，即使 kill 进程也不释放
+   - 解决：`sudo reboot` 是唯一可靠的清理方式
+   - 预防：每次启动前检查 `free -h`，确保 available > 3GB
+
+#### 启动顺序（必守纪律）
+
+```bash
+# 1. Jetson 先启动监听
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source ~/microros_ws/install/setup.bash
+source install/setup.bash
+
+# 确保 checkpoint 存在
+ls /tmp/best_day16.pt || scp user@pc:/path/to/best.pt /tmp/best_day16.pt
+
+# 启动 VLA 全管道
+ros2 launch asv_bringup day19_vla_closed_loop.launch.py   start_ue_bridge:=true use_sim_time:=true   checkpoint_path:=/tmp/best_day16.pt
+
+# 2. 确认就绪后 UE5 再 Play（或自动化脚本启动）
+# 检查标志：grep "loaded" + "ready" + "Listening" 均出现在日志中
+```
+
+#### 当前验收状态
+
+- [x] 7 节点全部启动成功
+- [x] 视觉编码器加载成功（CUDA, MobileNetV3-small）
+- [x] VLA 策略加载成功（CPU, 481K params）
+- [x] 安全门 + 轨迹控制器消息处理正常
+- [ ] UE5 连接（`-game` 模式需进一步调试，编辑器 PIE 模式正常）
+- [ ] 完整闭环 60s 日志
+- [ ] DAY19_UE5_CLOSED_LOOP_PASS
+
 ### Day 20：ONNX、Jetson 部署和压力测试
 
 PC 导出：
