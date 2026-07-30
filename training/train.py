@@ -648,7 +648,12 @@ def _train_one(
                 target_trajectory,
                 target_stop,
                 weights=loss_weights,
-                group_ids=[str(value) for value in batch["frame_key"]],
+                group_ids=[
+                    ":".join(str(fk).split(":")[2:3])
+                    + "_"
+                    + str(batch["instruction_id"][idx])
+                    for idx, fk in enumerate(batch["frame_key"])
+                ],
             )
             losses["total"].backward()
             clip_grad_norm_(model.parameters(), settings.gradient_clip_norm)
