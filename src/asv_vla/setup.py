@@ -74,6 +74,8 @@ setup(
                 "evaluate_supervised_dataset = "
                 "asv_vla.supervised_dataset:evaluate_main"
             ),
+            "safety_gate = asv_vla.safety_gate_node:main",
+            "safety_gate_probe = asv_vla.safety_gate_probe:main",
         ],
     },
 )

@@ -192,7 +192,7 @@ Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 | Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
 | Day 15 | 已完成 | 30 Run 三 seed sealed test 全门槛通过；平均 ADE 0.6039 m |
 | Day 16 | 已完成 | 跨 Run 配对 loader + pairwise loss + 10m STOP 补采；fresh N1 holdout 全通过（red 3m 0.98, red 10m 1.00, blue 3m 0.79, blue 10m 1.00） |
-| Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
+| Day 17 | 已完成 | safety_gate.py (33 tests) + ROS node + probe (6/7); launch 验证通过 |
 | Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
 | Day 19 | 未开始 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
 | Day 20 | 未开始 | ONNX/Jetson 部署、2 Hz、故障注入和 30 分钟压力 |
