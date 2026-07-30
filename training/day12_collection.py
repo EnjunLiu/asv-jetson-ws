@@ -92,6 +92,12 @@ def _load_plan(path: Path, ancestors: set[Path]) -> dict[str, Any]:
     minimum = int(plan.get("minimum_complete_runs", 0))
     if minimum < 1 or len(slots) < minimum:
         raise ValueError("collection plan has fewer slots than its minimum")
+    rollout_action = str(plan.get("rollout_action", "follow")).strip()
+    if rollout_action not in {"follow", "stop"}:
+        raise ValueError(
+            f"unsupported rollout_action={rollout_action!r}; "
+            "expected follow or stop"
+        )
 
     slot_ids: set[str] = set()
     seeds: set[int] = set()
@@ -480,13 +486,17 @@ def evaluate_collection(
     }
 
 
-def _slot_command(slot: dict[str, Any]) -> str:
+def _slot_command(
+    slot: dict[str, Any],
+    rollout_action: str = "follow",
+) -> str:
     return (
         "ros2 launch asv_bringup day12_collect.launch.py "
         f"slot_id:={slot['slot_id']} "
         f"layout_id:={slot['layout_id']} "
         f"motion_state:={slot['motion_state']} "
-        f"scene_seed:={slot['scene_seed']}"
+        f"scene_seed:={slot['scene_seed']} "
+        f"action:={rollout_action}"
     )
 
 
@@ -547,7 +557,13 @@ def main() -> int:
                             "layout_id": slot["layout_id"],
                             "motion_state": slot["motion_state"],
                             "scene_seed": slot["scene_seed"],
-                            "launch_command": _slot_command(slot),
+                            "rollout_action": plan.get(
+                                "rollout_action", "follow"
+                            ),
+                            "launch_command": _slot_command(
+                                slot,
+                                str(plan.get("rollout_action", "follow")),
+                            ),
                         },
                         sort_keys=True,
                     )

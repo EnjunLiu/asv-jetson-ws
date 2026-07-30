@@ -1,0 +1,37 @@
+# Day 16 grounding repair v3: entity selection is exclusively language-query
+# attention.  The unconditioned score cannot dominate and pin one entity.
+
+schema_version: "model_small_v3"
+
+model:
+  language_dim: 256
+  visual_dim: 576
+  entity_count: 16
+  entity_geometry_dim: 16
+  ego_dim: 2
+  horizon: 20
+  action_dim: 2
+  language_hidden: 128
+  visual_hidden: 128
+  entity_geometry_hidden: 64
+  entity_hidden: 192
+  ego_hidden: 32
+  fusion_hidden: 256
+  maximum_step_m: 0.3
+  invalid_stop_logit: 20.0
+  maximum_trainable_parameters: 2000000
+  language_conditioned_entity_attention: true
+  entity_attention_mode: "language_only"
+
+contract:
+  batch_sizes: [1, 2, 8]
+  deterministic_seed: 42
+  checkpoint_format: "pytorch_state_dict"
+  forbidden_policy_fields:
+    - action
+    - target_attribute
+    - distance_bucket
+    - color_red
+    - color_blue
+    - entity_ids
+    - expert_selected_entity_ids

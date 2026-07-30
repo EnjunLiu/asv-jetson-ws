@@ -15,7 +15,10 @@ from training.dataset import (  # noqa: E402
     policy_inputs_from_batch,
 )
 from training.day14_contract import run_contract  # noqa: E402
-from training.losses import trajectory_policy_loss  # noqa: E402
+from training.losses import (  # noqa: E402
+    paired_trajectory_contrastive_loss,
+    trajectory_policy_loss,
+)
 from training.model import SmallPolicyConfig, SmallTrajectoryPolicy  # noqa: E402
 
 
@@ -84,6 +87,59 @@ def test_all_entity_masks_false_remains_finite_and_deterministic() -> None:
     assert torch.isfinite(first.stop_logit).all()
     assert torch.equal(first.trajectory, second.trajectory)
     assert first.valid_mask.all()
+
+
+def test_v2_entity_attention_is_language_conditioned() -> None:
+    config = SmallPolicyConfig(
+        language_conditioned_entity_attention=True,
+    )
+    model = SmallTrajectoryPolicy(config)
+
+    assert model.entity_language_query is not None
+    assert model.trainable_parameter_count() <= config.maximum_trainable_parameters
+
+    language_a = torch.zeros(2, config.language_hidden)
+    language_b = torch.ones(2, config.language_hidden)
+    entity_tokens = torch.randn(2, config.entity_count, config.entity_hidden)
+    query_a = model.entity_language_query(language_a)
+    query_b = model.entity_language_query(language_b)
+    score_a = torch.sum(entity_tokens * query_a.unsqueeze(1), dim=-1)
+    score_b = torch.sum(entity_tokens * query_b.unsqueeze(1), dim=-1)
+
+    assert torch.count_nonzero(score_a) == 0
+    assert not torch.equal(score_a, score_b)
+
+
+def test_language_only_attention_configuration_is_validated() -> None:
+    config = SmallPolicyConfig(
+        language_conditioned_entity_attention=True,
+        entity_attention_mode="language_only",
+    )
+    model = SmallTrajectoryPolicy(config)
+
+    assert model.entity_language_query is not None
+    with pytest.raises(ValueError, match="requires"):
+        SmallPolicyConfig(entity_attention_mode="language_only")
+
+
+def test_pairwise_loss_prefers_expert_direction_and_assignment() -> None:
+    target = torch.zeros(4, 20, 2)
+    target[1, :, 0] = 2.0
+    target[3, :, 1] = -1.0
+    correct = target.clone().requires_grad_(True)
+    swapped = target[[1, 0, 3, 2]].clone().requires_grad_(True)
+    groups = ["frame_a", "frame_a", "frame_b", "frame_b"]
+
+    correct_loss = paired_trajectory_contrastive_loss(
+        correct, target, groups
+    )
+    swapped_loss = paired_trajectory_contrastive_loss(
+        swapped, target, groups
+    )
+
+    assert correct_loss < swapped_loss
+    swapped_loss.backward()
+    assert torch.isfinite(swapped.grad).all()
 
 
 def test_geometry_remains_available_when_entity_visual_is_not_projectable() -> None:

@@ -17,6 +17,7 @@ from training.metrics import (  # noqa: E402
     predict_label_mean_baseline,
 )
 from training.train import (  # noqa: E402
+    _FrameGroupedBatchSampler,
     _acceptance,
     _checkpoint_selection_eligible,
     _checkpoint_selection_eligible_for_modality,
@@ -104,6 +105,18 @@ def test_epoch_synonym_dataset_selects_one_per_frame_label() -> None:
     ]
     assert sum(label.startswith("follow|") for label, _ in groups) == 2
     assert sum(label.startswith("stop|") for label, _ in groups) == 2
+    assert first.frame_group_indices == ((0, 1), (2, 3))
+
+
+def test_frame_grouped_sampler_never_splits_an_observation() -> None:
+    groups = ((0, 1, 2), (3, 4, 5), (6, 7, 8))
+    sampler = _FrameGroupedBatchSampler(groups, batch_size=6, seed=17)
+
+    batches = list(sampler)
+
+    assert sorted(index for batch in batches for index in batch) == list(range(9))
+    for group in groups:
+        assert any(set(group) <= set(batch) for batch in batches)
 
 
 def test_metrics_expert_and_speed_contract() -> None:

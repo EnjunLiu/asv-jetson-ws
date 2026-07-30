@@ -90,17 +90,22 @@ UE5 无人船 VLA 原型：
 
 ### 0.4 路线图合并后先做什么
 
-Day 11–15 已完成，下一步进入 Day 16：
+Day 11–15 已完成；Day 16 已得到真实但未通过的独立留出结果。下一步
+不是进入 Day 17，也不是降低门槛，而是修复颜色 grounding：
 
-1. 等待 `feature/day15-training` PR 合并，同步 PC/Jetson `main` 并删除分支；
-2. 冻结 Day 15 最终配置 `training/config/train_30_v5.yaml`、提交
-   `e93c6ef` 和外部 checkpoint，不再根据 test 调参；
-3. 先在 PC 做同一 observation 的语言替换、图像遮挡/换位、实体 mask
-   和 modality ablation；
-4. 若视觉干预无影响，必须回查 Day 12/13 数据与 grounding，不能直接
-   进入 UE5 闭环；
-5. Day 16 不需要用户修改 UE5；只有需要补充真实颜色换位场景证据时再
-   启动现有无人值守采集。
+1. 保留提交 `d9971e5` 对应的 R14 确认报告，不把 R14 加入训练或再次
+   用于模型选择；
+2. 自动补采一组只供 train/validation 使用的 STOP-held L1–L4
+   counterfactual Run，使本船轨迹不再与目标颜色绑定；
+3. 在训练 batch 中显式配对 L3/L4 同帧红蓝换位，并增加跨场景
+   assignment/direction loss；模型仍不读取实体颜色真值；
+4. 只在新 validation 对上调试；validation 全门槛通过后，再采一对从未
+   打开的 L3/L4 Scene Seed 作为最终一次确认；
+5. 新确认集通过语言、颜色换位、消融、entity-only 和 fail-closed
+   全部门槛后，才能关闭 Day 16 并开始 Day 17。
+
+这一阶段不要求用户手工 Play 或修改蓝图；现有命令行 UE5 自动化已能
+先启动 Jetson、再启动 UE5、采集、校验、打包和迁移。
 
 ## 1. 结论与固定边界
 
@@ -165,9 +170,9 @@ Day 11–15 已完成，下一步进入 Day 16：
 
 ## 2. 当前状态
 
-主线基线：`a8390d9`（PR #18 merge）
-工作分支：`feature/day15-training`
-最终训练提交：`e93c6ef`；当前交接提交以 `git log -1` 为准
+主线基线：`e750319`（PR #19 merge）
+工作分支：`feature/day16-interventions`
+Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 
 | 阶段 | 状态 | 当前证据/缺口 |
 | --- | --- | --- |
@@ -186,7 +191,7 @@ Day 11–15 已完成，下一步进入 Day 16：
 | Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
 | Day 15 | 已完成 | 30 Run 三 seed sealed test 全门槛通过；平均 ADE 0.6039 m |
-| Day 16 | 未开始 | 语言/视觉/实体干预与 held-out Run 评价 |
+| Day 16 | 进行中，严格门未通过 | 消融/fail-closed 通过；独立 stationary 红蓝换位证明颜色 grounding 仍不可靠 |
 | Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
 | Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
 | Day 19 | 未开始 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
@@ -1677,6 +1682,67 @@ Day 16 通过条件：
 此时保留 deterministic expert 和数据管线成果，把学习策略描述为
 “language-conditioned trajectory imitation”，并回到 Day 12/13 修复
 颜色换位数据或每实体 crop。
+
+#### Day 16 当前执行结果（2026-07-29，未通过）
+
+已实现并冻结：
+
+- `training/interventions.py`：24 对同 observation 语言干预、红蓝换位、
+  6 类模态/对齐消融、3 类输入故障 fail-closed 和失败案例/轨迹图；
+- `model_small_v3.yaml`：语言选择实体的 attention，不读取结构化任务
+  标签、实体 ID 或颜色真值；
+- `train_30_v6.yaml`：同 observation 的 9 标签 grouped batch 和成对
+  direction/assignment loss；
+- 三 seed validation 全部通过：ADE 分别为
+  `0.3318 / 0.3869 / 0.3504 m`，STOP F1 均为 `1.0`；
+- entity-only seed42 validation ADE 为 `1.5944 m`，完整模型为
+  `0.3504 m`，完整模型改善约 `78.0%`。
+
+冻结 validation 报告
+`pc_datasets/reports/day16_a7eb7ab_validation_v1` 通过：
+
+- 24 对 × 3 seed = `72/72` 通过；
+- L3/L4 颜色换位 `6/6` 通过；
+- 去语言、去全部视觉、去实体几何的相关 ADE 分别退化约
+  `312.5% / 46.6% / 289.3%`；
+- 输入故障 `9/9` 精确零轨迹并 STOP。
+
+随后没有把 validation 结果冒充最终结论，而是自动采集了 8 个全新
+Scene Seed。一次性报告
+`pc_datasets/reports/day16_84e63bc_fresh_holdout_v1` 的 SHA-256 为
+`5feee98aa3bf7a57e82b1409ca50904d0d692926e9e2537f784e0e1f1427640f`：
+
+- 语言 `72/72`、三类消融和 fail-closed 通过；
+- 颜色换位失败；
+- 追查发现采集 rollout 默认跟随红船，L3/L4 中 32/34 个红色样本的
+  专家轨迹差异仅约 `3e-6`，因此该颜色子夹具被判定为动态混杂，失败
+  报告保留但不作为模型通过/失败的最终颜色证据。
+
+为消除混杂，提交 `7e4680b` 将新 R14 采集改为 STOP：
+
+- expert 节点持续发送有效 `hold_position=true` 零位移，异常退出会使
+  整次 launch 失败；
+- 两 Run 共 200 帧、18000 样本、9/9 标签、0 缺口；
+- 红/蓝 34 个采样帧的最小专家轨迹差异分别为
+  `12.7914 / 14.7737`，颜色换位题目在全程可判定；
+- 数据、split 和 feature manifest SHA-256 分别为
+  `c252d167... / 987fc959... / 267125c6...`。
+
+真正有效的一次性 R14 报告
+`pc_datasets/reports/day16_d9971e5_color_confirmation_v1` 的 SHA-256 为
+`bb6beeeb269b0f53d3a5ed49f495deeb6427393cdc57866a3e9c43775d72e820`，
+结果必须按失败处理：
+
+- 语言干预 `61/72` 通过，未达到 `72/72`；
+- 红色换位 `2/3` seed 通过，蓝色换位 `0/3`，总计 `2/6`；
+- 去语言、去视觉、去实体几何仍分别造成约
+  `197.2% / 13.7% / 218.2%` ADE 退化；
+- fail-closed `9/9` 通过。
+
+因此当前只能说“模型会使用多模态输入”，不能说“颜色 grounding 已
+完成”。R14 已开封，禁止加入训练、调阈值或再次充当最终 test。下一轮
+必须只使用新 train/validation counterfactual Run 修复；修复后再采
+全新 Scene Seed 留出对。Day 16 保持进行中，Day 17 尚未开始。
 
 ### Day 17：确定性轨迹安全门
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw
 import torch
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 import yaml
 
 from training.dataset import (
@@ -304,6 +304,72 @@ def _make_loader(
     )
 
 
+class _FrameGroupedBatchSampler(Sampler[list[int]]):
+    """Shuffle observations while keeping all task labels in one batch."""
+
+    def __init__(
+        self,
+        frame_groups: Sequence[Sequence[int]],
+        *,
+        batch_size: int,
+        seed: int,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self.frame_groups = tuple(tuple(group) for group in frame_groups)
+        if not self.frame_groups or any(not group for group in self.frame_groups):
+            raise ValueError("frame groups must be non-empty")
+        if max(len(group) for group in self.frame_groups) > batch_size:
+            raise ValueError("one frame group exceeds the batch size")
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        self.order = tuple(
+            int(value)
+            for value in torch.randperm(
+                len(self.frame_groups), generator=generator
+            )
+        )
+        batches: list[list[int]] = []
+        current: list[int] = []
+        for frame_index in self.order:
+            group = self.frame_groups[frame_index]
+            if current and len(current) + len(group) > batch_size:
+                batches.append(current)
+                current = []
+            current.extend(group)
+        if current:
+            batches.append(current)
+        self.batches = tuple(tuple(batch) for batch in batches)
+
+    def __iter__(self) -> Iterable[list[int]]:
+        return (list(batch) for batch in self.batches)
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+
+def _make_frame_grouped_loader(
+    dataset: EpochSynonymDataset,
+    *,
+    batch_size: int,
+    seed: int,
+    num_workers: int,
+    device: torch.device,
+) -> DataLoader[Any]:
+    sampler = _FrameGroupedBatchSampler(
+        dataset.frame_group_indices,
+        batch_size=batch_size,
+        seed=seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
+    )
+
+
 def _model_inputs(
     batch: Mapping[str, Any],
     device: torch.device,
@@ -505,6 +571,8 @@ def _train_one(
     if not isinstance(training_config, Mapping):
         raise ValueError("training configuration is missing")
     loss_weights = PolicyLossWeights.from_mapping(train_config.get("loss"))
+    if modality == "entity_only":
+        loss_weights = replace(loss_weights, pairwise=0.0)
     _seed_everything(seed)
     experiment_dir.mkdir(parents=True, exist_ok=False)
     combined_config = {
@@ -547,14 +615,23 @@ def _train_one(
     started = time.perf_counter()
     for epoch in range(settings.epochs):
         train_dataset.set_epoch(epoch)
-        loader = _make_loader(
-            train_dataset,
-            batch_size=settings.batch_size,
-            shuffle=True,
-            seed=seed * 10_000 + epoch,
-            num_workers=settings.num_workers,
-            device=device,
-        )
+        if loss_weights.pairwise > 0.0:
+            loader = _make_frame_grouped_loader(
+                train_dataset,
+                batch_size=settings.batch_size,
+                seed=seed * 10_000 + epoch,
+                num_workers=settings.num_workers,
+                device=device,
+            )
+        else:
+            loader = _make_loader(
+                train_dataset,
+                batch_size=settings.batch_size,
+                shuffle=True,
+                seed=seed * 10_000 + epoch,
+                num_workers=settings.num_workers,
+                device=device,
+            )
         model.train()
         weighted_loss = 0.0
         trained_samples = 0
@@ -571,6 +648,7 @@ def _train_one(
                 target_trajectory,
                 target_stop,
                 weights=loss_weights,
+                group_ids=[str(value) for value in batch["frame_key"]],
             )
             losses["total"].backward()
             clip_grad_norm_(model.parameters(), settings.gradient_clip_norm)
@@ -591,8 +669,16 @@ def _train_one(
             validation_metrics["ade_m"]
             + 0.5 * validation_metrics["fde_m"]
         )
-        selection_eligible = _checkpoint_selection_eligible_for_modality(
-            validation_metrics, training_config, modality
+        minimum_checkpoint_epoch = int(
+            training_config.get("minimum_checkpoint_epoch", 1)
+        )
+        if minimum_checkpoint_epoch <= 0:
+            raise ValueError("minimum_checkpoint_epoch must be positive")
+        selection_eligible = (
+            epoch + 1 >= minimum_checkpoint_epoch
+            and _checkpoint_selection_eligible_for_modality(
+                validation_metrics, training_config, modality
+            )
         )
         history.append(
             {
