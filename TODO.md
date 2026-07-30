@@ -195,7 +195,7 @@ Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 | Day 17 | 已完成 | safety_gate.py (33 tests) + ROS node + probe (6/7); launch 验证通过 |
 | Day 18 | 已完成 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
 | Day 19 | 已完成 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
-| Day 20 | 未开始 | ONNX/Jetson 部署、2 Hz、故障注入和 30 分钟压力 |
+| Day 20 | 已完成 | ONNX/Jetson 部署、2 Hz、故障注入和 30 分钟压力 |
 | Day 21 | 未开始 | README、模型卡、演示视频、已知问题、最终 tag |
 
 当前设备快照（2026-07-28）：
