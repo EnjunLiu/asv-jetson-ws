@@ -534,6 +534,18 @@ class EpochSynonymDataset(Dataset[dict[str, Any]]):
         self.frame_group_indices = tuple(
             tuple(indices) for indices in frame_groups
         )
+        # Cross-run pair groups: group by (frame_index, task_label) across runs.
+        pair_groups: dict[tuple[int, str], list[int]] = {}
+        for group_index, (key, _) in enumerate(self._groups):
+            frame_key = key[1]
+            task_label = key[2]
+            frame_index = frame_key.split(":")[2]
+            pair_key = (int(frame_index), task_label)
+            pair_groups.setdefault(pair_key, []).append(group_index)
+        self.cross_run_pair_indices = tuple(
+            tuple(indices) for indices in pair_groups.values()
+            if len(indices) >= 2
+        )
         self._selected: list[int] = []
         self.set_epoch(0)
 
