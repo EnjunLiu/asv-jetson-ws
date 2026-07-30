@@ -77,6 +77,7 @@ setup(
             "safety_gate = asv_vla.safety_gate_node:main",
             "safety_gate_probe = asv_vla.safety_gate_probe:main",
             "trajectory_controller = asv_vla.trajectory_controller_node:main",
+            "vla_policy = asv_vla.vla_policy_node:main",
         ],
     },
 )
