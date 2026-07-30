@@ -152,14 +152,16 @@ class VLAPolicyNode(Node):
                 np.array(lang.embedding, dtype=np.float32).copy()
             ).unsqueeze(0).to(device)
 
-            global_visual = torch.from_numpy(
-                np.array(vis.global_token, dtype=np.float32).copy()
-            ).unsqueeze(0).to(device)
-
-            ev_shape = (int(vis.entity_count), int(vis.feature_dim))
-            entity_visual = torch.from_numpy(
-                np.array(vis.entity_tokens, dtype=np.float32).copy()
-            ).reshape(1, ev_shape[0], ev_shape[1]).to(device)
+            vf = np.array(vis.feature, dtype=np.float32).copy()
+            vis_dim = int(vis.feature_dim)
+            tok_count = int(vis.token_count)
+            global_visual = torch.from_numpy(vf[:vis_dim]).unsqueeze(0).to(device)
+            entity_count = max(tok_count - 1, 0)
+            ev = np.zeros((entity_count, vis_dim), dtype=np.float32)
+            if entity_count > 0:
+                ev_flat = vf[vis_dim:vis_dim + entity_count * vis_dim]
+                ev[:min(entity_count, len(ev_flat)//vis_dim)] = ev_flat.reshape(-1, vis_dim)[:entity_count]
+            entity_visual = torch.from_numpy(ev).unsqueeze(0).to(device)
 
             ent_feat = np.array(ent.features, dtype=np.float32).copy()
             # Zero out color truth columns (14, 15) for policy input.
@@ -176,9 +178,13 @@ class VLAPolicyNode(Node):
             global_visual_mask = torch.tensor(
                 [vis.valid], dtype=torch.bool, device=device
             )
+            vis_mask = np.array(vis.mask, dtype=bool).copy()
             ev_mask = torch.from_numpy(
-                np.array(vis.entity_mask, dtype=bool).copy()
+                vis_mask[1:1+entity_count] if len(vis_mask) > 1 else np.zeros(entity_count, dtype=bool)
             ).unsqueeze(0).to(device)
+            if ev_mask.shape[1] < entity_count:
+                pad = torch.zeros(1, entity_count - ev_mask.shape[1], dtype=torch.bool, device=device)
+                ev_mask = torch.cat([ev_mask, pad], dim=1)
             eg_mask = torch.from_numpy(
                 np.array(ent.mask, dtype=bool).copy()
             ).unsqueeze(0).to(device)
