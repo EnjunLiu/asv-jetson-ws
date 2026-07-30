@@ -370,6 +370,29 @@ def _make_frame_grouped_loader(
     )
 
 
+def _make_cross_run_loader(
+    dataset: EpochSynonymDataset,
+    *,
+    batch_size: int,
+    seed: int,
+    num_workers: int,
+    device: torch.device,
+) -> DataLoader[Any]:
+    """Loader that forces cross-run L3/L4 pairs into the same batch."""
+    sampler = _FrameGroupedBatchSampler(
+        dataset.cross_run_pair_indices,
+        batch_size=batch_size,
+        seed=seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
+    )
+
+
 def _model_inputs(
     batch: Mapping[str, Any],
     device: torch.device,
@@ -616,7 +639,7 @@ def _train_one(
     for epoch in range(settings.epochs):
         train_dataset.set_epoch(epoch)
         if loss_weights.pairwise > 0.0:
-            loader = _make_frame_grouped_loader(
+            loader = _make_cross_run_loader(
                 train_dataset,
                 batch_size=settings.batch_size,
                 seed=seed * 10_000 + epoch,
