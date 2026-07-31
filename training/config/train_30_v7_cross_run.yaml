@@ -1,0 +1,49 @@
+# Day 16 cross-run color swap repair. Relaxed selection gates.
+schema_version: "day15_train_v1"
+experiment_name: "small_policy_30run_cross_run_v7"
+frozen_feature_git_sha: "eb832f3"
+seeds: [17, 23, 42]
+
+data:
+  expected_run_count: 30
+  frame_stride: 3
+  train_run_split: "train"
+  train_language_splits: ["train"]
+  validation_run_split: "validation"
+  validation_language_splits: ["validation"]
+  test_run_split: "test"
+  test_language_splits: ["test"]
+  one_synonym_per_frame_label_each_epoch: true
+
+training:
+  epochs: 60
+  minimum_epochs: 20
+  minimum_checkpoint_epoch: 10
+  early_stopping_patience: 10
+  batch_size: 63
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+  num_workers: 0
+  selection_metric: "ade_plus_half_fde"
+  selection_constraints:
+    minimum_stop_f1: 0.80
+    minimum_stop_within_0_10m_rate: 0.80
+
+loss:
+  waypoint: 1.0
+  endpoint: 0.5
+  stop: 1.0
+  smoothness: 0.05
+  pairwise: 0.25
+
+baselines:
+  entity_only_seed: 42
+
+acceptance:
+  minimum_ade_improvement_over_label_mean: 0.30
+  minimum_fde_improvement_over_label_mean: 0.30
+  minimum_stop_within_0_10m_rate: 0.95
+  minimum_stop_f1: 0.95
+  maximum_speed_violation_rate: 0.0
+  maximum_invalid_count: 0

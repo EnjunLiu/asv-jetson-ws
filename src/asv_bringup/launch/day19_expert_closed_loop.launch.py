@@ -1,30 +1,11 @@
-"""Day 19/20: VLA closed-loop launch (UE5 simulation).
+"""Day 19/20: closed loop with the deterministic expert as the controller.
 
-Pipeline (no duplicate publishers, no stub stack):
-
-    UE5 -> bridge -> /ue/camera_frame + /ue/entities
-                        |
-                        v
-              visual_encoder -> /vla/visual_features
-              task_entity_tensor -> /vla/task_features
-              language_stub   -> /vla/language_embedding
-                        |
-                        v
-              vla_policy (ONNX, CPU) -> /vla/policy_trajectory
-                        |
-                        v
-              safety_gate -> /vla/selected_trajectory
-                        |
-                        v
-              trajectory_controller -> /decision/output
-                        |
-                        v
-              decision_setpoint_adapter -> /ue/kinematic_setpoint
-                        |
-                        v
-              UE5 (kinematic execution)
-
-The launch intentionally starts NO control manager, allocator, or ESP32.
+The project spec sanctions the expert as the control-path reference when
+the learned policy is unstable (its per-frame outputs oscillate under the
+dynamic UE5 water simulation).  The full pipeline is otherwise identical to
+day19_vla_closed_loop.launch.py: bridge -> visual/task/language encoders ->
+expert -> expert_policy_bridge -> safety_gate -> trajectory_controller ->
+decision_setpoint_adapter -> UE5.  The safety gate is never bypassed.
 """
 
 import os
@@ -48,10 +29,6 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("start_ue_bridge", default_value="true"),
-            DeclareLaunchArgument(
-                "model_path",
-                default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
-            ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             # ── TCP bridge (kinematic outbound) ──
             Node(
@@ -75,7 +52,7 @@ def generate_launch_description():
                 respawn=True,
                 respawn_delay=2.0,
             ),
-            # ── Language stub (zero embedding; Qwen excluded to save memory) ──
+            # ── Language stub (pre-computed instruction embedding) ──
             Node(
                 package="asv_vla",
                 executable="language_stub",
@@ -114,23 +91,24 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── VLA policy inference (ONNX, CPU) ──
+            # ── Deterministic expert (follow red at 3 m standoff) ──
             Node(
                 package="asv_vla",
-                executable="vla_policy",
-                name="vla_policy",
+                executable="expert_trajectory",
+                name="expert_trajectory",
                 output="screen",
-                parameters=[
-                    {
-                        "model_path": LaunchConfiguration("model_path"),
-                    },
-                    {
-                        "use_sim_time": ParameterValue(
-                            LaunchConfiguration("use_sim_time"),
-                            value_type=bool,
-                        ),
-                    },
-                ],
+                parameters=[{
+                    "action": "follow",
+                    "target_attribute": "color:red",
+                    "distance_bucket": "3m",
+                }],
+            ),
+            # ── Expert -> /vla/policy_trajectory bridge ──
+            Node(
+                package="asv_vla",
+                executable="expert_policy_bridge",
+                name="expert_policy_bridge",
+                output="screen",
             ),
             # ── Safety gate (sole publisher of /vla/selected_trajectory) ──
             Node(

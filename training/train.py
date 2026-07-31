@@ -217,8 +217,8 @@ def _build_dataset_bundle(
         raise ValueError("data configuration is missing")
     caches = discover_feature_caches(feature_root)
     expected_run_count = int(data_config.get("expected_run_count", 12))
-    if expected_run_count not in {12, 30}:
-        raise ValueError("Day 15 expected_run_count must be 12 or 30")
+    if expected_run_count not in {12, 30, 34}:
+        raise ValueError(f"expected_run_count must be 12, 30, or 34, got {expected_run_count}")
     if len(caches) != expected_run_count:
         raise ValueError(
             f"Day 15 requires {expected_run_count} feature caches, "
@@ -358,6 +358,29 @@ def _make_frame_grouped_loader(
 ) -> DataLoader[Any]:
     sampler = _FrameGroupedBatchSampler(
         dataset.frame_group_indices,
+        batch_size=batch_size,
+        seed=seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
+    )
+
+
+def _make_cross_run_loader(
+    dataset: EpochSynonymDataset,
+    *,
+    batch_size: int,
+    seed: int,
+    num_workers: int,
+    device: torch.device,
+) -> DataLoader[Any]:
+    """Loader that forces cross-run L3/L4 pairs into the same batch."""
+    sampler = _FrameGroupedBatchSampler(
+        dataset.cross_run_pair_indices,
         batch_size=batch_size,
         seed=seed,
     )
@@ -616,7 +639,7 @@ def _train_one(
     for epoch in range(settings.epochs):
         train_dataset.set_epoch(epoch)
         if loss_weights.pairwise > 0.0:
-            loader = _make_frame_grouped_loader(
+            loader = _make_cross_run_loader(
                 train_dataset,
                 batch_size=settings.batch_size,
                 seed=seed * 10_000 + epoch,
@@ -648,7 +671,12 @@ def _train_one(
                 target_trajectory,
                 target_stop,
                 weights=loss_weights,
-                group_ids=[str(value) for value in batch["frame_key"]],
+                group_ids=[
+                    ":".join(str(fk).split(":")[2:3])
+                    + "_"
+                    + str(batch["instruction_id"][idx])
+                    for idx, fk in enumerate(batch["frame_key"])
+                ],
             )
             losses["total"].backward()
             clip_grad_norm_(model.parameters(), settings.gradient_clip_norm)

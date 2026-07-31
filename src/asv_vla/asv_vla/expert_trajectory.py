@@ -221,6 +221,22 @@ def generate_expert_trajectory(
 
     target = select_target(entities, task.target_attribute)
     entity_id, (x, y, vx, vy) = _finite_entity(target)
+    if x <= 0.0:
+        # Fail-closed label: a target at/behind the camera is not visually
+        # observable, so a plain FOLLOW label would teach the policy to
+        # drive away from what it sees (the Day 12 UE5 scene flips the ASV
+        # yaw mid-run, leaving targets behind the camera in base_link).
+        # Label those frames STOP instead of following the inverted
+        # coordinate.
+        return ExpertTrajectoryResult(
+            delta_p_xy=(0.0,) * (HORIZON * ACTION_DIM),
+            safe_stop=True,
+            selected_entity_id=entity_id,
+            detail=(
+                f"FOLLOW fail-closed: target {entity_id!r} is not in front "
+                f"of the camera (x={x:.3f} m); deterministic STOP label"
+            ),
+        )
     max_step_m = max_speed_mps * DT_SEC
     previous_x = 0.0
     previous_y = 0.0

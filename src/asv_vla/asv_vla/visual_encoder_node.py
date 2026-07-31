@@ -23,12 +23,11 @@ from .visual_encoder import (
     FrozenMobileNetEncoder,
     InvalidImageError,
     TargetProjectionError,
-    TargetSelectionError,
     VisualEncoderError,
     decode_camera_image,
     make_target_crop,
-    select_target,
 )
+from .task_entity_tensor import MAX_ENTITIES, build_entity_tensor
 
 
 RELIABLE_QOS = QoSProfile(
@@ -147,17 +146,19 @@ class VisualEncoderNode(Node):
     def _key(run_id: str, frame_index: int) -> tuple[str, int]:
         return str(run_id), int(frame_index)
 
-    def _new_message(self, frame: CameraFrame) -> VisualFeatures:
+    def _new_message(
+        self, frame: CameraFrame, token_count: int = TOKEN_COUNT
+    ) -> VisualFeatures:
         message = VisualFeatures()
         message.stamp_us = frame.stamp_us
         message.run_id = frame.run_id
         message.scene_seed = frame.scene_seed
         message.frame_index = frame.frame_index
         message.backbone = BACKBONE_ID
-        message.token_count = TOKEN_COUNT
+        message.token_count = token_count
         message.feature_dim = FEATURE_DIM
-        message.feature = [0.0] * (TOKEN_COUNT * FEATURE_DIM)
-        message.mask = [False] * TOKEN_COUNT
+        message.feature = [0.0] * (token_count * FEATURE_DIM)
+        message.mask = [False] * token_count
         message.source_received = True
         message.valid = False
         message.detail = "UNINITIALIZED"
@@ -275,15 +276,34 @@ class VisualEncoderNode(Node):
             return
 
         try:
-            target = select_target(entities.entities)
             image = decode_camera_image(frame.data, frame.encoding)
-            crop, projection = make_target_crop(
-                image, target, self.profile
-            )
-            features = self.encoder.encode_pair(image, crop)
+            # Full slot layout matching the training cache:
+            # [global, slot0, slot1, ..., slot15]; unprojectable slots are
+            # zero features with mask=false.  A single-crop payload is out
+            # of distribution for the policy and makes it thrash.
+            order = build_entity_tensor(entities.entities)
+            entity_by_id = {
+                str(entity.entity_id): entity for entity in entities.entities
+            }
+            crops: list[tuple[int, object]] = []
+            projected: list[str] = []
+            for slot, entity_id in enumerate(order.entity_ids):
+                if not order.mask[slot] or not entity_id:
+                    continue
+                entity = entity_by_id.get(entity_id)
+                if entity is None:
+                    continue
+                try:
+                    crop, _ = make_target_crop(image, entity, self.profile)
+                except (TargetProjectionError, InvalidImageError):
+                    continue
+                crops.append((slot, crop))
+                projected.append(entity_id)
+
+            batch_images = [image] + [crop for _, crop in crops]
+            encoded = self.encoder.encode_images(batch_images)
         except (
             InvalidImageError,
-            TargetSelectionError,
             TargetProjectionError,
             VisualEncoderError,
         ) as exc:
@@ -301,13 +321,17 @@ class VisualEncoderNode(Node):
             )
             return
 
-        if features.shape != (TOKEN_COUNT, FEATURE_DIM):
-            self._publish_invalid(
-                frame,
-                f"INVALID_FEATURE_SHAPE:{features.shape}",
-                input_ready=True,
-            )
-            return
+        # Assemble [global] + 16 slot tokens, zero-filled.
+        token_count = 1 + MAX_ENTITIES
+        features = np.zeros((token_count, FEATURE_DIM), dtype=np.float32)
+        features[0] = encoded[0] if len(encoded) else 0.0
+        for index, (slot, _) in enumerate(crops):
+            features[1 + slot] = encoded[1 + index]
+        mask = np.zeros(token_count, dtype=bool)
+        mask[0] = True
+        for _, (slot, _) in enumerate(crops):
+            mask[1 + slot] = True
+
         if not np.all(np.isfinite(features)):
             self._publish_invalid(
                 frame,
@@ -316,14 +340,12 @@ class VisualEncoderNode(Node):
             )
             return
 
-        message = self._new_message(frame)
+        message = self._new_message(frame, token_count=token_count)
         message.feature = features.reshape(-1).tolist()
-        message.mask = [True] * TOKEN_COUNT
+        message.mask = [bool(v) for v in mask]
         message.valid = True
         message.detail = (
-            f"OK:target={target.entity_id};"
-            f"pixel=({projection[0]:.1f},{projection[1]:.1f});"
-            f"depth_m={projection[2]:.3f}"
+            f"OK:tokens={token_count};crops={','.join(projected) or 'none'}"
         )
         self.publisher.publish(message)
         self.input_ready = True

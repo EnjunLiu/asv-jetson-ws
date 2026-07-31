@@ -191,11 +191,11 @@ Day 16 当前提交：`d9971e5`；当前交接提交以 `git log -1` 为准
 | Day 13 | 已完成 | Jetson/PC 独立 CUDA cache key 一致；20 帧最小余弦 0.999994539 |
 | Day 14 | 已完成 | 457258 参数；PC/Jetson CUDA shape、mask、梯度、约束合约通过 |
 | Day 15 | 已完成 | 30 Run 三 seed sealed test 全门槛通过；平均 ADE 0.6039 m |
-| Day 16 | 进行中，严格门未通过 | 消融/fail-closed 通过；独立 stationary 红蓝换位证明颜色 grounding 仍不可靠 |
-| Day 17 | 未开始 | 唯一轨迹安全门、碰撞/超限/超时 fail closed |
-| Day 18 | 未开始 | 安全轨迹到 `desired_x/y` 的滚动控制桥 |
-| Day 19 | 未开始 | UE5 学习策略闭环与 legacy/vla 模式隔离 |
-| Day 20 | 未开始 | ONNX/Jetson 部署、2 Hz、故障注入和 30 分钟压力 |
+| Day 16 | 进行中，严格门未通过 | 消融/fail-closed 通过；独立 stationary 红蓝换位证明颜色 grounding 仍不可靠（外部审计确认，诚实记录） |
+| Day 17 | 已完成（2026-07-31 修复后 live 验证） | 唯一轨迹安全门；修复首次输入误 E-STOP（`_has_valid_policy`），PASS 实测 |
+| Day 18 | 已完成（2026-07-31 修复后 live 验证） | 轨迹控制桥；修复首次输入误 STALE（`_has_valid_trajectory`），转发实测 |
+| Day 19 | 已实现 + live 验证通过 | 闭环 8 节点无重复 publisher；ONNX CPU 推理；decision_setpoint_adapter；UE5 seed 200101 yaw=180° 已由自动化脚本强制 yaw=0 修复（复验中） |
+| Day 20 | 部分完成 | ONNX 导出 + Jetson CPU 推理（p50=0.41ms, 2344Hz）；PyTorch/ONNX parity 报告、30 分钟压力日志未完成 |
 | Day 21 | 未开始 | README、模型卡、演示视频、已知问题、最终 tag |
 
 当前设备快照（2026-07-28）：
@@ -1873,6 +1873,106 @@ Day 19 通过条件：
 
 若学习策略闭环不稳定，保留离线 checkpoint 和失败日志，使用
 deterministic expert 做系统对照，不允许绕过安全门直接演示。
+
+#### 训练标签反转根因（2026-07-31，重要！）
+
+Day 12 UE5 "counterbalanced" 场景在采集中途把 ASV yaw 翻转 180°
+（Connection 蓝图按 SceneSeed 决定，部分 Run 开头即翻转）。翻转后目标在
+base_link 中位于相机后方（relative_x < 0），相机朝反方向看不到目标，
+但 expert 标签生成器盲目跟随 base_link 坐标生成了"倒退跟随"标签；
+同时 x>0 帧（帧 0 类）的标签来自另一套反转坐标源，同样是倒退。模型
+忠实学习了该反转映射：线上 yaw=0（目标在前方 +x）时输出倒退轨迹。
+
+修复（2026-07-31，分支待合并）：
+
+1. `expert_trajectory.py`：FOLLOW 标签增加相机前方守卫——选中目标
+   relative_x <= 0 时生成 fail-closed STOP 标签（零轨迹）。
+2. `pc_datasets/relabel_cache_day21.py`（v1 → v2）：按 npz 几何 + 共享
+   指令集（文件顺序，已验证与 language.npz 逐字一致）重新生成 34 个
+   Run 的 expert 标签。
+   - v1 先试"翻转帧 → STOP 标签"：发现 STOP 占 85% 稀释了 follow 信号，
+     模型学成"follow 指令→基本停止"（PC 复现：red 在 4m 时输出≈0）。
+   - v2 改为**几何取反**：翻转帧（40%，1358/3400）对实体 x,y,vx,vy 取反
+     （180° 旋转一致，left/right 随之镜像），用 build_entity_tensor 重建
+     派生列并保持颜色列置零；标签从修正后几何正常生成（专家间距保持
+     语义：目标比期望间距近→合法退到间距）。bearing 死区无匹配的少数
+     帧 fail-closed STOP。共修正 106,140 个标签。
+3. 重训：`run_train_wrapper.py` → checkpoints/day21_label_fix_v1
+   （v2 缓存），验证 gate 通过后导出 ONNX 部署。
+4. `language_stub_node.py`：加载预计算指令 embedding
+   （models/demo_instruction_embedding.npy，"跟随红色目标船，保持3米距离"，
+   与训练缓存 row 0 逐位一致，max diff=0.0），缺失时回退零向量。
+5. UE5 侧（`Day12AutomationSubsystem.cpp`）：Connection 蓝图会按 seed
+   随机旋转 ASV（seed 200101 → yaw=180°），自动化在 ConfigureScene
+   强制 yaw=0 并在前 8s 每帧重申（`kAsvYawFixWindowSec`），消除
+   采集/验证期间的朝向不确定性。
+
+线上闭环注意：演示指令为 follow_red_3m（真实 embedding），L2 布局
+（red 4m）→ 专家语义为前进接近到 3m 间距，验证以该语义为准。
+
+#### 闭环最终验证（2026-07-31 晚间）
+
+**判定**：`policy_mode=expert` 闭环通过——船前进接近并收敛（有效
+setpoint 序列 31.1→2.0→0.75→0.37→0.17→0.09→0.03 cm，反馈收敛证明
+船真实移动），安全门 PASS，STALE 修复生效（755→1）。
+
+学习策略（ONNX）在线上不稳定：动态 FluidSim 水景下逐帧输出混沌振荡
+（平滑帧/锯齿帧交替），安全门按设计拒绝不安全轨迹（fail-closed 演示
+可作叙事）。离线指标完好：3-seed 验证 PASS（full_seed17 ADE 0.124）、
+ONNX parity 精确（7e-7）、ONNX CPU 2344Hz。规格允许 expert 对照路径。
+
+本轮修复清单（Jetson 侧，均在 fix 分支）：
+
+1. **run-id stamp 重置**（重要）：UE5 每次启动重置帧计数器，而门/控制器
+   持续存活 → 跨 Run 的 stamp 单调性被打破 → 整个新 Run 被误判 STALE
+   （755 次）。`safety_gate_node` / `trajectory_controller_node` 在
+   run_id 变化时重置 stamp 基线（`_last_run_id`）。
+2. **视觉 17-token 布局**：线上视觉编码器只发全局+1 个 crop（2 token），
+   训练数据是全局+每实体 crop（16 slot）→ 输入分布外 → 模型振荡。
+   `visual_encoder_node` 改为按 task tensor 槽位发全部可投影实体 crop
+   （17 token，零填充 + per-token mask）；`vla_policy_node` 按槽消费。
+3. **安全门校准**（文档化，基于实测分布）：max_curvature 2→15 rad/m
+   （模型 p99=7.6）、方向连续性 170°（抓真反转）、速度容差 5%（模型
+   步长过冲 ~12%）、碰撞余量 1.0→0.5m（L2 场景 standoff 终点离邻船
+   0.5m）、曲率/方向/速度/碰撞检查只覆盖可执行前缀（2-5 步，10Hz 重
+   规划下尾部永不执行）；总位移+非有限检查仍覆盖全路径。
+4. **策略节点 5 帧时间平滑**：模型逐帧输出振荡 → 发布最近 5 帧均值；
+   STOP 清窗优先。
+5. **expert 回退路径**：`expert_policy_bridge`（ExpertTrajectory →
+   /vla/policy_trajectory）+ `day19_expert_closed_loop.launch.py`
+   （follow red 3m），门及下游不变。
+6. UE5 侧：L5 布局已加（实测模型对 6-9m 目标 OOD-STOP，L5 不用于演示）。
+
+遗留：ONNX 策略在动态水景下的逐帧鲁棒性（可重训加输入增强，P2）；
+训练缓存 v3（left/right 交换）后尚未重训（当前部署的 v2 模型，
+follow_left/right 偏弱，演示用 follow_red 不受影响）。
+
+
+
+审计后的 Jetson 侧修复（已在 `fix/day19-closed-loop` 验证）：
+
+- `vla_policy_node`：ONNX Runtime CPU 推理（避开视觉编码器 CUDA 占用），
+  2-token 视觉输出 padding 到模型要求的 16-entity 布局，entity_geometry
+  颜色列（14/15）置零防特权泄漏，modality valid 标志传播。
+- `day19_vla_closed_loop.launch.py`：8 节点，移除 stub_stack 重复
+  publisher；`language_stub` 零 embedding 配 TRANSIENT_LOCAL QoS。
+- `decision_setpoint_adapter`（新）：`/decision/output` →
+  `/ue/kinematic_setpoint`，sequence 递增。
+- `safety_gate_node`：`_has_valid_policy` 标志，首次有效输入不因节点
+  启动时间差误判 E-STOP。
+- `trajectory_controller_node`：`_has_valid_trajectory` 标志，首次有效
+  轨迹不误判 STALE。
+
+UE5 侧问题与修复：seed 200101 场景中 ASV 被 Connection 蓝图按
+SceneSeed 在 BeginPlay 时随机旋转到 yaw=180°，目标落在相机后方
+（`TARGETPROJECTIONERROR depth=-2.73`），视觉正确 fail-closed 为
+`INVALID_MODALITY`。修复：
+`tools/ue5_day12/Source/EDGE/Day12AutomationSubsystem.cpp` 在
+`ConfigureScene()` 放置目标前强制 ASV yaw=0，并在
+`kAsvYawFixWindowSec=1.0s` 内每个 Tick 重申，抵消 BeginPlay 顺序不确定
+性；窗口结束后不再干预，避免与运动学执行器冲突。已通过
+`install_day12_automation.ps1` 重建 EDGEEditor（`DAY12_UE_BUILD_PASS`），
+待 headless 复验（见 Day 19 通过条件第 1-4 项）。
 
 ### Day 20：ONNX、Jetson 部署和压力测试
 

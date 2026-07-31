@@ -68,6 +68,18 @@ bool MakeLayout(const FString& LayoutId, TMap<FName, FVector>& OutLocations)
         OutLocations.Add(TEXT("target_right"), FVector(150.0, 180.0, 0.0));
         return true;
     }
+    if (LayoutId == TEXT("L5"))
+    {
+        // Day 19 demo layout: the red target is NEAREST (6 m ahead) so a
+        // "follow red at 3 m" instruction yields a clean forward approach
+        // with the other targets far away (9 m) — the collision margin
+        // stays clear along the whole approach path.
+        OutLocations.Add(TEXT("target_red"), FVector(600.0, 0.0, 0.0));
+        OutLocations.Add(TEXT("target_blue"), FVector(900.0, 0.0, 0.0));
+        OutLocations.Add(TEXT("target_left"), FVector(900.0, -300.0, 0.0));
+        OutLocations.Add(TEXT("target_right"), FVector(900.0, 300.0, 0.0));
+        return true;
+    }
     return false;
 }
 
@@ -151,6 +163,16 @@ bool UDay12AutomationSubsystem::ReadCommandLine()
     return true;
 }
 
+void UDay12AutomationSubsystem::ForceAsvYawZero(AActor& Asv) const
+{
+    Asv.SetActorLocationAndRotation(
+        Asv.GetActorLocation(),
+        FRotator(0.0, 0.0, 0.0),
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+}
+
 AActor* UDay12AutomationSubsystem::FindUniqueActorByClassName(
     const TCHAR* ClassName) const
 {
@@ -227,6 +249,22 @@ bool UDay12AutomationSubsystem::ConfigureScene()
         return false;
     }
 
+    // Canonical camera-facing pose.  The Connection blueprint consumes
+    // SceneSeed and spawns/rotates the ASV afterwards (seed 200101 produced
+    // yaw=180 deg, leaving the targets behind the camera).  Force yaw=0
+    // before placing targets and re-assert it in Tick (all BP_ASV_C actors)
+    // for the first kAsvYawFixWindowSec so the scene is deterministic
+    // regardless of BeginPlay ordering.
+    ForceAsvYawZero(*Asv);
+    AsvActor = Asv;
+    UE_LOG(
+        LogDay12Automation,
+        Display,
+        TEXT("DAY12_ASV_ANCHOR name=%s loc=%s yaw=%d"),
+        *Asv->GetName(),
+        *Asv->GetActorLocation().ToString(),
+        (int32)FMath::RoundToInt(Asv->GetActorRotation().Yaw));
+
     TMap<FName, FVector> LocalLocations;
     if (!MakeLayout(LayoutId, LocalLocations))
     {
@@ -289,6 +327,34 @@ void UDay12AutomationSubsystem::Tick(float DeltaTime)
         return;
     }
     ElapsedSeconds += DeltaTime;
+    if (ElapsedSeconds < kAsvYawFixWindowSec)
+    {
+        // Undo seed-driven ASV rotation(s) applied at/after BeginPlay.  The
+        // Connection blueprint may spawn its own BP_ASV after ConfigureScene,
+        // so fix every BP_ASV_C in the world.  Stops once kinematic setpoints
+        // may move the ship, so it does not fight the executor.
+        int32 AsvCount = 0;
+        for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+        {
+            if (It->GetClass()->GetName() != TEXT("BP_ASV_C"))
+            {
+                continue;
+            }
+            ForceAsvYawZero(**It);
+            ++AsvCount;
+        }
+        // Diagnostics: sample the world state once per second while fixing.
+        if (FMath::FloorToInt(ElapsedSeconds) != LastYawSampleSecond)
+        {
+            LastYawSampleSecond = FMath::FloorToInt(ElapsedSeconds);
+            UE_LOG(
+                LogDay12Automation,
+                Display,
+                TEXT("DAY12_YAW_FIX t=%.2f asv_count=%d"),
+                ElapsedSeconds,
+                AsvCount);
+        }
+    }
     for (const FTargetBinding& Binding : TargetBindings)
     {
         AActor* Target = TargetActors[Binding.EntityId].Get();
