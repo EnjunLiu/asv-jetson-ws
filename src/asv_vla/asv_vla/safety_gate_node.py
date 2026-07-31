@@ -79,6 +79,7 @@ class SafetyGateNode(Node):
         self._last_healthy_trajectory: tuple[float, ...] | None = None
         self._latest_entities: list[_Entity] = []
         self._rejection_log: dict[str, int] = {}
+        self._has_valid_policy = False
 
     def _read_config(self) -> SafetyGateConfig:
         return SafetyGateConfig(
@@ -132,7 +133,11 @@ class SafetyGateNode(Node):
 
     def _on_policy(self, message: SelectedTrajectory) -> None:
         now = time.monotonic()
-        time_since_last = now - self._last_policy_arrival
+        # First valid input must not E-STOP just because the node started
+        # seconds ago; E-STOP applies only after a valid stream goes stale.
+        time_since_last = (
+            now - self._last_policy_arrival if self._has_valid_policy else 0.0
+        )
 
         config = self._read_config()
 
@@ -155,9 +160,10 @@ class SafetyGateNode(Node):
         )
 
         # Update state.
-        if result.valid and result.reason in (PASS, POLICY_STOP):
+        if result.valid:
             self._last_valid_policy_stamp_us = int(message.stamp_us)
             self._last_policy_arrival = now
+            self._has_valid_policy = True
         if result.valid and result.reason == PASS:
             self._last_healthy_trajectory = result.delta_p_xy
 

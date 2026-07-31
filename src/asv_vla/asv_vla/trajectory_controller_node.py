@@ -32,10 +32,15 @@ class TrajectoryControllerNode(Node):
 
         self._last_executed_stamp_us = 0
         self._last_trajectory_arrival = time.monotonic()
+        self._has_valid_trajectory = False
 
     def _on_trajectory(self, message: SelectedTrajectory) -> None:
         now = time.monotonic()
-        time_since = now - self._last_trajectory_arrival
+        # First valid trajectory must not be stale just because the node
+        # started seconds ago; staleness applies after a stream is lost.
+        time_since = (
+            now - self._last_trajectory_arrival if self._has_valid_trajectory else 0.0
+        )
 
         command = trajectory_to_command(
             delta_p_xy=message.delta_p_xy,
@@ -50,6 +55,7 @@ class TrajectoryControllerNode(Node):
         if command.valid:
             self._last_executed_stamp_us = int(message.stamp_us)
             self._last_trajectory_arrival = now
+            self._has_valid_trajectory = True
 
         output = DecisionOutput()
         output.stamp_us = int(message.stamp_us)
