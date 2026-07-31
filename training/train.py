@@ -217,8 +217,8 @@ def _build_dataset_bundle(
         raise ValueError("data configuration is missing")
     caches = discover_feature_caches(feature_root)
     expected_run_count = int(data_config.get("expected_run_count", 12))
-    if expected_run_count not in {12, 30, 34}:
-        raise ValueError(f"expected_run_count must be 12, 30, or 34, got {expected_run_count}")
+    if expected_run_count < 12:
+        raise ValueError(f"expected_run_count must be >= 12, got {expected_run_count}")
     if len(caches) != expected_run_count:
         raise ValueError(
             f"Day 15 requires {expected_run_count} feature caches, "
@@ -233,6 +233,11 @@ def _build_dataset_bundle(
         split_assignments=assignments,
         allowed_language_splits=data_config["train_language_splits"],
         frame_stride=stride,
+        augment=bool(data_config.get("augment", False)),
+        geometry_noise_std=float(data_config.get("geometry_noise_std", 0.02)),
+        slot_dropout_prob=float(
+            data_config.get("slot_dropout_prob", 0.1)
+        ),
     )
     validation_base = FrozenFeatureDataset(
         caches,

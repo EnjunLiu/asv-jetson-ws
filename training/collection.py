@@ -109,7 +109,7 @@ def _load_plan(path: Path, ancestors: set[Path]) -> dict[str, Any]:
         motion_state = str(slot.get("motion_state", "")).strip()
         if not all((slot_id, layout_id, motion_state)):
             raise ValueError(f"slot[{index}] has incomplete identity")
-        if motion_state not in {"S0", "S1"}:
+        if motion_state not in {"S0", "S1", "S2"}:
             raise ValueError(
                 f"slot {slot_id} has unsupported motion_state={motion_state!r}"
             )
@@ -379,7 +379,7 @@ def validate_slot(
                         relation_counts[index] += 1
                 relation_evaluated_frames += 1
             if (
-                slot["motion_state"] == "S1"
+                slot["motion_state"] in {"S1", "S2"}
                 and motion_evaluated_frames < motion_window
             ):
                 distances = _pairwise_target_distances(
@@ -419,7 +419,7 @@ def validate_slot(
             )
 
     motion_fraction: float | None = None
-    if slot["motion_state"] == "S1":
+    if slot["motion_state"] in {"S1", "S2"}:
         motion_fraction = (
             motion_pass_frames / motion_evaluated_frames
             if motion_evaluated_frames

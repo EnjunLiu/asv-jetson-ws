@@ -93,6 +93,16 @@ bool MakeLayout(const FString& LayoutId, TMap<FName, FVector>& OutLocations)
         OutLocations.Add(TEXT("target_right"), FVector(3500.0, 800.0, 0.0));
         return true;
     }
+    if (LayoutId == TEXT("L6B"))
+    {
+        // Mirror of L6: red on the right, blue on the left.  Provides the
+        // mirrored geometry needed to verify colour selection both ways.
+        OutLocations.Add(TEXT("target_red"), FVector(2500.0, 300.0, 0.0));
+        OutLocations.Add(TEXT("target_blue"), FVector(2500.0, -300.0, 0.0));
+        OutLocations.Add(TEXT("target_left"), FVector(3500.0, -800.0, 0.0));
+        OutLocations.Add(TEXT("target_right"), FVector(3500.0, 800.0, 0.0));
+        return true;
+    }
     return false;
 }
 
@@ -120,6 +130,7 @@ TMap<FName, FVector> MakeLocalVelocities(const FString& MotionState, int32 Seed)
 
 TMap<FName, FSceneSineParams> MakeSineParams(
     const FString& MotionState,
+    const FString& LayoutId,
     int32 Seed,
     double ForwardSpeedCmPerSec,
     double PeakAmplitudeCm)
@@ -138,16 +149,18 @@ TMap<FName, FSceneSineParams> MakeSineParams(
     // (6 m separation).  Each boat swings with half the peak amplitude so
     // the formation's total lateral extent stays within the configured
     // peak.  The white boats advance straight ahead as distractors (zero
-    // lateral amplitude).
+    // lateral amplitude).  Layout L6 puts red left of blue; the mirrored
+    // L6B swaps the lateral offsets so the sine swings match the layout.
+    const bool RedOnLeft = (LayoutId == TEXT("L6"));
     FSceneSineParams Red;
     Red.ForwardSpeedCmPerSec = ForwardSpeedCmPerSec;
-    Red.LateralOffsetCm = -300.0;
+    Red.LateralOffsetCm = RedOnLeft ? -300.0 : 300.0;
     Red.AmplitudeCm = PeakAmplitudeCm / 2.0;
     Red.PhaseRad = PhaseRad;
     Result.Add(TEXT("target_red"), Red);
 
     FSceneSineParams Blue = Red;
-    Blue.LateralOffsetCm = 300.0;
+    Blue.LateralOffsetCm = RedOnLeft ? 300.0 : -300.0;
     Result.Add(TEXT("target_blue"), Blue);
 
     FSceneSineParams White = Red;
@@ -366,7 +379,7 @@ bool USceneAutomationSubsystem::ConfigureScene()
     const TMap<FName, FVector> LocalVelocities =
         MakeLocalVelocities(MotionState, SceneSeed);
     SineParams = MakeSineParams(
-        MotionState, SceneSeed, SineSpeedCmPerSec, SineAmplitudeCm);
+        MotionState, LayoutId, SceneSeed, SineSpeedCmPerSec, SineAmplitudeCm);
 
     for (const FTargetBinding& Binding : TargetBindings)
     {

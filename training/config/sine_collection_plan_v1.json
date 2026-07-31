@@ -1,0 +1,162 @@
+{
+  "schema_version": "collection_plan_v1",
+  "minimum_complete_runs": 12,
+  "minimum_frames_per_run": 80,
+  "target_frames_per_run": 100,
+  "required_execution_mode": "ue5_kinematic_expert_v1",
+  "required_entity_ids": [
+    "target_red",
+    "target_blue",
+    "target_left",
+    "target_right"
+  ],
+  "relation_margin_m": 0.5,
+  "relation_evaluation_frames": 1,
+  "minimum_relation_pass_fraction": 1.0,
+  "motion_evaluation_frames": 50,
+  "minimum_motion_pass_fraction": 0.6,
+  "minimum_pairwise_distance_change_m": 0.05,
+  "note": "Sine formation (S2) collection: L6 (red left / blue right) and L6B (red right / blue left), default sine params (wavelength 60 m, peak amplitude 6 m, 0.6 m/s). Collection runs with -YawFixWholeRun so no mid-run 180 deg flip frames are recorded. The red/blue pair is equidistant, so relations use left_of instead of nearer.",
+  "slots": [
+    {
+      "slot_id": "L6_S2_R1",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210101,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R2",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210102,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R3",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210103,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R4",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210104,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R5",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210105,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R6",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210106,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6_S2_R7",
+      "layout_id": "L6",
+      "motion_state": "S2",
+      "scene_seed": 210107,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R1",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210201,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R2",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210202,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R3",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210203,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R4",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210204,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R5",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210205,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R6",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210206,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L6B_S2_R7",
+      "layout_id": "L6B",
+      "motion_state": "S2",
+      "scene_seed": 210207,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    }
+  ]
+}

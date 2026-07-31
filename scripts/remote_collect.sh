@@ -13,15 +13,15 @@ scene_seed=$4
 collection_plan=${5:-training/config/collection_plan_v1.json}
 rollout_action=${6:-follow}
 
-[[ $slot_id =~ ^L[1-9]_S[01]_R[1-9][0-9]*$ ]] || {
+[[ $slot_id =~ ^L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid slot_id=$slot_id" >&2
   exit 2
 }
-[[ $layout_id =~ ^L[1-9]$ ]] || {
+[[ $layout_id =~ ^L[1-9][0-9A-Z]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid layout_id=$layout_id" >&2
   exit 2
 }
-[[ $motion_state =~ ^S[01]$ ]] || {
+[[ $motion_state =~ ^S[0-2]$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid motion_state=$motion_state" >&2
   exit 2
 }

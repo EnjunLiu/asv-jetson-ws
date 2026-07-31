@@ -309,9 +309,17 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         allowed_language_splits: Iterable[str] | None = None,
         frame_stride: int = 1,
         require_valid: bool = True,
+        augment: bool = False,
+        geometry_noise_std: float = 0.02,
+        slot_dropout_prob: float = 0.1,
     ) -> None:
         if frame_stride <= 0:
             raise ValueError("frame_stride must be positive")
+        if geometry_noise_std < 0.0 or slot_dropout_prob < 0.0:
+            raise ValueError("augmentation strengths must be non-negative")
+        self._augment = augment
+        self._geometry_noise_std = float(geometry_noise_std)
+        self._slot_dropout_prob = float(slot_dropout_prob)
         normalized_split = (
             str(selected_split).strip().casefold()
             if selected_split is not None
@@ -404,6 +412,37 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         sample_row = reference.sample_row
         frame_row = int(cache.sample_frame_rows[sample_row])
         instruction_row = int(cache.sample_instruction_rows[sample_row])
+
+        geometry = cache.entity_geometry[frame_row].copy()
+        geometry_mask = cache.entity_geometry_mask[frame_row].copy()
+        entity_visual = cache.entity_visual[frame_row].copy()
+        entity_visual_mask = cache.entity_visual_mask[frame_row].copy()
+
+        if self._augment:
+            # Training-time augmentation targeting online robustness:
+            # 1) small absolute noise on the geometry tensor (position/velocity
+            #    columns are normalised; 0.02 is ~0.4 m / ~0.1 m/s);
+            # 2) random slot dropout, zeroing geometry+visual of some entities
+            #    to mimic occlusion or off-screen slots at inference time.
+            rng = np.random.default_rng(
+                int(reference.sample_row) + int(frame_row) * 1000003
+            )
+            noise = rng.normal(
+                0.0, self._geometry_noise_std, size=geometry.shape
+            ).astype(np.float32)
+            geometry = geometry + noise * (
+                np.asarray(geometry_mask, dtype=np.float32)[..., None]
+            )
+            drop = (
+                rng.random(geometry.shape[0]) < self._slot_dropout_prob
+            )
+            drop = drop & np.asarray(geometry_mask, dtype=bool)
+            if np.any(drop):
+                geometry[drop] = 0.0
+                geometry_mask[drop] = False
+                entity_visual[drop] = 0.0
+                entity_visual_mask[drop] = False
+
         return {
             "language": torch.from_numpy(
                 cache.language[instruction_row].copy()
@@ -411,23 +450,15 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             "global_visual": torch.from_numpy(
                 cache.global_visual[frame_row].copy()
             ),
-            "entity_visual": torch.from_numpy(
-                cache.entity_visual[frame_row].copy()
-            ),
-            "entity_geometry": torch.from_numpy(
-                cache.entity_geometry[frame_row].copy()
-            ),
+            "entity_visual": torch.from_numpy(entity_visual),
+            "entity_geometry": torch.from_numpy(geometry),
             "ego": torch.from_numpy(cache.ego[frame_row].copy()),
             "language_valid": torch.tensor(True, dtype=torch.bool),
             "global_visual_mask": torch.tensor(
                 bool(cache.global_visual_mask[frame_row]), dtype=torch.bool
             ),
-            "entity_visual_mask": torch.from_numpy(
-                cache.entity_visual_mask[frame_row].copy()
-            ),
-            "entity_geometry_mask": torch.from_numpy(
-                cache.entity_geometry_mask[frame_row].copy()
-            ),
+            "entity_visual_mask": torch.from_numpy(entity_visual_mask),
+            "entity_geometry_mask": torch.from_numpy(geometry_mask),
             "ego_valid": torch.tensor(
                 bool(cache.ego_valid[frame_row]), dtype=torch.bool
             ),
