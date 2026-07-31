@@ -5,13 +5,17 @@ param(
     [string]$LayoutId = "L1",
     [string]$MotionState = "S0",
     [string]$SlotId = "CL-001",
-    [int]$RunSeconds = 60
+    [int]$RunSeconds = 60,
+    [double]$SineWavelength = 6000.0,
+    [double]$SineAmplitude = 600.0,
+    [double]$SineSpeed = 60.0,
+    [switch]$YawFixWholeRun
 )
 
-# Headless Day 19 closed-loop verification: launch the fixed automation
-# binary with a given SceneSeed and capture the UE5 log.  UE5 exits by
-# itself after RunSeconds (automation MaxRuntimeSeconds).  The caller
-# starts the Jetson VLA pipeline first.
+# Headless scene verification: launch the fixed automation binary with a
+# given SceneSeed and capture the UE5 log.  UE5 exits by itself after
+# RunSeconds (automation MaxRuntimeSeconds).  The caller starts the Jetson
+# VLA pipeline first.
 
 $ErrorActionPreference = "Stop"
 
@@ -38,6 +42,10 @@ $ueArguments = @(
     "-Motion=$MotionState",
     "-Seed=$SceneSeed",
     "-MaxRuntimeSeconds=$RunSeconds",
+    "-SineWavelength=$SineWavelength",
+    "-SineAmplitude=$SineAmplitude",
+    "-SineSpeed=$SineSpeed",
+    $(if ($YawFixWholeRun) { "-YawFixWholeRun" } else { "" }),
     "-RenderOffscreen",
     "-unattended",
     "-nosplash",

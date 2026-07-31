@@ -70,7 +70,7 @@ bool MakeLayout(const FString& LayoutId, TMap<FName, FVector>& OutLocations)
     }
     if (LayoutId == TEXT("L5"))
     {
-        // Day 19 demo layout: the red target is NEAREST (6 m ahead) so a
+        // Legacy demo layout: the red target is NEAREST (6 m ahead) so a
         // "follow red at 3 m" instruction yields a clean forward approach
         // with the other targets far away (9 m) — the collision margin
         // stays clear along the whole approach path.
@@ -78,6 +78,19 @@ bool MakeLayout(const FString& LayoutId, TMap<FName, FVector>& OutLocations)
         OutLocations.Add(TEXT("target_blue"), FVector(900.0, 0.0, 0.0));
         OutLocations.Add(TEXT("target_left"), FVector(900.0, -300.0, 0.0));
         OutLocations.Add(TEXT("target_right"), FVector(900.0, 300.0, 0.0));
+        return true;
+    }
+    if (LayoutId == TEXT("L6"))
+    {
+        // Sine-formation demo layout (motion S2): the red/blue pair starts
+        // 25 m ahead, side by side with 6 m separation (red left, blue
+        // right), and the two white boats sit 35 m ahead on either side as
+        // distractors.  The follower approaches from behind and must select
+        // the commanded colour while both boats are still in the 90 deg FOV.
+        OutLocations.Add(TEXT("target_red"), FVector(2500.0, -300.0, 0.0));
+        OutLocations.Add(TEXT("target_blue"), FVector(2500.0, 300.0, 0.0));
+        OutLocations.Add(TEXT("target_left"), FVector(3500.0, -800.0, 0.0));
+        OutLocations.Add(TEXT("target_right"), FVector(3500.0, 800.0, 0.0));
         return true;
     }
     return false;
@@ -102,6 +115,46 @@ TMap<FName, FVector> MakeLocalVelocities(const FString& MotionState, int32 Seed)
     Result.Add(TEXT("target_blue"), FVector(0.0, -9.0 * Direction, 0.0));
     Result.Add(TEXT("target_left"), FVector(7.0 * Direction, 3.0, 0.0));
     Result.Add(TEXT("target_right"), FVector(-5.0 * Direction, -4.0, 0.0));
+    return Result;
+}
+
+TMap<FName, FSceneSineParams> MakeSineParams(
+    const FString& MotionState,
+    int32 Seed,
+    double ForwardSpeedCmPerSec,
+    double PeakAmplitudeCm)
+{
+    TMap<FName, FSceneSineParams> Result;
+    if (MotionState != TEXT("S2"))
+    {
+        return Result;
+    }
+    // Phase and direction derive from the seed so runs vary while the
+    // formation stays deterministic per seed.
+    const double Direction = (Seed % 2 == 0) ? 1.0 : -1.0;
+    const double PhaseRad =
+        Direction * (double)(Seed % 360) * PI / 180.0;
+    // The red/blue pair rides the sine on opposite sides of the center line
+    // (6 m separation).  Each boat swings with half the peak amplitude so
+    // the formation's total lateral extent stays within the configured
+    // peak.  The white boats advance straight ahead as distractors (zero
+    // lateral amplitude).
+    FSceneSineParams Red;
+    Red.ForwardSpeedCmPerSec = ForwardSpeedCmPerSec;
+    Red.LateralOffsetCm = -300.0;
+    Red.AmplitudeCm = PeakAmplitudeCm / 2.0;
+    Red.PhaseRad = PhaseRad;
+    Result.Add(TEXT("target_red"), Red);
+
+    FSceneSineParams Blue = Red;
+    Blue.LateralOffsetCm = 300.0;
+    Result.Add(TEXT("target_blue"), Blue);
+
+    FSceneSineParams White = Red;
+    White.LateralOffsetCm = 0.0;
+    White.AmplitudeCm = 0.0;
+    Result.Add(TEXT("target_left"), White);
+    Result.Add(TEXT("target_right"), White);
     return Result;
 }
 } // namespace
@@ -134,6 +187,16 @@ void USceneAutomationSubsystem::OnWorldBeginPlay(UWorld& InWorld)
         *LayoutId,
         *MotionState,
         SceneSeed);
+    if (MotionState == TEXT("S2"))
+    {
+        UE_LOG(
+            LogSceneAutomation,
+            Display,
+            TEXT("SCENE_SINE_PARAMS wavelength_cm=%.0f amplitude_cm=%.0f speed_cm_s=%.0f"),
+            SineWavelengthCm,
+            SineAmplitudeCm,
+            SineSpeedCmPerSec);
+    }
 }
 
 bool USceneAutomationSubsystem::ReadCommandLine()
@@ -151,11 +214,22 @@ bool USceneAutomationSubsystem::ReadCommandLine()
         CommandLine,
         TEXT("MaxRuntimeSeconds="),
         MaxRuntimeSeconds);
+    // Optional sine-formation parameters (motion S2); defaults are the
+    // demo configuration (wavelength 60 m, peak amplitude 6 m, 0.6 m/s).
+    FParse::Value(CommandLine, TEXT("SineWavelength="), SineWavelengthCm);
+    FParse::Value(CommandLine, TEXT("SineAmplitude="), SineAmplitudeCm);
+    FParse::Value(CommandLine, TEXT("SineSpeed="), SineSpeedCmPerSec);
+    bYawFixWholeRun = FParse::Param(FCommandLine::Get(), TEXT("YawFixWholeRun"));
     if (SlotId.IsEmpty()
         || !LayoutId.StartsWith(TEXT("L"))
-        || (MotionState != TEXT("S0") && MotionState != TEXT("S1"))
+        || (MotionState != TEXT("S0")
+            && MotionState != TEXT("S1")
+            && MotionState != TEXT("S2"))
         || SceneSeed < 1
-        || MaxRuntimeSeconds < 10.0F)
+        || MaxRuntimeSeconds < 10.0F
+        || SineWavelengthCm < 1000.0
+        || SineAmplitudeCm < 100.0
+        || SineSpeedCmPerSec <= 0.0)
     {
         FailAndExit(TEXT("invalid slot/layout/motion/seed/runtime argument"));
         return false;
@@ -291,6 +365,8 @@ bool USceneAutomationSubsystem::ConfigureScene()
     const FTransform AsvTransform = Asv->GetActorTransform();
     const TMap<FName, FVector> LocalVelocities =
         MakeLocalVelocities(MotionState, SceneSeed);
+    SineParams = MakeSineParams(
+        MotionState, SceneSeed, SineSpeedCmPerSec, SineAmplitudeCm);
 
     for (const FTargetBinding& Binding : TargetBindings)
     {
@@ -327,12 +403,14 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
         return;
     }
     ElapsedSeconds += DeltaTime;
-    if (ElapsedSeconds < kAsvYawFixWindowSec)
+    if (ElapsedSeconds < kAsvYawFixWindowSec || bYawFixWholeRun)
     {
         // Undo seed-driven ASV rotation(s) applied at/after BeginPlay.  The
         // Connection blueprint may spawn its own BP_ASV after ConfigureScene,
         // so fix every BP_ASV_C in the world.  Stops once kinematic setpoints
-        // may move the ship, so it does not fight the executor.
+        // may move the ship, so it does not fight the executor.  With
+        // YawFixWholeRun the fix persists to suppress the blueprint's
+        // mid-run 180 deg flip (observed under a setpoint stream).
         int32 AsvCount = 0;
         for (TActorIterator<AActor> It(GetWorld()); It; ++It)
         {
@@ -366,15 +444,67 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
                     *Binding.EntityId.ToString()));
             return;
         }
-        const FVector Location =
-            InitialWorldLocations[Binding.EntityId]
-            + WorldVelocitiesCmPerSecond[Binding.EntityId] * ElapsedSeconds;
+        FVector Location;
+        if (const FSceneSineParams* Params = SineParams.Find(Binding.EntityId))
+        {
+            // Analytic world-frame sine: the formation advances along X and
+            // each boat oscillates laterally about its center-line offset.
+            const double X =
+                InitialWorldLocations[Binding.EntityId].X
+                + Params->ForwardSpeedCmPerSec * ElapsedSeconds;
+            const double Y =
+                InitialWorldLocations[Binding.EntityId].Y
+                + Params->LateralOffsetCm
+                + Params->AmplitudeCm
+                    * FMath::Sin(
+                        2.0 * PI * Params->ForwardSpeedCmPerSec
+                            * ElapsedSeconds / SineWavelengthCm
+                        + Params->PhaseRad);
+            Location = FVector(X, Y, InitialWorldLocations[Binding.EntityId].Z);
+        }
+        else
+        {
+            Location =
+                InitialWorldLocations[Binding.EntityId]
+                + WorldVelocitiesCmPerSecond[Binding.EntityId] * ElapsedSeconds;
+        }
         Target->SetActorLocationAndRotation(
             Location,
             InitialWorldRotations[Binding.EntityId],
             false,
             nullptr,
             ETeleportType::TeleportPhysics);
+    }
+    // Diagnostics: sample world positions once per second to verify target
+    // motion and to detect any blueprint-driven ASV drift.
+    if (FMath::FloorToInt(ElapsedSeconds) != LastPosSampleSecond)
+    {
+        LastPosSampleSecond = FMath::FloorToInt(ElapsedSeconds);
+        for (const FTargetBinding& Binding : TargetBindings)
+        {
+            AActor* Target = TargetActors[Binding.EntityId].Get();
+            if (Target == nullptr)
+            {
+                continue;
+            }
+            UE_LOG(
+                LogSceneAutomation,
+                Display,
+                TEXT("SCENE_TARGET_POS t=%.1f entity=%s world=%s"),
+                ElapsedSeconds,
+                *Binding.EntityId.ToString(),
+                *Target->GetActorLocation().ToString());
+        }
+        if (AActor* Asv = AsvActor.Get())
+        {
+            UE_LOG(
+                LogSceneAutomation,
+                Display,
+                TEXT("SCENE_ASV_POS t=%.1f world=%s yaw=%d"),
+                ElapsedSeconds,
+                *Asv->GetActorLocation().ToString(),
+                (int32)FMath::RoundToInt(Asv->GetActorRotation().Yaw));
+        }
     }
     if (ElapsedSeconds >= MaxRuntimeSeconds)
     {

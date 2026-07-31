@@ -51,6 +51,10 @@ from asv_vla.visual_encoder import (
 
 FEATURE_CACHE_SCHEMA_VERSION = "feature_cache_v1"
 PREPROCESS_VERSION = "camera_entity_crop_v1"
+# The online policy node feeds a stationary ego placeholder (no live ego
+# topic), so the frozen cache zeros ego to keep the input distributions
+# identical between training and inference.
+ZERO_EGO_IN_CACHE = True
 LANGUAGE_FEATURE_DIM = 256
 COLOR_PRIVILEGE_COLUMNS = (14, 15)
 FRAME_SHARD_NAME = "frames_000.npz"
@@ -598,6 +602,11 @@ def build_feature_cache(
             float(ego_block.get("surge_velocity_mps", 0.0)),
             float(ego_block.get("yaw_rate_radps", 0.0)),
         )
+        if ZERO_EGO_IN_CACHE:
+            # Distribution fix: the online policy node feeds a stationary
+            # ego placeholder (no live ego topic), so the frozen cache must
+            # match or the model sees an input distribution shift online.
+            ego_values = (0.0, 0.0)
         current_ego_valid = bool(ego_block.get("valid")) and all(
             math.isfinite(value) for value in ego_values
         )
