@@ -149,10 +149,18 @@ def export_onnx(checkpoint_path: str, output_path: str) -> dict:
     pt_traj = pt_out.trajectory.numpy()
     ort_traj = ort_out[0]  # (trajectory, stop_logit, valid_mask)
     max_diff = float(np.max(np.abs(pt_traj - np.array(ort_traj))))
-    cos_sim = float(
-        np.dot(pt_traj.flatten(), ort_traj.flatten())
-        / (np.linalg.norm(pt_traj) * np.linalg.norm(ort_traj) + 1e-12)
-    )
+    # Cosine is undefined for a zero trajectory (a legitimate fail-closed
+    # STOP output); max_diff already guarantees exact agreement then.
+    traj_norm = float(np.linalg.norm(pt_traj))
+    if traj_norm > 1e-6:
+        cos_sim = float(
+            np.dot(pt_traj.flatten(), ort_traj.flatten())
+            / (np.linalg.norm(pt_traj) * np.linalg.norm(ort_traj) + 1e-12)
+        )
+        cos_ok = abs(cos_sim - 1.0) < 1e-4
+    else:
+        cos_sim = 1.0
+        cos_ok = True
 
     report = {
         "checkpoint_path": str(Path(checkpoint_path).resolve()),
@@ -162,7 +170,7 @@ def export_onnx(checkpoint_path: str, output_path: str) -> dict:
         "parameter_count": model.trainable_parameter_count(),
         "max_abs_error": float(max_diff),
         "cosine_similarity": float(cos_sim),
-        "passed": max_diff < 1e-4 and abs(cos_sim - 1.0) < 1e-4,
+        "passed": max_diff < 1e-4 and cos_ok,
         "opset_version": 17,
     }
 

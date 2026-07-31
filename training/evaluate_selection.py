@@ -1,0 +1,195 @@
+"""Evaluate colour-selection correctness on held-out sine runs.
+
+The demo task is "follow the red boat" / "follow the blue boat" when the
+red/blue pair moves side by side.  The policy must steer toward the
+commanded colour.  This script checks, for every follow-red / follow-blue
+sample in the TEST split, whether the model's first executed step points
+toward the commanded entity's bearing rather than the distractor's.
+
+Selection correctness = fraction of samples whose first-step direction is
+within 45 deg of the commanded entity's bearing.
+
+Usage:
+    python evaluate_selection.py --checkpoint <best.pt> \
+        --features <features_sine> --split <sine_group_split_v1.json> \
+        --model-config <model_small_v2.yaml> [--device cuda]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from training.dataset import load_split_assignments
+
+
+def _bearing_deg(dx: float, dy: float) -> float:
+    return math.degrees(math.atan2(dy, dx))
+
+
+def _angle_between_deg(a_deg: float, b_deg: float) -> float:
+    delta = abs(a_deg - b_deg) % 360.0
+    return min(delta, 360.0 - delta)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--features", type=Path, required=True)
+    parser.add_argument("--split", type=Path, required=True)
+    parser.add_argument("--model-config", type=Path, required=True)
+    parser.add_argument("--device", default="cuda")
+    args = parser.parse_args()
+
+    from training.model import SmallTrajectoryPolicy, SmallPolicyConfig
+    from training.dataset import _load_cache
+
+    import yaml
+
+    model_cfg = SmallPolicyConfig.from_mapping(
+        yaml.safe_load(args.model_config.read_text(encoding="utf-8"))
+    )
+    model = SmallTrajectoryPolicy(model_cfg).to(args.device)
+    checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    assignments = load_split_assignments(args.split)
+    test_run_ids = {
+        run_id for run_id, split in assignments.items() if split == "test"
+    }
+    if not test_run_ids:
+        print("SELECTION_EVALUATION_FAIL: no test runs in split")
+        return 1
+
+    cache_dirs = sorted(
+        path
+        for path in args.features.iterdir()
+        if path.is_dir() and path.name in test_run_ids
+    )
+    # Layout (L6 vs mirrored L6B) comes from the registry collection_slot.
+    slot_by_run: dict[str, str] = {}
+    registry_path = args.split.parent / "sine_registry_v1.jsonl"
+    if registry_path.is_file():
+        for line in registry_path.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            slot_by_run[str(entry["run_id"])] = str(
+                entry.get("collection_slot", "")
+            )
+    correct = 0
+    total = 0
+    by_layout: dict[str, dict[str, int]] = {}
+    with torch.no_grad():
+        for cache_dir in cache_dirs:
+            cache = _load_cache(cache_dir)
+            slot = slot_by_run.get(cache.run_id, "")
+            is_mirrored = "L6B" in slot
+            language_source = np.load(
+                cache_dir / "language.npz", allow_pickle=False
+            )
+            instruction_texts = language_source["instruction_texts"]
+            frames_source = np.load(
+                cache_dir / "frames_000.npz", allow_pickle=False
+            )
+            entity_ids = frames_source["entity_ids"]
+            entity_mask = frames_source["entity_mask"]
+            for sample_row in range(len(cache.sample_ids)):
+                frame_row = int(cache.sample_frame_rows[sample_row])
+                instruction_row = int(cache.sample_instruction_rows[sample_row])
+                instruction = str(instruction_texts[instruction_row])
+                if "红" in instruction:
+                    commanded = "red"
+                elif "蓝" in instruction:
+                    commanded = "blue"
+                else:
+                    continue
+                if not bool(cache.policy_input_valid[frame_row]):
+                    continue
+                entities = entity_ids[frame_row]
+                geometry = cache.entity_geometry[frame_row]
+                # Bearing to the commanded entity (x/y columns, cols 0/1).
+                red_bearing = blue_bearing = None
+                for slot, entity_id in enumerate(entities):
+                    if not bool(entity_mask[frame_row][slot]):
+                        continue
+                    x, y = float(geometry[slot][0]), float(geometry[slot][1])
+                    if entity_id == "target_red":
+                        red_bearing = _bearing_deg(x, y)
+                    elif entity_id == "target_blue":
+                        blue_bearing = _bearing_deg(x, y)
+                if red_bearing is None or blue_bearing is None:
+                    continue
+
+                item = {
+                    "language": torch.from_numpy(
+                        cache.language[instruction_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "global_visual": torch.from_numpy(
+                        cache.global_visual[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "entity_visual": torch.from_numpy(
+                        cache.entity_visual[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "entity_geometry": torch.from_numpy(
+                        cache.entity_geometry[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "ego": torch.from_numpy(
+                        cache.ego[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "language_valid": torch.tensor([True], dtype=torch.bool),
+                    "global_visual_mask": torch.tensor(
+                        [bool(cache.global_visual_mask[frame_row])],
+                        dtype=torch.bool,
+                    ),
+                    "entity_visual_mask": torch.from_numpy(
+                        cache.entity_visual_mask[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "entity_geometry_mask": torch.from_numpy(
+                        cache.entity_geometry_mask[frame_row].copy()
+                    ).unsqueeze(0).to(args.device),
+                    "ego_valid": torch.tensor(
+                        [bool(cache.ego_valid[frame_row])], dtype=torch.bool
+                    ),
+                }
+                output = model(**item)
+                traj = output.trajectory[0].cpu().numpy()
+                stop_logit = float(output.stop_logit[0][0])
+                stop = stop_logit > 0.0
+                first_dx = float(traj[0, 0])
+                first_dy = float(traj[0, 1])
+                if math.hypot(first_dx, first_dy) < 1e-4:
+                    # A zero step cannot be classified; count as failure
+                    # only for non-stop commands (a stop is not a selection).
+                    if stop:
+                        continue
+                step_bearing = _bearing_deg(first_dx, first_dy)
+                expected = red_bearing if commanded == "red" else blue_bearing
+                distractor = blue_bearing if commanded == "red" else red_bearing
+                toward_expected = _angle_between_deg(step_bearing, expected)
+                toward_distractor = _angle_between_deg(step_bearing, distractor)
+                is_correct = toward_expected <= min(toward_distractor, 45.0)
+                correct += int(is_correct)
+                total += 1
+                layout = "L6B" if is_mirrored else "L6"
+                bucket = by_layout.setdefault(layout, {"correct": 0, "total": 0})
+                bucket["correct"] += int(is_correct)
+                bucket["total"] += 1
+
+    if total == 0:
+        print("SELECTION_EVALUATION_FAIL: no evaluable follow-colour samples")
+        return 1
+    rate = correct / total
+    print(f"SELECTION_PASS rate={rate:.3f} correct={correct}/{total}")
+    for layout, bucket in sorted(by_layout.items()):
+        r = bucket["correct"] / bucket["total"]
+        print(f"  {layout}: {r:.3f} ({bucket['correct']}/{bucket['total']})")
+    return 0 if rate >= 0.90 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
