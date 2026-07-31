@@ -27,7 +27,7 @@ from training.feature_cache import (
 
 
 FEATURE_SET_SCHEMA_VERSION = "feature_set_v1"
-FROZEN_FEATURE_GIT_SHA = "eb832f3"
+FROZEN_FEATURE_GIT_SHA = "2ea3f77c8cf7"
 SUPPORTED_SPLITS = {
     2: {"train": 0, "validation": 0, "test": 2},
     8: {"train": 0, "validation": 0, "test": 8},

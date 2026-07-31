@@ -3,6 +3,7 @@
 # with -YawFixWholeRun (no flip frames) and expert setpoint execution.
 schema_version: "train_v1"
 experiment_name: "sine_formation_v1"
+frozen_feature_git_sha: "2ea3f77c8cf7"
 seeds: [17, 23, 42]
 
 data:
