@@ -120,3 +120,21 @@ UE5 采集 (collect.ps1, 自动化) → episode 包 (tar.gz, SHA-256 校验)
 - 颜色 grounding 的独立留出验证曾未通过（红蓝换位），修复后的验证见 §1。
 - UE5 仿真结果不等同真实感知或实船海试；仿真/硬件通道刻意分离
   （kinematic_setpoint 消息头注明"永不发 ESP32"）。
+
+## 8. 阶段状态（2026-08-01 快照）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| 终极整理 | 完成 | PC 25c037f / Jetson 5877b30（去 dayX、清理 2.9 GB、HISTORY.md 保留审计） |
+| 正弦编队场景 | 完成 | S2 运动 + L6/L6B 布局 + YawFixWholeRun；headless 验证（docs/scene_verification.md） |
+| 新数据采集 | 完成 | 14 runs（L6/L6B × 7 seeds），100 帧/run，质量门全过 |
+| 特征构建 | 完成 | 14 caches / 117500 样本，ego 置零（分布一致），frozen sha 2ea3f77c8cf7 |
+| 重训 | **验证门 PASS** | ADE 改善 67-70%、FDE 69-72%、STOP recall 1.0 / drift 0 |
+| 选择指标 | **96.2%** | L6 97.9% / L6B 95.3%（红蓝双向） |
+| ONNX 导出 | 完成 | parity max_diff=0、cos=1.0；已部署 Jetson（旧模型备份） |
+| 语言 stub | 完成 | 红/蓝指令运行时切换（参数驱动） |
+| 在线闭环 | **待 PIE 实测** | headless 下 setpoint 不执行（已证实）；runbook 见 docs/demo_runbook.md |
+| ESP32 扩展 | 完成 | hardware_loop.launch.py + 链烟测（fail-closed 验证）+ docs/esp32_interface.md |
+
+**诚实记录**：模型闭环的最终验收（Play 实测 ≥8 runs）需用户在 PIE 模式
+执行 runbook；在此之前不宣称"模型在线闭环通过"。
