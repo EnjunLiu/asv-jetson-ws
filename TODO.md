@@ -2154,3 +2154,174 @@ UE5 不需要 bbox。实体中心通过冻结相机模型投影得到 crop。缺
 
 如果上述任何一项没有证据，只能标记为未完成，不能用“接口已预留”
 或“模型已下载”替代验收。
+
+## 11. 项目产物审计（2026-07-30）
+
+本节约 40–50% 的文件是开发过程中的中间产物，不影响核心功能，
+但会让仓库在面试展示时显得杂乱。以下逐文件标注保留/可归档/可删除。
+
+### 11.1 核心产品代码（保留，面试展示用）
+
+这些文件直接构成最终系统：
+
+| 文件 | 作用 | 优先级 |
+|------|------|--------|
+| `src/asv_vla/asv_vla/trajectory_contract.py` | 轨迹常量 (H=20, dt=0.2) | P0 |
+| `src/asv_vla/asv_vla/expert_trajectory.py` | 确定性专家标签生成 | P0 |
+| `src/asv_vla/asv_vla/kinematic_executor.py` | UE5 运动学执行 | P0 |
+| `src/asv_vla/asv_vla/safety_gate.py` | 安全门纯逻辑 (8 种拒绝码) | P0 |
+| `src/asv_vla/asv_vla/safety_gate_node.py` | ROS 安全门节点 | P0 |
+| `src/asv_vla/asv_vla/trajectory_controller.py` | 控制桥 (前缀执行) | P0 |
+| `src/asv_vla/asv_vla/trajectory_controller_node.py` | ROS 控制桥节点 | P0 |
+| `src/asv_vla/asv_vla/vla_policy_node.py` | VLA 策略推理节点 | P0 |
+| `src/asv_vla/asv_vla/visual_encoder.py` + `_node.py` | MobileNet 视觉编码器 | P0 |
+| `src/asv_vla/asv_vla/task_entity_tensor.py` + `_node.py` | 实体张量 | P0 |
+| `src/asv_vla/asv_vla/language_encoder.py` + `_node.py` | Qwen 语言编码器 | P0 |
+| `src/asv_vla/asv_vla/episode.py` + `_recorder_node.py` | 数据记录 | P0 |
+| `src/asv_vla/asv_vla/supervised_dataset.py` | 监督数据集构建/校验 | P0 |
+| `training/model.py` | 481K 参数策略架构 | P0 |
+| `training/train.py` | 训练管线 | P0 |
+| `training/losses.py` | 损失函数 | P0 |
+| `training/dataset.py` | 数据加载器 (FrozenFeatureDataset) | P0 |
+| `training/interventions.py` | 干预评估 (颜色 swap 逻辑) | P0 |
+| `training/export_onnx.py` | ONNX 导出 | P0 |
+| `training/benchmark_onnx.py` | Jetson 性能基准 | P0 |
+| `training/feature_cache.py` | 特征缓存核心 | P0 |
+| `training/config/model_small_v2.yaml` | 最终模型配置 | P0 |
+| `training/config/train_30_v6.yaml` | 最终训练配置 | P0 |
+| `training/config/interventions_v6_color_confirmation.yaml` | 最终颜色swap配置 | P0 |
+| `training/config/train_30_v8_strong_pairwise.yaml` | 交叉配对训练配置 | P0 |
+| `docs/interfaces.md` | 接口契约 | P0 |
+| `docs/ue5_kinematic_command_v1.md` | UE5 运动学命令契约 | P0 |
+| `tools/ue5_day12/` | UE5 C++ 自动化子系统 | P0 |
+| `src/asv_bringup/launch/day19_vla_closed_loop.launch.py` | VLA 全管道 launch | P0 |
+| `src/asv_bringup/launch/day17_safety_gate.launch.py` | 安全门 launch | P0 |
+| `src/asv_bringup/launch/day18_control_bridge.launch.py` | 控制桥 launch | P0 |
+| `src/asv_bringup/launch/day11_expert_kinematic.launch.py` | 专家运动学 launch | P0 |
+
+### 11.2 保留但降权（说明性/归档性）
+
+| 文件 | 理由 |
+|------|------|
+| `KNOWN_ISSUES.md` | 面试必读，解释项目边界 |
+| `TODO.md` | 完整执行计划和验收记录 |
+| `README.md` | 项目入口 |
+| `src/asv_vla/test/test_*.py` | 全部测试（16+ 文件），180 tests |
+| `training/test/test_*.py` | 同上 |
+| `dataset/language/instructions.jsonl` | 90 条指令定义 |
+| `docs/HANDOFF_DAY11.md` | Day 11 交接说明，对后续接手者有价值 |
+| `pc_datasets/checkpoints/day16_10m_fix/full_seed17/best.pt` | 最终 checkpoint |
+| `pc_datasets/checkpoints/day16_cross_loader_v4/full_seed42/best.pt` | 备选 checkpoint |
+| `pc_datasets/checkpoints/policy.onnx` | 最终 ONNX 模型 (1.9MB) |
+
+### 11.3 纯中间产物（可归档或删除）
+
+#### 早期训练配置（被后续覆盖）
+
+```
+training/config/train_30_v1.yaml ~ v5.yaml    # v6 是最终
+training/config/train_30_v7_cross_run.yaml    # v8 是最终
+training/config/model_small_v1.yaml, v3.yaml  # v2 是最终
+training/config/interventions_v1.yaml ~ v5_holdout.yaml  # v6 是最终
+```
+
+#### 一次性验证工具
+
+| 文件 | 用途 | 状态 |
+|------|------|------|
+| `training/day12_collection.py` | 采集状态查询 | 采集完成，不再需要 |
+| `training/day14_contract.py` | 策略 shape/mask 合约验证 | 一次性通过 |
+| `training/build_feature_caches.py` | 批量特征缓存构建 | 同上 |
+| `training/make_holdout_split.py` | 留出集 split 分配 | 同上 |
+| `tools/day13/run_pc_reference.ps1` | PC 参考特征构建 | 同上 |
+| `scripts/day12_remote_collect.sh` | 远程采集 | 同上 |
+
+#### 过期的采集计划 JSON
+
+```
+training/config/day12_collection_plan_v1.json        # 12 Run 计划，已升级到 30
+training/config/day15_collection_plan_30_v1.json      # 初始 30 Run
+training/config/day16_color_swap_plan_v1.json         # 用了泄漏的 R14
+training/config/day16_holdout_plan_v1.json            # 初始 holdout
+training/config/day16_10m_training_plan.json          # 10m 补采，已完成
+training/config/day16_fresh_holdout_plan_v1.json      # N1 采集，已完成
+```
+
+#### 工程妥协（可替换但当前可用）
+
+| 文件 | 问题 | 理想替代 |
+|------|------|---------|
+| `src/asv_vla/asv_vla/language_stub_node.py` | 全零 embedding。Qwen 在 Jetson 上 OOM 时使用 | 部署时用预计算的语言特征 |
+| `src/asv_vla/asv_vla/stub_stack_node.py` | Day 1 占位节点，VLA 模式下不用 | 最终可移除 |
+
+#### 旧 launch 文件（legacy 路径仍可用，但 VLA 路径不需要）
+
+```
+src/asv_bringup/launch/smoke_full_stack.launch.py         # Day 1 契约测试
+src/asv_bringup/launch/language_full_stack.launch.py      # Day 2 语言测试
+src/asv_bringup/launch/full_system.launch.py              # legacy 路径
+src/asv_bringup/launch/visual_encoder.launch.py           # Day 6 测试
+src/asv_bringup/launch/task_entity_tensor.launch.py       # Day 7 测试
+src/asv_bringup/launch/day8_record.launch.py              # Day 8 记录
+src/asv_bringup/launch/day8_replay.launch.py              # Day 8 回放
+src/asv_bringup/launch/day9_expert.launch.py              # Day 9 专家
+src/asv_bringup/launch/day12_collect.launch.py            # Day 12 采集
+```
+
+### 11.4 大型二进制（不进 Git，仅本地保留）
+
+| 位置 | 内容 | 估计大小 |
+|------|------|---------|
+| `artifacts/day8_episode/*` | 50+ Run，每 Run 100 帧 JPEG+JSON | ~500 MB |
+| `artifacts/day10_supervised/*` | 对应监督数据集 | ~50 MB |
+| `artifacts/day13_features/*` | 特征缓存 .npz | ~100 MB |
+| `artifacts/pc_transfer/*` | 迁移 tar.gz | ~200 MB |
+| `artifacts/day12_automation/*` | 40 个采集日志 | ~5 MB |
+| `pc_datasets/day12_*.tar.gz` | 30 个原始数据包 | ~2 GB |
+| `pc_datasets/checkpoints/day15_*/*、day16_*/` | 早期训练尝试 | ~500 MB |
+| `models/Qwen3-Embedding-0.6B/` | Qwen 模型权重 (~1.2 GB) | 不进 Git |
+
+### 11.5 整理建议
+
+如果要准备"精装版"面试仓库：
+
+```text
+asv-jetson-ws/
+├── src/asv_vla/              # 只保留活跃节点 + 测试
+├── training/                 # 核心模块 + 最终 config
+│   └── config/               # 只保留 *_final.yaml 或最终版本
+├── docs/                     # interfaces, ue5_kinematic_command
+├── tools/ue5_day12/          # 自动化子系统
+├── launch/                   # 最终 VLA launch
+├── models/                   # ONNX 模型
+├── dataset/language/         # 指令定义
+├── archive/                  # 所有中间产物移到这里
+├── KNOWN_ISSUES.md
+├── TODO.md
+└── README.md
+```
+
+**粗略估计**：约 40–50% 的文件可归档或删除，不影响任何核心功能。
+
+### 11.6 PC 训练环境路径
+
+| 路径 | 内容 |
+|------|------|
+| `C:\Users\LIU\Documents\jetson_ws\day11_kinematic_work\` | 开发 repo（也是最终 repo） |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\` | 外部数据根目录 |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\features_pc_eb832f3\` | PC 特征缓存（35 Run） |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\checkpoints\` | 全部训练 checkpoint |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\registry\` | 注册表和 split |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\.venv-day13\` | Python venv (PyTorch 2.8, CUDA) |
+| `C:\Users\LIU\Documents\jetson_ws\pc_datasets\reports\` | 训练报告和日志 |
+| `D:\Unreal Projects\VLA\` | UE5 项目 |
+| `D:\Unreal Projects\VLA\Source\EDGE\Day12AutomationSubsystem.*` | UE5 自动化 C++ 代码 |
+
+### 11.7 旧 checkout 清理
+
+PC 上 `C:\Users\LIU\Documents\jetson_ws\` 下有两个 checkout：
+
+| 目录 | 状态 | 建议 |
+|------|------|------|
+| `asv-jetson-ws/` | Day 1-3 旧分支，有未提交修改 | **删除**，内容已合并到主分支 |
+| `day11_kinematic_work/` | 当前活跃开发目录 | **保留**，这是实际 repo |
