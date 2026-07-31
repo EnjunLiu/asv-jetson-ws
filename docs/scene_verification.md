@@ -60,3 +60,20 @@ headless 运行时 Connection 蓝图默认驱动 ASV：
   Play 时确认；PIE 下历史闭环已验证收敛）
 - 注意：巡航使 ASV 在采集/验证中持续移动（与 target 同向），相对几何
   覆盖逼近/跟踪分布——与历史采集一致（分布自洽）
+
+## 5. 在线闭环 headless 验证结论（2026-08-01 凌晨）
+
+用新训练模型（sine_formation_v2，验证门 PASS）跑 headless 在线闭环：
+
+- **策略输出正常**：持续输出前进轨迹（~0.44 m/步 + 横向偏移，Sequence 持续递增），
+  ONNX 加载成功，无 STALE/无模态失效
+- **setpoint 不执行（headless）**：ASV 位置在策略接管后完全静止
+  （t=10 后恒定），蓝图收到 setpoint 流即停止巡航但不应用位移——
+  **headless 下 kinematic setpoint 不生效，闭环验证必须使用 PIE（Play）模式**
+- **门 fail-closed 正常**：蓝图巡航曾把 ASV 带到 target 旁边（相对 ~1.7 m），
+  实体贴身（x≈0.16 m、y≈±11.6 m 记录）→ 门持续 COLLISION_RISK 拒绝，
+  控制器输出 hold_position——**安全链按设计工作**
+- **实体速度字段实测为 0**：UE5 逐帧差分速度上报为零（采集/在线一致，
+  训练标签外推 vx=0 等价，分布自洽，无影响）
+- **Phase D 结论**：模型与部署就绪（验证门 PASS、选择 96.2%、ONNX parity 精确），
+  在线闭环需用户 Play（PIE）验证——已备好 runbook（见演示文档）
