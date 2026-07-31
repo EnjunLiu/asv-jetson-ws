@@ -1968,6 +1968,40 @@ ros2 launch asv_bringup day19_vla_closed_loop.launch.py   start_ue_bridge:=true 
 - [ ] 完整闭环 60s 日志
 - [ ] DAY19_UE5_CLOSED_LOOP_PASS
 
+### Day 19 实际验收状态（2026-07-31 修正）
+
+Jetson 端 VLA 闭环管线已全部修复并验证：
+
+| 环节 | 状态 | 证据 |
+|------|------|------|
+| 8 节点 launch（无 stub 重复） | ✅ | `ros2 node list` 全部注册 |
+| ONNX CPU 推理（非 PyTorch CUDA） | ✅ | `VLA policy ONNX loaded` |
+| 16-entity padding | ✅ | 视觉 2-token → 模型 16-entity |
+| UE5 连接 | ✅ | `connected from 192.168.137.1` |
+| policy 有效推理 | ✅ | `valid=true reason=POLICY_INFERRED` |
+| 安全门 PASS | ✅ | `valid=true reason=PASS` |
+| 首次输入 E-STOP bug | ✅ 已修复 | `_has_valid_policy` 标志 |
+| 首次输入 STALE bug | ✅ 已修复 | `_has_valid_trajectory` 标志 |
+| 适配器 decision→setpoint | ✅ | `DECISION_VALID` 转发 |
+| 视觉 fail-closed | ✅ | 目标在相机后方时 INVALID_MODALITY |
+
+**剩余 UE5 侧问题**（非 Jetson 代码问题）：
+
+- seed 200101 场景中 ASV 初始朝向为 180°（目标在相机后方，
+  `TARGETPROJECTIONERROR depth=-2.73`）。Day 12 采集的 seed
+  （160xxx/180xxx）场景正常。需在 UE5 检查 ASV 初始 Yaw 设置或
+  自动化子系统在 ConfigureScene 中显式设置 ASV 朝向。
+
+**修复分支**：`fix/day19-closed-loop`，提交 `f002a53`。
+
+**已验证的完整链路**：
+
+```
+UE5 → bridge → visual/entity/language → vla_policy (ONNX CPU)
+   → safety_gate (PASS) → trajectory_controller
+   → decision_setpoint_adapter → /ue/kinematic_setpoint → UE5
+```
+
 ### Day 20：ONNX、Jetson 部署和压力测试
 
 PC 导出：
