@@ -409,7 +409,7 @@ def main() -> int:
     )
     if not manifest["training_ready"]:
         print(
-            f"DAY11_TRAINING_NOT_READY: "
+            f"TRAINING_NOT_READY: "
             f"need at least {MINIMUM_TRAINING_RUNS} eligible Runs and "
             f"{MINIMUM_SCENE_SEEDS} scene seeds; "
             f"eligible_runs={manifest['eligible_run_count']} "

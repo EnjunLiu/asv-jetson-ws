@@ -138,7 +138,7 @@ def main() -> int:
         encoding="utf-8",
     )
     print(
-        "DAY16_HOLDOUT_SPLIT_PASS "
+        "HOLDOUT_SPLIT_PASS "
         f"runs={result['run_count']} "
         f"test={result['split_run_counts']['test']} "
         "training_ready=False"

@@ -2,8 +2,8 @@
 # It uses only validation Runs.  Passing this file does not authorize opening a
 # final hold-out; a fresh Run split is required after model selection.
 
-schema_version: "day16_interventions_v1"
-experiment_name: "day16_grounding_v2_validation"
+schema_version: "interventions_v1"
+experiment_name: "grounding_v2_validation"
 expected_checkpoint_git_sha: "2281dd4"
 expected_training_summary_sha256: "2aa93a680d307304260bf29bcab2c1e20a0cfd8bbb0a6d90a79ae93617045da0"
 require_sealed_test_gate: false

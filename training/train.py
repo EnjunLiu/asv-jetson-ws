@@ -44,9 +44,9 @@ from training.metrics import (
 from training.model import SmallPolicyConfig, SmallTrajectoryPolicy
 
 
-TRAIN_SCHEMA_VERSION = "day15_train_v1"
-SUMMARY_SCHEMA_VERSION = "day15_training_summary_v1"
-CHECKPOINT_SCHEMA_VERSION = "day15_policy_checkpoint_v1"
+TRAIN_SCHEMA_VERSION = "train_v1"
+SUMMARY_SCHEMA_VERSION = "training_summary_v1"
+CHECKPOINT_SCHEMA_VERSION = "policy_checkpoint_v1"
 
 
 @dataclass(frozen=True)
@@ -259,7 +259,7 @@ def _build_dataset_bundle(
     if not feature_set_manifest.is_file():
         raise ValueError("feature_set_manifest.json is missing")
     manifest = {
-        "schema_version": "day15_dataset_manifest_v1",
+        "schema_version": "dataset_manifest_v1",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "feature_set_manifest_sha256": _sha256_file(feature_set_manifest),
         "split_sha256": _sha256_file(split_path),
@@ -800,7 +800,7 @@ def _train_one(
         peak_memory_bytes = 0
     duration_seconds = time.perf_counter() - started
     metrics = {
-        "schema_version": "day15_experiment_metrics_v1",
+        "schema_version": "experiment_metrics_v1",
         "modality": modality,
         "seed": seed,
         "best_epoch": best_epoch,
@@ -1005,7 +1005,7 @@ def train_validation_suite(args: argparse.Namespace) -> int:
     _write_json(output_root / "summary.json", summary)
     status = "PASS" if validation_gate else "FAIL"
     print(
-        f"DAY15_VALIDATION_{status} "
+        f"VALIDATION_{status} "
         f"seeds={','.join(str(seed) for seed in seeds)} "
         f"label_mean_ade={baselines['label_mean']['ade_m']:.6f} "
         f"label_mean_fde={baselines['label_mean']['fde_m']:.6f}"
@@ -1123,7 +1123,7 @@ def evaluate_sealed_test(args: argparse.Namespace) -> int:
     _write_json(summary_path, summary)
     status = "PASS" if test_gate else "FAIL"
     print(
-        f"DAY15_TRAINING_{status} "
+        f"TRAINING_{status} "
         f"test_ade_mean={np.mean(full_ade):.6f} "
         f"test_ade_std={np.std(full_ade):.6f} "
         f"label_mean_ade={baselines['label_mean']['ade_m']:.6f}"

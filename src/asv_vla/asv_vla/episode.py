@@ -278,7 +278,7 @@ def make_manifest(
                 "all be set or all be empty"
             )
         manifest["collection"] = {
-            "schema_version": "day12_collection_slot_v1",
+            "schema_version": "collection_slot_v1",
             "slot_id": str(collection_slot).strip(),
             "layout_id": str(layout_id).strip(),
             "motion_state": str(motion_state).strip(),
@@ -468,12 +468,12 @@ def main() -> int:
     )
     if not report["passed"]:
         print(
-            "DAY8_EPISODE_QUALITY_FAIL "
+            "EPISODE_EPISODE_QUALITY_FAIL "
             + "; ".join(report["errors"])
         )
         return 1
     print(
-        "DAY8_EPISODE_QUALITY_PASS "
+        "EPISODE_EPISODE_QUALITY_PASS "
         f"frames={report['frame_count']} "
         f"gaps={report['frame_gaps']} "
         f"run_id={report['run_id']}"

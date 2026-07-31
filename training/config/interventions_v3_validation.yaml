@@ -1,7 +1,7 @@
 # Day 16 validation gate for language-only entity attention.
 
-schema_version: "day16_interventions_v1"
-experiment_name: "day16_grounding_v3_validation"
+schema_version: "interventions_v1"
+experiment_name: "grounding_v3_validation"
 expected_checkpoint_git_sha: "db4e134"
 expected_training_summary_sha256: "be53b130b190ba6f71f151b56b8977e832c4a0270eebbaaa6a9d28ad3fc4a0f8"
 require_sealed_test_gate: false

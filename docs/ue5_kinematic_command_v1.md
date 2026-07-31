@@ -49,7 +49,7 @@ cd /home/jetson/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-ros2 launch asv_bringup day11_expert_kinematic.launch.py \
+ros2 launch asv_bringup expert_kinematic.launch.py \
   action:=follow \
   target_attribute:=color:red \
   distance_bucket:=3m

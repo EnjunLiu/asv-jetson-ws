@@ -1,0 +1,42 @@
+{
+  "schema_version": "collection_plan_v1",
+  "minimum_complete_runs": 2,
+  "minimum_frames_per_run": 80,
+  "target_frames_per_run": 100,
+  "required_execution_mode": "ue5_kinematic_expert_v1",
+  "rollout_action": "stop",
+  "required_entity_ids": [
+    "target_red",
+    "target_blue",
+    "target_left",
+    "target_right"
+  ],
+  "relation_margin_m": 0.25,
+  "relation_evaluation_frames": 100,
+  "minimum_relation_pass_fraction": 1.0,
+  "motion_evaluation_frames": 50,
+  "minimum_motion_pass_fraction": 0.6,
+  "minimum_pairwise_distance_change_m": 0.05,
+  "slots": [
+    {
+      "slot_id": "L3_S0_R14",
+      "layout_id": "L3",
+      "motion_state": "S0",
+      "scene_seed": 161302,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["nearer", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L4_S0_R14",
+      "layout_id": "L4",
+      "motion_state": "S0",
+      "scene_seed": 161402,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["nearer", "target_right", "target_left"]
+      ]
+    }
+  ]
+}

@@ -209,7 +209,7 @@ def main() -> int:
             read_jsonl(args.contrast_pairs),
         )
     except (ExpertTrajectoryError, OSError, ValueError) as exc:
-        print(f"DAY9_EXPERT_LABELS_FAIL: {exc}")
+        print(f"EXPERT_LABELS_FAIL: {exc}")
         return 1
 
     if args.output is not None:
@@ -219,7 +219,7 @@ def main() -> int:
             encoding="utf-8",
         )
     print(
-        "DAY9_EXPERT_LABELS_PASS "
+        "EXPERT_LABELS_PASS "
         f"instructions={report['instruction_count']} "
         f"contrast_pairs={report['changed_contrast_pair_count']} "
         f"labels={report['unique_task_label_count']} "

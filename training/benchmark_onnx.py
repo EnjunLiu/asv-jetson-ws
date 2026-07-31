@@ -70,12 +70,12 @@ def main() -> int:
     try:
         r = benchmark(str(args.model), duration_sec=args.duration)
     except Exception as e:
-        print(f"DAY20_BENCHMARK_FAIL: {e}")
+        print(f"ONNX_BENCHMARK_FAIL: {e}")
         return 1
 
     status = "PASS" if r["passed_2hz"] else "FAIL"
     print(
-        f"DAY20_BENCHMARK_{status} "
+        f"ONNX_BENCHMARK_{status} "
         f"hz={r['hz']} p50={r['latency_p50_ms']}ms "
         f"p95={r['latency_p95_ms']}ms iterations={r['iterations']}"
     )

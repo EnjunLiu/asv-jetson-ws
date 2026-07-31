@@ -26,7 +26,7 @@ from training.feature_cache import (
 )
 
 
-FEATURE_SET_SCHEMA_VERSION = "day15_feature_set_v1"
+FEATURE_SET_SCHEMA_VERSION = "feature_set_v1"
 FROZEN_FEATURE_GIT_SHA = "eb832f3"
 SUPPORTED_SPLITS = {
     2: {"train": 0, "validation": 0, "test": 2},
@@ -259,7 +259,7 @@ def main() -> int:
         required_run_count=args.required_run_count,
     )
     print(
-        "DAY15_FEATURE_SET_PASS "
+        "FEATURE_SET_PASS "
         f"runs={report['run_count']} "
         f"frames={report['frame_count']} "
         f"samples={report['sample_count']} "

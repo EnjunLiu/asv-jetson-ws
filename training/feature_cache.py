@@ -50,7 +50,7 @@ from asv_vla.visual_encoder import (
 
 
 FEATURE_CACHE_SCHEMA_VERSION = "feature_cache_v1"
-PREPROCESS_VERSION = "day13_camera_entity_crop_v1"
+PREPROCESS_VERSION = "camera_entity_crop_v1"
 LANGUAGE_FEATURE_DIM = 256
 COLOR_PRIVILEGE_COLUMNS = (14, 15)
 FRAME_SHARD_NAME = "frames_000.npz"
@@ -1038,7 +1038,7 @@ def _run_with_cuda_retry(
             if not device.startswith("cuda") or attempt >= attempts:
                 raise
             print(
-                "DAY13_CUDA_RETRY "
+                "FEATURE_CACHE_CUDA_RETRY "
                 f"component={component} attempt={attempt}/{attempts} "
                 f"error={type(exc).__name__}"
             )
@@ -1100,7 +1100,7 @@ def _main_build(args: argparse.Namespace) -> int:
         precomputed_language_embeddings=language_embeddings,
     )
     print(
-        "DAY13_FEATURE_CACHE_PASS "
+        "FEATURE_CACHE_PASS "
         f"run_id={result['run_id']} frames={result['frame_count']} "
         f"instructions={result['instruction_count']} "
         f"samples={result['sample_count']} cached={result['cached']} "
@@ -1147,7 +1147,7 @@ def main() -> int:
         if args.command == "validate":
             result = validate_feature_cache(args.cache)
             print(
-                "DAY13_FEATURE_CACHE_PASS "
+                "FEATURE_CACHE_PASS "
                 f"frames={result['frame_count']} "
                 f"instructions={result['instruction_count']} "
                 f"samples={result['sample_count']} "
@@ -1161,9 +1161,9 @@ def main() -> int:
             cosine_threshold=args.cosine_threshold,
         )
         status = (
-            "DAY13_CONSISTENCY_PASS"
+            "CONSISTENCY_PASS"
             if result["passed"]
-            else "DAY13_CONSISTENCY_FAIL"
+            else "CONSISTENCY_FAIL"
         )
         print(
             f"{status} samples={result['sample_count']} "
@@ -1172,7 +1172,7 @@ def main() -> int:
         )
         return 0 if result["passed"] else 1
     except (FeatureCacheError, ValueError) as exc:
-        print(f"DAY13_FEATURE_CACHE_FAIL: {exc}")
+        print(f"FEATURE_CACHE_FAIL: {exc}")
         return 1
 
 

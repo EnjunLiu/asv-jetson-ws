@@ -123,7 +123,7 @@ def _entity_object(item: dict):
 
 
 def _make_sources(tmp_path: Path, frame_count: int = 2):
-    episode = tmp_path / "episode" / "RUN_DAY13"
+    episode = tmp_path / "episode" / "RUN_02"
     template = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
     entities = [
         _entity("target_red", "red", 5.0, 0.0),
@@ -145,12 +145,12 @@ def _make_sources(tmp_path: Path, frame_count: int = 2):
         ).save(image_path, format="JPEG")
 
         record = copy.deepcopy(template)
-        record["run_id"] = "RUN_DAY13"
+        record["run_id"] = "RUN_02"
         record["scene_seed"] = 130001
         record["frame_index"] = frame_index
         record["stamp_us"] = stamp
         record["task"]["stamp_us"] = 0
-        record["task"]["text"] = "day13 feature cache"
+        record["task"]["text"] = "feature cache"
         record["ego"]["stamp_us"] = stamp
         record["ego"]["simulation_time_s"] = stamp / 1_000_000.0
         record["camera"]["stamp_us"] = stamp
@@ -166,9 +166,9 @@ def _make_sources(tmp_path: Path, frame_count: int = 2):
         stamps.append(stamp)
 
     manifest = make_manifest(
-        run_id="RUN_DAY13",
+        run_id="RUN_02",
         scene_seed=130001,
-        task_text="day13 feature cache",
+        task_text="feature cache",
         frame_indices=frame_indices,
         stamp_values=stamps,
         status="complete",
@@ -176,7 +176,7 @@ def _make_sources(tmp_path: Path, frame_count: int = 2):
     write_json_atomic(episode / "manifest.json", manifest)
     instructions = tmp_path / "instructions.jsonl"
     write_jsonl(instructions, [_instruction(index) for index in range(9)])
-    supervision = tmp_path / "supervision" / "RUN_DAY13"
+    supervision = tmp_path / "supervision" / "RUN_02"
     build_supervised_dataset([episode], instructions, supervision)
     return episode, supervision, instructions
 

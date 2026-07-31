@@ -28,7 +28,7 @@ from .trajectory_contract import ACTION_DIM, DT_SEC, HORIZON
 
 DATASET_SCHEMA_VERSION = "supervised_trajectory_dataset_v1"
 SAMPLE_SCHEMA_VERSION = "supervised_trajectory_sample_v1"
-GENERATOR_VERSION = "day10_supervised_dataset_v1"
+GENERATOR_VERSION = "supervised_dataset_v1"
 REQUIRED_LABELS = {
     "follow|color:red|3m",
     "follow|color:red|10m",
@@ -723,13 +723,13 @@ def build_main() -> int:
             args.episode, args.instructions, args.output
         )
     except (SupervisedDatasetError, OSError, ValueError) as exc:
-        print(f"DAY10_DATASET_BUILD_FAIL: {exc}")
+        print(f"DATASET_BUILD_FAIL: {exc}")
         return 1
     coverage = (
         "complete" if report["coverage_complete"] else "partial"
     )
     print(
-        "DAY10_DATASET_BUILD_PASS "
+        "DATASET_BUILD_PASS "
         f"samples={report['sample_count']} "
         f"frames={report['frame_count']} "
         f"instructions={report['compatible_instruction_count']} "

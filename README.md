@@ -1,178 +1,68 @@
-# Jetson ASV ROS 2 workspace
+# ASV VLA — 无人船视觉-语言-动作控制
 
-ROS 2 Humble workspace for the Jetson side of a twin-thruster unmanned surface
-vessel. UE5 sends simulation observations; the Jetson publishes only
-two-dimensional desired displacement/trajectory commands to the existing
-control boundary.
+ROS 2 工作空间：UE5 仿真提供多模态观测，Jetson 上的 VLA 流水线输出二维期望位移/
+轨迹，经确定性安全门后执行（仿真运动学执行或 ESP32 推力链）。**故障时 fail-closed
+（宁可停止，不可执行不安全轨迹）**。
 
-## Current paths
+## 系统概览
 
-- `full_system.launch.py` is the existing legacy perception/prediction/control
-  path.
-- `smoke_full_stack.launch.py` is the Day 1 fail-closed VLA contract test.
-- `language_full_stack.launch.py` replaces only the language stub with the
-  frozen Day 2 embedding model.
+```
+UE5 (相机/实体/本船状态)
+  → 视觉编码 (MobileNetV3 冻结特征) + 实体张量 + 指令 embedding
+  → 策略 (ONNX, CPU) / 专家对照
+  → 安全门 (唯一发布者) → 轨迹控制器 → /decision/output
+  → 仿真: decision_setpoint_adapter → UE5
+  → 硬件: control_input_mux → [ESP32] → safety_supervisor → thruster_allocator → UE5
+```
 
-Never run the formal and smoke launches at the same time: they share control
-topics. The direct VLA policy publishes one `[20,2]` trajectory; the removed
-six-candidate and learned-world-model evaluation stages are not part of the
-architecture.
+详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、接口契约、安全设计、ESP32 扩展路径）
+与 [HISTORY.md](HISTORY.md)（根因分析、诚实验收记录）。
 
-The frozen interfaces and fail-closed semantics are documented in
-[`docs/interfaces.md`](docs/interfaces.md). The execution plan and acceptance
-gates are in [`TODO.md`](TODO.md).
+## 目录结构
 
-## Build
+```
+src/                  ROS 2 包（9 个，见 ARCHITECTURE.md §3）
+training/             训练管线（特征缓存构建、训练、验证门、ONNX 导出）
+dataset/language/     指令集 (instructions.jsonl) 与对比对
+models/               演示指令 embedding + manifest
+tools/ue5/            UE5 采集/验证自动化（C++ 子系统 + PowerShell 脚本）
+tools/pc_reference/   PC 侧参考运行脚本
+scripts/              Jetson 采集脚本
+docs/                 接口与契约文档
+```
 
-Run on the Jetson:
+## 快速开始（Jetson）
 
 ```bash
 cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
-source /home/jetson/microros_ws/install/setup.bash
-
+source ~/microros_ws/install/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Day 1: direct-trajectory fail-closed contract
+- 单元测试：`PYTHONPATH=src/asv_vla python -m pytest -q src/asv_vla/test`
+- VLA 闭环（仿真）：`ros2 launch asv_bringup vla_closed_loop.launch.py`
+- 专家对照闭环：`ros2 launch asv_bringup expert_closed_loop.launch.py`
+- 完整硬件链：`ros2 launch asv_bringup full_system.launch.py`
+  （micro_ros_agent + control manager；ESP32 通过 `/control/control_input` 接入）
 
-Terminal A:
+## 数据采集与训练（PC）
 
-```bash
-cd ~/jetson_asv_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+1. 采集：`tools/ue5/collect.ps1`（自动化：Jetson 查 slot → UE5 headless 运行 →
+   打包回传 + SHA-256 校验）
+2. 特征：`training/build_feature_caches.py`（冻结 MobileNet + Qwen）
+3. 训练：`training/train.py`（配置在 `training/config/`）
+4. 导出：`training/export_onnx.py`（parity 校验）
+5. 部署：`policy.onnx` + `demo_instruction_embedding.npy` → Jetson `models/`
 
-ros2 launch asv_bringup smoke_full_stack.launch.py \
-  jetson_git_sha:="$(git rev-parse HEAD)"
-```
+## 平台
 
-Terminal B:
+- Jetson Orin Nano 8 GB / Ubuntu 22.04 / ROS 2 Humble
+- UE5 项目：`D:\Unreal Projects\VLA`（无限海洋地图，TCP :8080 对接）
+- ESP32-P4 固件：独立仓库 `asv-esp32-firmware`（micro-ROS over UART2）
+- PC 训练：RTX 5060 / PyTorch / Qwen3-Embedding-0.6B + MobileNetV3-small
 
-```bash
-cd ~/jetson_asv_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+## 许可
 
-ros2 run asv_vla contract_probe
-```
-
-Acceptance marker:
-
-```text
-DAY1_CONTRACT_PASS
-```
-
-This verifies a well-formed single safe-stop trajectory followed by invalid
-zero `DecisionOutput`, invalid zero control/wrench and invalid zero thrusters.
-
-## Day 2: language embedding
-
-The model is `Qwen/Qwen3-Embedding-0.6B`, loaded locally through the
-PyTorch-only `sentence-transformers` path. Do not replace the NVIDIA Jetson
-PyTorch installation with a desktop wheel.
-
-Run the lightweight unit tests first:
-
-```bash
-cd ~/jetson_asv_ws
-source .venv/bin/activate
-PYTHONPATH=src/asv_vla python -m pytest -q -p no:cacheprovider src/asv_vla/test
-```
-
-Run the real offline model test:
-
-```bash
-PYTHONPATH=src/asv_vla \
-  python -m asv_vla.evaluate_language_similarity \
-  --model-path models/Qwen3-Embedding-0.6B \
-  --device cuda
-```
-
-Acceptance marker:
-
-```text
-LANGUAGE_EMBEDDING_OFFLINE_PASS
-```
-
-The command writes the ignored runtime artifact
-`artifacts/language_embedding/language_similarity.csv`.
-
-For the ROS path, start `language_full_stack.launch.py` and run
-`ros2 run asv_vla language_embedding_probe`. Expected marker:
-
-```text
-LANGUAGE_EMBEDDING_PASS
-```
-
-Run the language model headlessly: close VS Code language servers, Jupyter and
-other large processes before benchmarking. If Qwen still cannot load without
-memory allocation failures, switch to the documented MiniLM fallback while
-keeping the 256-dimensional ROS contract.
-
-## Day 3: language intervention data
-
-```bash
-cd ~/jetson_asv_ws
-source .venv/bin/activate
-
-PYTHONPATH=src/asv_vla \
-  python -m asv_vla.generate_language_interventions --check
-
-PYTHONPATH=src/asv_vla \
-  python -m asv_vla.evaluate_language_coverage
-```
-
-Acceptance marker:
-
-```text
-LANGUAGE_INTERVENTION_COVERAGE_PASS
-```
-
-Dataset labels are used only for organization, splitting and evaluation. They
-are not an online task parser and cannot bypass the language embedding or VLA
-policy.
-
-## Day 10: reproducible supervision manifest
-
-Build raw multimodal/expert pairs from one or more complete Day 8 episodes:
-
-```bash
-ros2 run asv_vla build_supervised_dataset \
-  --episode artifacts/day8_episode/<RUN_ID> \
-  --instructions dataset/language/instructions.jsonl \
-  --output artifacts/day10_supervised/<DATASET_ID>
-
-ros2 run asv_vla evaluate_supervised_dataset \
-  artifacts/day10_supervised/<DATASET_ID>
-```
-
-Add `--require-all-labels` to the evaluator for the formal 9-label acceptance
-gate. Generated data stays under ignored `artifacts/`; only the builder,
-validator, tests, and contracts belong in Git.
-
-For PC-side data preparation and training, transfer the source episode,
-supervision directory, and frozen instruction file together:
-
-```bash
-tar -czf artifacts/pc_transfer/day10_<RUN_ID>.tar.gz \
-  dataset/language/instructions.jsonl \
-  artifacts/day8_episode/<RUN_ID> \
-  artifacts/day10_supervised/<RUN_ID>
-sha256sum artifacts/pc_transfer/day10_<RUN_ID>.tar.gz
-```
-
-Extract the archive at the root of a PC checkout and rerun
-`evaluate_supervised_dataset --require-all-labels` before feature generation
-or training. Raw data, generated features, checkpoints, and model binaries
-remain outside Git.
-
-## Platform
-
-- Jetson Orin Nano 8 GB
-- Ubuntu 22.04 / ROS 2 Humble
-- micro-ROS agent Humble
-
-Record the actual L4T, CUDA, TensorRT and NVIDIA PyTorch versions in every
-deployment benchmark; do not infer them only from a nominal JetPack release.
+Apache-2.0（见 [LICENSE](LICENSE)）。

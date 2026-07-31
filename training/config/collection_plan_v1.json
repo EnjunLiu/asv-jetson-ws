@@ -1,0 +1,141 @@
+{
+  "schema_version": "collection_plan_v1",
+  "minimum_complete_runs": 12,
+  "minimum_frames_per_run": 80,
+  "target_frames_per_run": 100,
+  "required_execution_mode": "ue5_kinematic_expert_v1",
+  "required_entity_ids": [
+    "target_red",
+    "target_blue",
+    "target_left",
+    "target_right"
+  ],
+  "relation_margin_m": 0.25,
+  "relation_evaluation_frames": 1,
+  "minimum_relation_pass_fraction": 1.0,
+  "motion_evaluation_frames": 50,
+  "minimum_motion_pass_fraction": 0.6,
+  "minimum_pairwise_distance_change_m": 0.05,
+  "slots": [
+    {
+      "slot_id": "L1_S0_R1",
+      "layout_id": "L1",
+      "motion_state": "S0",
+      "scene_seed": 120101,
+      "relations": [
+        ["nearer", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L1_S0_R2",
+      "layout_id": "L1",
+      "motion_state": "S0",
+      "scene_seed": 120102,
+      "relations": [
+        ["nearer", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L1_S1_R3",
+      "layout_id": "L1",
+      "motion_state": "S1",
+      "scene_seed": 120103,
+      "relations": [
+        ["nearer", "target_red", "target_blue"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L2_S0_R1",
+      "layout_id": "L2",
+      "motion_state": "S0",
+      "scene_seed": 120201,
+      "relations": [
+        ["nearer", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L2_S1_R2",
+      "layout_id": "L2",
+      "motion_state": "S1",
+      "scene_seed": 120202,
+      "relations": [
+        ["nearer", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L2_S1_R3",
+      "layout_id": "L2",
+      "motion_state": "S1",
+      "scene_seed": 120203,
+      "relations": [
+        ["nearer", "target_blue", "target_red"],
+        ["left_of", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L3_S0_R1",
+      "layout_id": "L3",
+      "motion_state": "S0",
+      "scene_seed": 120301,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["nearer", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L3_S1_R2",
+      "layout_id": "L3",
+      "motion_state": "S1",
+      "scene_seed": 120302,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["nearer", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L3_S1_R3",
+      "layout_id": "L3",
+      "motion_state": "S1",
+      "scene_seed": 120303,
+      "relations": [
+        ["left_of", "target_red", "target_blue"],
+        ["nearer", "target_left", "target_right"]
+      ]
+    },
+    {
+      "slot_id": "L4_S0_R1",
+      "layout_id": "L4",
+      "motion_state": "S0",
+      "scene_seed": 120401,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["nearer", "target_right", "target_left"]
+      ]
+    },
+    {
+      "slot_id": "L4_S1_R2",
+      "layout_id": "L4",
+      "motion_state": "S1",
+      "scene_seed": 120402,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["nearer", "target_right", "target_left"]
+      ]
+    },
+    {
+      "slot_id": "L4_S1_R3",
+      "layout_id": "L4",
+      "motion_state": "S1",
+      "scene_seed": 120403,
+      "relations": [
+        ["left_of", "target_blue", "target_red"],
+        ["nearer", "target_right", "target_left"]
+      ]
+    }
+  ]
+}

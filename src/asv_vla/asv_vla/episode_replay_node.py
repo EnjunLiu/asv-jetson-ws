@@ -45,7 +45,7 @@ LATCHED_QOS = QoSProfile(
 
 class EpisodeReplayNode(Node):
     def __init__(self) -> None:
-        super().__init__("day8_episode_replay")
+        super().__init__("episode_replay")
         self.episode_dir = Path(
             self.declare_parameter(
                 "episode_dir",
@@ -98,11 +98,11 @@ class EpisodeReplayNode(Node):
             CameraFrame, "/ue/camera_frame", SENSOR_QOS
         )
         self.complete_pub = self.create_publisher(
-            Bool, "/day8/replay_complete", LATCHED_QOS
+            Bool, "/episode/replay_complete", LATCHED_QOS
         )
         self.timer = self.create_timer(1.0 / self.rate_hz, self.on_timer)
         self.get_logger().info(
-            "DAY8_REPLAY_READY "
+            "EPISODE_REPLAY_READY "
             f"episode={self.episode_dir.resolve()} "
             f"frames={len(self.records)} rate_hz={self.rate_hz:.3f} "
             f"start_delay_sec={self.start_delay_sec:.3f}"
@@ -185,7 +185,7 @@ class EpisodeReplayNode(Node):
             complete.data = True
             self.complete_pub.publish(complete)
             self.get_logger().info(
-                f"DAY8_REPLAY_COMPLETE frames={len(self.records)}"
+                f"EPISODE_REPLAY_COMPLETE frames={len(self.records)}"
             )
             return
 
@@ -203,7 +203,7 @@ class EpisodeReplayNode(Node):
         self.index += 1
         if self.index == 1 or self.index % 10 == 0:
             self.get_logger().info(
-                f"DAY8_REPLAYED frame={record['frame_index']} "
+                f"EPISODE_REPLAYED frame={record['frame_index']} "
                 f"count={self.index}/{len(self.records)}"
             )
 

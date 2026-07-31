@@ -31,7 +31,7 @@ class FakeEntity:
     valid: bool = True
 
 
-def test_projection_matches_frozen_day4_camera_profile():
+def test_projection_matches_frozen_camera_profile():
     profile = CameraProfile()
     pixel_x, pixel_y, depth = project_target_to_pixel(
         1.5, 0.0, -0.10554275, profile

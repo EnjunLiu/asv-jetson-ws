@@ -173,7 +173,7 @@ def test_invalid_or_ambiguous_target_data_fail_closed():
         generate_expert_trajectory(task, [entity("target")], max_speed_mps=0)
 
 
-def test_all_day3_labels_and_contrast_pairs_change_correctly():
+def test_all_labels_and_contrast_pairs_change_correctly():
     repository = Path(__file__).resolve().parents[3]
     instructions = read_jsonl(
         repository / "dataset/language/instructions.jsonl"

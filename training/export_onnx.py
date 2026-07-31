@@ -177,9 +177,9 @@ def main() -> int:
     try:
         r = export_onnx(str(args.checkpoint), str(args.output))
     except Exception as e:
-        print(f"DAY20_ONNX_EXPORT_FAIL: {e}")
+        print(f"ONNX_EXPORT_FAIL: {e}")
         return 1
-    print(f"DAY20_ONNX_EXPORT_PASS max_diff={r['max_abs_error']:.2e} cos={r['cosine_similarity']:.6f}")
+    print(f"ONNX_EXPORT_PASS max_diff={r['max_abs_error']:.2e} cos={r['cosine_similarity']:.6f}")
     print(json.dumps(r, indent=2, default=str))
     return 0
 

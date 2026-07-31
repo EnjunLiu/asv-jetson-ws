@@ -61,8 +61,8 @@ python -m training.dataset_registry --data-root data\extracted\pilot --output da
 
 **Expected output for the old 50-frame pilot:**
 ```text
-DAY11_REGISTRY_PASS ... eligible_runs=0 training_ready=False
-DAY11_TRAINING_NOT_READY: need at least 12 eligible Runs ...
+REGISTRY_PASS ... eligible_runs=0 training_ready=False
+TRAINING_NOT_READY: need at least 12 eligible Runs ...
 ```
 
 ## Create splits
@@ -73,8 +73,8 @@ python -m training.make_group_splits --registry data\registry\dataset_registry_v
 
 **Expected output for pilot:**
 ```text
-DAY11_SPLIT_PASS runs=0 seeds=0 train=0 val=0 test=0 training_ready=False
-DAY11_TRAINING_NOT_READY: registry has no training-eligible Runs
+SPLIT_PASS runs=0 seeds=0 train=0 val=0 test=0 training_ready=False
+TRAINING_NOT_READY: registry has no training-eligible Runs
 ```
 
 ## Run tests
@@ -91,9 +91,9 @@ complete 9/9 supervision, and Day 12 collection-slot metadata. The registry
 requires at least 12 eligible Runs across at least three Scene Seeds.
 The 12-Run split is frozen to 8/2/2; the 30-Run split is 18/6/6.
 
-Use `training/day12_collection.py` to verify that the recorded entity
+Use `training/collection.py` to verify that the recorded entity
 geometry really matches the counterbalanced plan. Full instructions are in
-`docs/DAY12_COLLECTION.md`.
+`docs/SCENE_COLLECTION.md`.
 
 ## Day 13 frozen feature cache
 
@@ -155,10 +155,10 @@ For the frozen Windows reference paths used by this project, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File `
-  .\tools\day13\run_pc_reference.ps1
+  .\tools\pc_reference\run_pc_reference.ps1
 ```
 
-The script runs offline, uses the external `.venv-day13`, Qwen and Torch
+The script runs offline, uses the external `.venv`, Qwen and Torch
 checkpoint directories under `pc_datasets`, rebuilds the fixed high-coverage
 `L2_S0_R1` cache on PC CUDA, and compares it against the independently
 generated Jetson cache over 20 frames at the frozen `0.999` threshold.
@@ -207,13 +207,13 @@ and peak-memory contract before Day 15 training:
 
 ```powershell
 $env:PYTHONPATH = "src\asv_vla"
-python -m training.day14_contract `
+python -m training.contract_checks `
   --config training\config\model_small_v1.yaml `
-  --report C:\path\to\pc_datasets\reports\day14_policy_contract_pc.json `
+  --report C:\path\to\pc_datasets\reports\policy_contract_pc.json `
   --device cuda
 ```
 
-Success prints `DAY14_POLICY_CONTRACT_PASS`. The report is external training
+Success prints `POLICY_CONTRACT_PASS`. The report is external training
 evidence and must not be committed with datasets or checkpoints.
 
 ## Environment report

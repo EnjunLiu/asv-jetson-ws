@@ -53,7 +53,7 @@ LATCHED_QOS = QoSProfile(
 
 class EpisodeRecorderNode(Node):
     def __init__(self) -> None:
-        super().__init__("day8_episode_recorder")
+        super().__init__("episode_recorder")
         self.output_root = Path(
             self.declare_parameter(
                 "output_root",
@@ -140,7 +140,7 @@ class EpisodeRecorderNode(Node):
 
         self.task_pub = self.create_publisher(String, "/task/text", LATCHED_QOS)
         self.complete_pub = self.create_publisher(
-            Bool, "/day8/recording_complete", LATCHED_QOS
+            Bool, "/episode/recording_complete", LATCHED_QOS
         )
         self.create_subscription(
             UEASVState, "/ue/asv_state", self.on_state, RELIABLE_QOS
@@ -175,7 +175,7 @@ class EpisodeRecorderNode(Node):
         self.cache_evictions = 0
         self.invalid_drops = 0
         self.get_logger().info(
-            "DAY8_RECORDER_READY waiting for synchronized "
+            "EPISODE_RECORDER_READY waiting for synchronized "
             "/ue/asv_state + /ue/entities + /ue/camera_frame; "
             f"target_frames={self.max_frames}"
         )
@@ -238,7 +238,7 @@ class EpisodeRecorderNode(Node):
         temporary_link.symlink_to(episode_dir.name, target_is_directory=True)
         os.replace(temporary_link, self.output_root / "latest")
         self.get_logger().info(
-            f"DAY8_RECORDING_STARTED episode={episode_dir}"
+            f"EPISODE_RECORDING_STARTED episode={episode_dir}"
         )
 
     def _record_if_complete(self, key: tuple[str, int, int, int]) -> None:
@@ -260,7 +260,7 @@ class EpisodeRecorderNode(Node):
         ):
             self.invalid_drops += 1
             self.get_logger().warning(
-                f"DAY8_DROP_INVALID_FRAME key={key} "
+                f"EPISODE_DROP_INVALID_FRAME key={key} "
                 f"ego={state.valid} camera={camera.valid} "
                 f"entities={entities.valid}:{entities.detail}"
             )
@@ -284,7 +284,7 @@ class EpisodeRecorderNode(Node):
         except Exception as exc:
             self.finished = True
             self.get_logger().error(
-                f"DAY8_RECORDING_FAILED:{type(exc).__name__}:{exc}"
+                f"EPISODE_RECORDING_FAILED:{type(exc).__name__}:{exc}"
             )
             self.finalize("failed")
             return
@@ -294,7 +294,7 @@ class EpisodeRecorderNode(Node):
         count = len(self.frame_indices)
         if count == 1 or count % 10 == 0:
             self.get_logger().info(
-                f"DAY8_RECORDED frame={camera.frame_index} "
+                f"EPISODE_RECORDED frame={camera.frame_index} "
                 f"count={count}/{self.max_frames} path={record_path.name}"
             )
         if count >= self.max_frames:
@@ -307,7 +307,7 @@ class EpisodeRecorderNode(Node):
         self.finalized = True
         if self.episode_dir is None:
             self.get_logger().warning(
-                "DAY8_RECORDING_EMPTY no synchronized frame was written"
+                "EPISODE_RECORDING_EMPTY no synchronized frame was written"
             )
             return
 
@@ -338,9 +338,9 @@ class EpisodeRecorderNode(Node):
         complete.data = bool(status == "complete" and report["passed"])
         self.complete_pub.publish(complete)
         marker = (
-            "DAY8_RECORDING_COMPLETE"
+            "EPISODE_RECORDING_COMPLETE"
             if complete.data
-            else "DAY8_RECORDING_INCOMPLETE"
+            else "EPISODE_RECORDING_INCOMPLETE"
         )
         self.get_logger().info(
             f"{marker} episode={self.episode_dir} "
@@ -349,7 +349,7 @@ class EpisodeRecorderNode(Node):
         )
         if complete.data and self.exit_on_complete:
             self.get_logger().info(
-                "DAY8_RECORDER_EXIT requested after successful recording"
+                "EPISODE_RECORDER_EXIT requested after successful recording"
             )
             self.exit_timer = threading.Timer(
                 0.25, self._shutdown_after_complete

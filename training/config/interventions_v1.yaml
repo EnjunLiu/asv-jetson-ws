@@ -4,10 +4,10 @@
 # may diagnose the already-opened Day 15 test split, but it must not retrain or
 # select a new checkpoint from these results.
 
-schema_version: "day16_interventions_v1"
-experiment_name: "day16_frozen_policy_interventions"
+schema_version: "interventions_v1"
+experiment_name: "frozen_policy_interventions"
 expected_checkpoint_git_sha: "e93c6ef"
-expected_day15_summary_sha256: "c82ab7b726a1c2036e478e0e9541c141b0b362d79ac6dfb970f7a3f4a35d03b4"
+expected_training_summary_sha256: "c82ab7b726a1c2036e478e0e9541c141b0b362d79ac6dfb970f7a3f4a35d03b4"
 expected_run_count: 30
 frame_stride: 3
 seeds: [17, 23, 42]

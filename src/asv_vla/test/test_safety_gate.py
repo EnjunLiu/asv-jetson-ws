@@ -205,9 +205,14 @@ class TestCollision:
         assert _check_collision(traj, entities, SafetyGateConfig()) is None
 
     def test_close_static_entity_rejected(self) -> None:
-        traj = _step_trajectory(1.0, 0.0)
-        entities = [_Entity("e1", 0.5, 0.0, 0.0, 0.0)]
+        traj = _step_trajectory(0.4, 0.0)
+        # Margin is 0.5 m: an executed waypoint at 0.4 m with the entity at
+        # 0.2 m leaves 0.2 m clearance -> rejected.
+        entities = [_Entity("e1", 0.2, 0.0, 0.0, 0.0)]
         assert _check_collision(traj, entities, SafetyGateConfig()) == COLLISION_RISK
+        # Beyond the margin from every executed waypoint is accepted.
+        entities = [_Entity("e1", 1.5, 0.0, 0.0, 0.0)]
+        assert _check_collision(traj, entities, SafetyGateConfig()) is None
 
     def test_moving_entity_extrapolated(self) -> None:
         traj = _step_trajectory(0.5, 0.0)

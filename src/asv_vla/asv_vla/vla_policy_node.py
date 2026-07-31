@@ -29,7 +29,7 @@ from asv_jetson_interfaces.msg import (
 
 from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
 
-POLICY_MODEL_VERSION = "day20_onnx_cpu_v1"
+POLICY_MODEL_VERSION = "vla_onnx_cpu_v1"
 
 # Model contract (frozen at export time).
 ENTITY_COUNT = 16

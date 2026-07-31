@@ -28,11 +28,11 @@ def finite_zero(value: float, tolerance: float = FLOAT_TOLERANCE) -> bool:
     return math.isfinite(value) and abs(value) <= tolerance
 
 
-def is_day1_safe_stop(message: SelectedTrajectoryLike) -> bool:
-    """Validate the executable-neutral Day 1 trajectory container.
+def is_safe_stop(message: SelectedTrajectoryLike) -> bool:
+    """Validate the executable-neutral trajectory container.
 
     ``valid`` means that the trajectory message itself is well formed. The
-    downstream Day 1 controller still publishes ``DecisionOutput.valid=false``;
+    downstream controller still publishes ``DecisionOutput.valid=false``;
     a valid all-zero displacement must never be treated as a position-hold
     command.
     """

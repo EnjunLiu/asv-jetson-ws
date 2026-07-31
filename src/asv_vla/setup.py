@@ -31,17 +31,9 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
-            "stub_stack = asv_vla.stub_stack_node:main",
-            "stub_stack_without_language = asv_vla.stub_stack_node:main_without_language",
-            "safety_tail = asv_vla.stub_stack_node:main_safety_tail",
-            "smoke_inputs = asv_vla.smoke_inputs:main",
-            "contract_probe = asv_vla.contract_probe:main",
             "language_encoder = asv_vla.language_encoder_node:main",
-            "language_embedding_probe = asv_vla.language_embedding_probe:main",
             "visual_encoder = asv_vla.visual_encoder_node:main",
-            "visual_encoder_probe = asv_vla.visual_encoder_probe:main",
             "task_entity_tensor = asv_vla.task_entity_tensor_node:main",
-            "task_entity_probe = asv_vla.task_entity_probe:main",
             "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",
             (
                 "generate_language_interventions = "
@@ -52,15 +44,10 @@ setup(
             "record_episode = asv_vla.episode_recorder_node:main",
             "replay_episode = asv_vla.episode_replay_node:main",
             "evaluate_episode = asv_vla.episode:main",
-            "day8_replay_probe = asv_vla.day8_replay_probe:main",
             "expert_trajectory = asv_vla.expert_trajectory_node:main",
             (
                 "expert_kinematic_executor = "
                 "asv_vla.expert_kinematic_executor_node:main"
-            ),
-            (
-                "expert_trajectory_probe = "
-                "asv_vla.expert_trajectory_probe:main"
             ),
             (
                 "evaluate_expert_labels = "
@@ -75,7 +62,6 @@ setup(
                 "asv_vla.supervised_dataset:evaluate_main"
             ),
             "safety_gate = asv_vla.safety_gate_node:main",
-            "safety_gate_probe = asv_vla.safety_gate_probe:main",
             "trajectory_controller = asv_vla.trajectory_controller_node:main",
             "vla_policy = asv_vla.vla_policy_node:main",
             "expert_policy_bridge = asv_vla.expert_policy_bridge:main",

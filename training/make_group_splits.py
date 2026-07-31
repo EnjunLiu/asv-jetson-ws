@@ -347,16 +347,16 @@ def main() -> int:
     # Basic ratio validation.
     ratios = [args.train_ratio, args.validation_ratio]
     if any(r <= 0.0 or r >= 1.0 for r in ratios):
-        print("DAY11_SPLIT_FAIL: ratios must be in (0, 1)", file=sys.stderr)
+        print("SPLIT_FAIL: ratios must be in (0, 1)", file=sys.stderr)
         return 1
     if sum(ratios) >= 1.0:
-        print("DAY11_SPLIT_FAIL: train + validation ratios must sum to < 1.0", file=sys.stderr)
+        print("SPLIT_FAIL: train + validation ratios must sum to < 1.0", file=sys.stderr)
         return 1
 
     try:
         entries = _load_jsonl(args.registry)
     except (OSError, ValueError) as exc:
-        print(f"DAY11_SPLIT_FAIL: cannot read registry: {exc}", file=sys.stderr)
+        print(f"SPLIT_FAIL: cannot read registry: {exc}", file=sys.stderr)
         return 1
 
     try:
@@ -368,7 +368,7 @@ def main() -> int:
             instructions_path=args.instructions,
         )
     except (ValueError, RuntimeError) as exc:
-        print(f"DAY11_SPLIT_FAIL: {exc}", file=sys.stderr)
+        print(f"SPLIT_FAIL: {exc}", file=sys.stderr)
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -379,7 +379,7 @@ def main() -> int:
 
     ready = "ready" if split_result["training_ready"] else "not_ready"
     print(
-        f"DAY11_SPLIT_PASS "
+        f"SPLIT_PASS "
         f"runs={split_result['run_count']} "
         f"seeds={split_result['scene_seed_count']} "
         f"train={split_result['split_run_counts']['train']} "
@@ -388,7 +388,7 @@ def main() -> int:
         f"training_ready={split_result['training_ready']}"
     )
     if not split_result["training_ready"]:
-        print(f"DAY11_TRAINING_NOT_READY: {split_result['reason']}")
+        print(f"TRAINING_NOT_READY: {split_result['reason']}")
     print(f"  output: {args.output.resolve()}")
     return 0
 

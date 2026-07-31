@@ -30,8 +30,8 @@ from training.model import SmallPolicyConfig, SmallTrajectoryPolicy
 from training.train import CHECKPOINT_SCHEMA_VERSION
 
 
-SCHEMA_VERSION = "day16_intervention_report_v1"
-CONFIG_SCHEMA_VERSION = "day16_interventions_v1"
+SCHEMA_VERSION = "intervention_report_v1"
+CONFIG_SCHEMA_VERSION = "interventions_v1"
 ABLATION_VARIANTS = frozenset(
     {
         "full",
@@ -729,27 +729,27 @@ def evaluate(args: argparse.Namespace) -> int:
     config_path = args.config.resolve()
     config = _read_yaml(config_path)
     _validate_config(config)
-    summary_path = args.day15_output.resolve() / "summary.json"
+    summary_path = args.output.resolve() / "summary.json"
     expected_summary_sha256 = str(
         config.get(
             "expected_training_summary_sha256",
-            config.get("expected_day15_summary_sha256", ""),
+            config.get("expected_training_summary_sha256", ""),
         )
     )
     if not expected_summary_sha256:
         raise ValueError("expected training summary SHA-256 is missing")
     if _sha256_file(summary_path) != expected_summary_sha256:
         raise ValueError("frozen training summary SHA-256 mismatch")
-    day15_summary = _read_json(summary_path)
+    training_summary = _read_json(summary_path)
     require_test_gate = bool(config.get("require_sealed_test_gate", True))
     if require_test_gate and not bool(
-        day15_summary.get("test", {}).get("gate_passed")
+        training_summary.get("test", {}).get("gate_passed")
     ):
         raise ValueError("Day 15 sealed test gate was not passed")
-    if not bool(day15_summary.get("validation_gate_passed")):
+    if not bool(training_summary.get("validation_gate_passed")):
         raise ValueError("training validation gate was not passed")
     expected_git_sha = str(config["expected_checkpoint_git_sha"])
-    if day15_summary.get("git_sha") != expected_git_sha:
+    if training_summary.get("git_sha") != expected_git_sha:
         raise ValueError("Day 15 training Git SHA mismatch")
 
     feature_root = args.features.resolve()
@@ -854,7 +854,7 @@ def evaluate(args: argparse.Namespace) -> int:
     variants = ("full", *tuple(str(v) for v in ablation_config["variants"]))
     for seed in (int(value) for value in config["seeds"]):
         model, checkpoint = _load_model(
-            args.day15_output.resolve() / f"full_seed{seed}" / "best.pt",
+            args.output.resolve() / f"full_seed{seed}" / "best.pt",
             model_config=model_config,
             device=device,
             expected_git_sha=expected_git_sha,
@@ -1037,7 +1037,7 @@ def evaluate(args: argparse.Namespace) -> int:
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "device": str(device),
         "config_sha256": _sha256_file(config_path),
-        "day15_summary_sha256": _sha256_file(summary_path),
+        "training_summary_sha256": _sha256_file(summary_path),
         "checkpoint_git_sha": expected_git_sha,
         "dataset": {
             "feature_root": str(feature_root),
@@ -1086,7 +1086,7 @@ def evaluate(args: argparse.Namespace) -> int:
     _write_json(output_root / "ablation_summary.json", ablation_summary)
     status = "PASS" if overall_passed else "FAIL"
     print(
-        f"DAY16_INTERVENTIONS_{status} "
+        f"INTERVENTIONS_{status} "
         f"language={language_pair_pass} color_swap={color_swap_pass} "
         f"ablations={all(ablation_gates.values())} "
         f"fail_closed={fail_closed_passed}"
@@ -1105,7 +1105,7 @@ def main() -> int:
     parser.add_argument("--instructions", type=Path, required=True)
     parser.add_argument("--contrast-pairs", type=Path, required=True)
     parser.add_argument("--registry", type=Path, required=True)
-    parser.add_argument("--day15-output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=256)

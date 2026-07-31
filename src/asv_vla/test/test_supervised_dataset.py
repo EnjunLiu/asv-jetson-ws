@@ -75,7 +75,7 @@ def _entity(entity_id, color, x, y):
 
 
 def _make_episode(tmp_path, *, all_targets=True, frame_count=2):
-    episode = tmp_path / "episodes" / "RUN_DAY10"
+    episode = tmp_path / "episodes" / "RUN_01"
     template = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
     entities = [_entity("target_red", "red", 8.0, 0.0)]
     if all_targets:
@@ -99,12 +99,12 @@ def _make_episode(tmp_path, *, all_targets=True, frame_count=2):
         )
 
         record = copy.deepcopy(template)
-        record["run_id"] = "RUN_DAY10"
+        record["run_id"] = "RUN_01"
         record["scene_seed"] = 24680
         record["frame_index"] = frame_index
         record["stamp_us"] = stamp_us
         record["task"]["stamp_us"] = 0
-        record["task"]["text"] = "day10 intervention scene"
+        record["task"]["text"] = "intervention scene"
         record["ego"]["stamp_us"] = stamp_us
         record["ego"]["simulation_time_s"] = stamp_us / 1_000_000.0
         record["camera"]["stamp_us"] = stamp_us
@@ -120,9 +120,9 @@ def _make_episode(tmp_path, *, all_targets=True, frame_count=2):
         stamps.append(stamp_us)
 
     manifest = make_manifest(
-        run_id="RUN_DAY10",
+        run_id="RUN_01",
         scene_seed=24680,
-        task_text="day10 intervention scene",
+        task_text="intervention scene",
         frame_indices=frame_indices,
         stamp_values=stamps,
         status="complete",
@@ -140,7 +140,7 @@ def _write_instructions(tmp_path, records=None):
 def test_build_and_evaluate_complete_dataset(tmp_path):
     episode = _make_episode(tmp_path)
     instructions = _write_instructions(tmp_path)
-    output = tmp_path / "artifacts" / "day10" / "complete"
+    output = tmp_path / "artifacts" / "supervised" / "complete"
 
     build_report = build_supervised_dataset(
         [episode], instructions, output

@@ -141,11 +141,11 @@ def test_manifest_records_and_validates_execution_mode(tmp_path):
     assert "manifest execution_mode is invalid" in failed["errors"]
 
 
-def test_manifest_records_complete_day12_collection_identity():
+def test_manifest_records_complete_collection_identity():
     manifest = make_manifest(
-        run_id="RUN_DAY12",
+        run_id="RUN_04",
         scene_seed=120101,
-        task_text="day12 counterbalanced multimodal scene",
+        task_text="counterbalanced multimodal scene",
         frame_indices=[0, 1],
         stamp_values=[100, 200],
         status="complete",
@@ -156,19 +156,19 @@ def test_manifest_records_complete_day12_collection_identity():
     )
 
     assert manifest["collection"] == {
-        "schema_version": "day12_collection_slot_v1",
+        "schema_version": "collection_slot_v1",
         "slot_id": "L1_S0_R1",
         "layout_id": "L1",
         "motion_state": "S0",
     }
 
 
-def test_manifest_rejects_partial_day12_collection_identity():
+def test_manifest_rejects_partial_collection_identity():
     with pytest.raises(EpisodeError, match="must either all be set"):
         make_manifest(
-            run_id="RUN_DAY12",
+            run_id="RUN_04",
             scene_seed=120101,
-            task_text="day12",
+            task_text="collect",
             frame_indices=[0],
             stamp_values=[100],
             status="complete",

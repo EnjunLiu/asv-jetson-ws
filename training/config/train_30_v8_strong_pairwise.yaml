@@ -1,5 +1,5 @@
 # Day 16 aggressive color grounding repair.
-schema_version: "day15_train_v1"
+schema_version: "train_v1"
 experiment_name: "small_policy_30run_strong_pairwise_v8"
 frozen_feature_git_sha: "eb832f3"
 seeds: [17, 23, 42]

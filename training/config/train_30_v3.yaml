@@ -3,7 +3,7 @@
 # seed 42 never met both frozen STOP gates. Raise only the STOP objective from
 # 0.2 to 1.0 so it has equal weight with the waypoint objective.
 
-schema_version: "day15_train_v1"
+schema_version: "train_v1"
 experiment_name: "small_policy_30run_stop_weighted_v3"
 frozen_feature_git_sha: "eb832f3"
 seeds: [17, 23, 42]

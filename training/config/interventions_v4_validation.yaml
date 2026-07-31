@@ -1,7 +1,7 @@
 # Day 16 validation gate for v6 same-frame paired training.
 
-schema_version: "day16_interventions_v1"
-experiment_name: "day16_paired_v6_validation"
+schema_version: "interventions_v1"
+experiment_name: "paired_v6_validation"
 expected_checkpoint_git_sha: "a7eb7ab"
 expected_training_summary_sha256: "2ddd4a066455eded821d18a570a425c627b6f9e50fbbbf3a8e36887b01551ec1"
 require_sealed_test_gate: false

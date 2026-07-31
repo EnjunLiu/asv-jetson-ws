@@ -1,7 +1,7 @@
 # Day 13 frozen feature-cache contract.
 
 feature_schema_version: "feature_cache_v1"
-preprocess_version: "day13_camera_entity_crop_v1"
+preprocess_version: "camera_entity_crop_v1"
 
 language:
   model_id: "Qwen/Qwen3-Embedding-0.6B"

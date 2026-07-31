@@ -38,7 +38,7 @@ class ExpertTrajectoryNode(Node):
     def __init__(self) -> None:
         super().__init__("expert_trajectory")
         self.status_run_id = (
-            self.declare_parameter("run_id", "day9-expert")
+            self.declare_parameter("run_id", "expert")
             .get_parameter_value()
             .string_value
         )
