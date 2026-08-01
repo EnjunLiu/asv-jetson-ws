@@ -63,6 +63,8 @@ class _SampleRef:
 class _RunCache:
     run_id: str
     instruction_ids: np.ndarray
+    instruction_texts: np.ndarray
+    entity_ids: np.ndarray
     language_splits: np.ndarray
     language: np.ndarray
     frame_indices: np.ndarray
@@ -218,6 +220,7 @@ def _load_cache(path: Path) -> _RunCache:
     try:
         with np.load(path / LANGUAGE_FILE_NAME, allow_pickle=False) as source:
             instruction_ids = np.asarray(source["instruction_ids"]).copy()
+            instruction_texts = np.asarray(source["instruction_texts"]).copy()
             language_splits = np.asarray(source["language_splits"]).copy()
             language = np.asarray(source["embeddings"], dtype=np.float32).copy()
         with np.load(path / FRAME_SHARD_NAME, allow_pickle=False) as source:
@@ -231,6 +234,7 @@ def _load_cache(path: Path) -> _RunCache:
                     "entity_visual",
                     "entity_visual_mask",
                     "entity_features",
+                    "entity_ids",
                     "entity_mask",
                     "ego",
                     "ego_valid",
@@ -260,6 +264,8 @@ def _load_cache(path: Path) -> _RunCache:
     return _RunCache(
         run_id=run_id,
         instruction_ids=instruction_ids,
+        instruction_texts=instruction_texts,
+        entity_ids=np.asarray(arrays["entity_ids"], dtype=object),
         language_splits=language_splits,
         language=language,
         frame_indices=arrays["frame_indices"],
@@ -313,6 +319,7 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         geometry_noise_std: float = 0.02,
         slot_dropout_prob: float = 0.1,
         mirror_prob: float = 0.0,
+        instruction_swap_prob: float = 0.0,
     ) -> None:
         if frame_stride <= 0:
             raise ValueError("frame_stride must be positive")
@@ -320,10 +327,13 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             raise ValueError("augmentation strengths must be non-negative")
         if not 0.0 <= mirror_prob <= 1.0:
             raise ValueError("mirror_prob must be in [0, 1]")
+        if not 0.0 <= instruction_swap_prob <= 1.0:
+            raise ValueError("instruction_swap_prob must be in [0, 1]")
         self._augment = augment
         self._geometry_noise_std = float(geometry_noise_std)
         self._slot_dropout_prob = float(slot_dropout_prob)
         self._mirror_prob = float(mirror_prob)
+        self._instruction_swap_prob = float(instruction_swap_prob)
         normalized_split = (
             str(selected_split).strip().casefold()
             if selected_split is not None
@@ -388,6 +398,24 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                     continue
                 self._samples.append(_SampleRef(cache_index, sample_row))
 
+        # Instruction-swap support: build red/blue follow-row maps per cache
+        # so __getitem__ can swap follow-red <-> follow-blue and regenerate
+        # the expert label, teaching the policy to follow the commanded
+        # colour even when it is not the nearest target.
+        self._swap_rows: dict[int, tuple[list[int], list[int]]] = {}
+        if self._augment and self._instruction_swap_prob > 0.0:
+            for cache_index, cache in enumerate(self._caches):
+                red_rows: list[int] = []
+                blue_rows: list[int] = []
+                for row, text in enumerate(cache.instruction_texts):
+                    lowered = str(text).casefold()
+                    if "红" in str(text):
+                        red_rows.append(row)
+                    elif "蓝" in str(text):
+                        blue_rows.append(row)
+                if red_rows and blue_rows:
+                    self._swap_rows[cache_index] = (red_rows, blue_rows)
+
         if not self._caches:
             raise ValueError("no feature cache matches the selected Run split")
         if not self._samples:
@@ -423,6 +451,38 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         entity_visual_mask = cache.entity_visual_mask[frame_row].copy()
         trajectory = cache.target_trajectories[sample_row].copy()
         safe_stop = cache.target_safe_stop[sample_row].copy()
+        instruction_row = int(cache.sample_instruction_rows[sample_row])
+        language = cache.language[instruction_row].copy()
+
+        if self._augment and self._instruction_swap_prob > 0.0:
+            # Instruction swap: swap follow-red <-> follow-blue and
+            # regenerate the expert label for the new instruction.  The
+            # training set is red-near biased (~78% of follow-red frames),
+            # so swapped samples teach the policy to follow the commanded
+            # colour even when it is NOT the nearest target.
+            swap_rows = self._swap_rows.get(reference.cache_index)
+            if swap_rows is not None and not bool(safe_stop):
+                red_rows, blue_rows = swap_rows
+                rng = np.random.default_rng(
+                    int(reference.sample_row) * 104729 + int(frame_row) * 19531
+                )
+                text = str(cache.instruction_texts[instruction_row])
+                if "红" in str(text) and blue_rows and rng.random() < self._instruction_swap_prob:
+                    new_rows = blue_rows
+                    commanded = "blue"
+                elif "蓝" in str(text) and red_rows and rng.random() < self._instruction_swap_prob:
+                    new_rows = red_rows
+                    commanded = "red"
+                else:
+                    new_rows = None
+                    commanded = None
+                if new_rows is not None:
+                    new_row = int(new_rows[rng.integers(len(new_rows))])
+                    language = cache.language[new_row].copy()
+                    trajectory, safe_stop = _regenerate_label(
+                        cache, frame_row, geometry, geometry_mask,
+                        commanded, text,
+                    )
 
         if self._augment and self._mirror_prob > 0.0:
             # Geometric mirroring: negate the lateral axis (positions,
@@ -474,9 +534,7 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                 entity_visual_mask[drop] = False
 
         return {
-            "language": torch.from_numpy(
-                cache.language[instruction_row].copy()
-            ),
+            "language": torch.from_numpy(language),
             "global_visual": torch.from_numpy(
                 cache.global_visual[frame_row].copy()
             ),
@@ -505,6 +563,61 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             "sample_id": str(cache.sample_ids[sample_row]),
             "instruction_id": str(cache.instruction_ids[instruction_row]),
         }
+
+
+def _regenerate_label(
+    cache: "_RunCache",
+    frame_row: int,
+    geometry: np.ndarray,
+    geometry_mask: np.ndarray,
+    commanded: str,
+    original_text: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Regenerate the expert label for a swapped instruction.
+
+    Reconstructs the visible entities from the cached geometry tensor and
+    calls the deterministic expert generator with the new commanded colour,
+    so the swapped sample is a consistent (instruction, label) pair.
+    """
+    from asv_vla.expert_trajectory import (
+        ExpertTask,
+        generate_expert_trajectory,
+    )
+    from types import SimpleNamespace
+
+    distance = "3m" if "10米" not in str(original_text) else "10m"
+    desired = 3.0 if distance == "3m" else 10.0
+    entities: list[Any] = []
+    ids = cache.entity_ids[frame_row]
+    for slot in range(min(len(ids), 16)):
+        if not geometry_mask[slot] or not ids[slot]:
+            continue
+        row = geometry[slot]
+        entity_id = str(ids[slot])
+        entities.append(
+            SimpleNamespace(
+                entity_id=entity_id,
+                relative_x=float(row[0]) * 20.0,
+                relative_y=float(row[1]) * 20.0,
+                relative_velocity_x=float(row[3]) * 5.0,
+                relative_velocity_y=float(row[4]) * 5.0,
+                valid=True,
+                visible=True,
+                is_target=True,
+                color="red" if "red" in entity_id else "blue",
+            )
+        )
+    task = ExpertTask(
+        action="follow",
+        target_attribute=f"color:{commanded}",
+        desired_distance_m=desired,
+    )
+    result = generate_expert_trajectory(task, entities)
+    trajectory = np.asarray(
+        result.delta_p_xy, dtype=np.float32
+    ).reshape(-1, 2)
+    safe_stop = np.asarray([float(result.safe_stop)], dtype=np.float32)
+    return trajectory, safe_stop
 
 
 def _annotate_item(

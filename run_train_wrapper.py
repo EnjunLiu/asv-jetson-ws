@@ -15,8 +15,8 @@ args = argparse.Namespace(
     features=Path(r"C:\Users\LIU\Documents\jetson_ws\pc_datasets\features_sine"),
     split=Path(r"C:\Users\LIU\Documents\jetson_ws\pc_datasets\registry\sine_group_split_v1.json"),
     instructions=Path(r"dataset\language\instructions.jsonl"),
-    output_root=Path(r"C:\Users\LIU\Documents\jetson_ws\pc_datasets\checkpoints\sine_formation_v3"),
-    git_sha="sine-formation-v3",
+    output_root=Path(r"C:\Users\LIU\Documents\jetson_ws\pc_datasets\checkpoints\sine_formation_v4"),
+    git_sha="sine-formation-v4",
     device="cuda",
 )
 print(f"Git SHA: {args.git_sha}")

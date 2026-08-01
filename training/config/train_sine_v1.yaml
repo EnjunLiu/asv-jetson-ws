@@ -26,7 +26,12 @@ data:
   # commanded boat's side: the training set is red-near biased (~78%), and
   # mirroring (y-negate + trajectory mirror) halves that bias so the model
   # follows the commanded colour even when it is NOT the nearest target.
-  mirror_prob: 0.5
+  mirror_prob: 0.3
+  # Instruction swap: regenerate follow-red <-> follow-blue with a fresh
+  # expert label.  Directly balances the "commanded colour is NOT nearest"
+  # cases (currently ~21% of follow-red frames) so the policy learns to
+  # follow the commanded colour regardless of which target is closer.
+  instruction_swap_prob: 0.4
 
 training:
   epochs: 80

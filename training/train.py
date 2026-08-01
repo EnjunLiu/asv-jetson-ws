@@ -239,6 +239,9 @@ def _build_dataset_bundle(
             data_config.get("slot_dropout_prob", 0.1)
         ),
         mirror_prob=float(data_config.get("mirror_prob", 0.0)),
+        instruction_swap_prob=float(
+            data_config.get("instruction_swap_prob", 0.0)
+        ),
     )
     validation_base = FrozenFeatureDataset(
         caches,

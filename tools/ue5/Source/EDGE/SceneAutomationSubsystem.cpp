@@ -698,9 +698,20 @@ void USceneAutomationSubsystem::HandleSetpointPayload(const FString& Payload)
     }
     const double DeltaX = Object->GetNumberField(TEXT("Delta_X_Cm"));
     const double DeltaY = Object->GetNumberField(TEXT("Delta_Y_Cm"));
-    if (AsvActor.Get() == nullptr)
+    AActor* Asv = AsvActor.Get();
+    if (Asv == nullptr)
     {
         return;
+    }
+    if (!bExecutorActive)
+    {
+        // First setpoint: take over from the blueprint cruise AT ITS
+        // CURRENT POSITION.  The blueprint has been approaching the
+        // formation (counterbalanced cruise); anchoring the spawn point
+        // would teleport the ASV back and change the camera viewpoint
+        // away from the training distribution.  Anchoring the cruise
+        // position keeps the online viewpoint consistent with collection.
+        AsvAnchorLocation = Asv->GetActorLocation();
     }
     ExecutedOffset.X += static_cast<float>(DeltaX);
     ExecutedOffset.Y += static_cast<float>(DeltaY);
