@@ -23,7 +23,12 @@ from .image_entity_perception import (
     ImageEntityModel,
     ImageEntityPerceptionError,
 )
-from .visual_encoder import CameraProfile, decode_camera_image, project_target_to_pixel
+from .visual_encoder import (
+    CameraProfile,
+    TargetProjectionError,
+    decode_camera_image,
+    project_target_to_pixel,
+)
 
 
 RELIABLE_QOS = QoSProfile(
@@ -36,6 +41,53 @@ SENSOR_QOS = QoSProfile(
     depth=2,
     reliability=ReliabilityPolicy.BEST_EFFORT,
 )
+
+
+def _apply_prediction_projection(
+    entity: UEEntity,
+    prediction: object,
+    profile: CameraProfile,
+    confidence_threshold: float,
+) -> None:
+    """Attach a conservative bbox without letting one bad projection escape."""
+
+    entity.bbox_x_min = 0.0
+    entity.bbox_y_min = 0.0
+    entity.bbox_x_max = 0.0
+    entity.bbox_y_max = 0.0
+    entity.bbox_valid = False
+    entity.visible = False
+    if not entity.valid:
+        return
+    try:
+        pixel_x, pixel_y, depth = project_target_to_pixel(
+            entity.relative_x,
+            entity.relative_y,
+            entity.relative_z,
+            profile,
+        )
+        # The model has no privileged UE bounding box.  This is a
+        # conservative calibrated box around the image-derived centre, used
+        # only for diagnostics/crops.
+        half_w = max(8.0, min(96.0, 1600.0 / max(depth, 1.0)))
+        half_h = max(6.0, min(64.0, half_w * 0.45))
+        entity.bbox_x_min = float(max(0.0, pixel_x - half_w))
+        entity.bbox_y_min = float(max(0.0, pixel_y - half_h))
+        entity.bbox_x_max = float(min(profile.width - 1.0, pixel_x + half_w))
+        entity.bbox_y_max = float(min(profile.height - 1.0, pixel_y + half_h))
+        entity.bbox_valid = (
+            entity.bbox_x_max > entity.bbox_x_min
+            and entity.bbox_y_max > entity.bbox_y_min
+        )
+        entity.visible = (
+            bool(prediction.visible)
+            and entity.confidence >= confidence_threshold
+            and entity.bbox_valid
+        )
+    except (TargetProjectionError, ValueError, ArithmeticError):
+        # Keep the finite model geometry for temporal tracking, but fail closed
+        # for image-space validity and visibility.
+        return
 
 
 class ImageEntityPerceptionNode(Node):
@@ -158,31 +210,12 @@ class ImageEntityPerceptionNode(Node):
                     prediction.relative_z,
                 )
             )
-            entity.visible = False
-            try:
-                pixel_x, pixel_y, depth = project_target_to_pixel(
-                    prediction.relative_x,
-                    prediction.relative_y,
-                    prediction.relative_z,
-                    self.profile,
-                )
-                # The model has no privileged UE bounding box.  This is a
-                # conservative calibrated box around the image-derived
-                # centre, used only for diagnostics/crops.
-                half_w = max(8.0, min(96.0, 1600.0 / max(depth, 1.0)))
-                half_h = max(6.0, min(64.0, half_w * 0.45))
-                entity.bbox_x_min = float(max(0.0, pixel_x - half_w))
-                entity.bbox_y_min = float(max(0.0, pixel_y - half_h))
-                entity.bbox_x_max = float(min(self.profile.width - 1.0, pixel_x + half_w))
-                entity.bbox_y_max = float(min(self.profile.height - 1.0, pixel_y + half_h))
-                entity.bbox_valid = True
-                entity.visible = (
-                    prediction.confidence >= self.confidence_threshold
-                    and entity.bbox_x_max > entity.bbox_x_min
-                    and entity.bbox_y_max > entity.bbox_y_min
-                )
-            except (ValueError, ArithmeticError):
-                entity.bbox_valid = False
+            _apply_prediction_projection(
+                entity,
+                prediction,
+                self.profile,
+                self.confidence_threshold,
+            )
             message.entities.append(entity)
 
         message.valid = True
