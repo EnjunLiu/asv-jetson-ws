@@ -68,24 +68,38 @@ def test_closed_loop_uses_final_near_image_color_policy_candidate() -> None:
     manifest = MANIFEST.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
 
-    assert "policy_sine_near_image_color_seed42.onnx" in launch
+    assert "policy_sine_near_image_color_seed42.pt" in launch
     assert "image_entity_color_calibrated_v1.npz" in launch
     assert "default_value=\"/home/jetson/jetson_asv_ws/models/policy.onnx\"" not in launch
     assert "path: models/image_entity_color_calibrated_v1.npz" in manifest
     assert "model_id: image_entity_color_calibrated_v1" in manifest
-    assert "path: models/policy_sine_near_image_color_seed42.onnx" in manifest
+    assert "path: models/policy_sine_near_image_color_seed42.pt" in manifest
     assert "model_id: policy_sine_near_image_color_seed42" in manifest
-    assert "artifact_sha256: not_available_in_source_checkout" in manifest
-    assert "source_sha256: not_available_in_source_checkout" in manifest
+    assert (
+        "artifact_sha256: "
+        "985111c7cfeaea9a927bc59b6b3d6efb2bf40df7e68996d44aa82de4b2014a3c"
+    ) in manifest
+    assert (
+        "source_sha256: "
+        "6c4ed50d49a0ba9447a3d991cb09de130bbdbcc6eb98eca1b98c49dfd66d7685"
+    ) in manifest
     assert "validation_gate_passed: true" in manifest
-    assert "deployment_status: final_near_s2_demo" in manifest
-    assert "mode: online_qwen_cuda_staged" in manifest
+    assert "deployment_status: torch_cuda_online_passed" in manifest
+    assert "mode: online_qwen_cuda_staged_first_instruction" in manifest
     assert "online_qwen_runtime: true" in manifest
-    assert "policy_sine_near_image_color_seed42.onnx" in readme
+    assert "release_model_after_encode: true" in manifest
+    assert "staging_delay_sec: 20.0" in manifest
+    assert "first_instruction_encoding: real_qwen_cuda" in manifest
+    assert "qwen_weight_resident_after_encode: false" in manifest
+    assert "post_encode_embedding_online: true" in manifest
+    assert "task_switch_policy: restart_required" in manifest
+    assert "s2_task_switch_promised: false" in manifest
+    assert "validation_status: cuda_staged_first_instruction_online_passed" in manifest
+    assert "policy_sine_near_image_color_seed42.pt" in readme
     assert "image_entity_color_calibrated_v1.npz" in readme
     assert "policy_image_seed17.onnx" not in readme
     assert "policy.onnx" not in readme
-    assert "policy_sine_near_image_color_seed42.onnx" in HARDWARE_LAUNCH.read_text(
+    assert "policy_sine_near_image_color_seed42.pt" in HARDWARE_LAUNCH.read_text(
         encoding="utf-8"
     )
     assert "image_entity_color_calibrated_v1.npz" in REPLAY_LAUNCH.read_text(

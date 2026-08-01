@@ -12,7 +12,7 @@ Pipeline (no duplicate publishers, one selectable language backend):
               language_backend -> /vla/language_embedding
                         |
                         v
-              vla_policy (ONNX, CPU) -> /vla/policy_trajectory
+                        vla_policy (PyTorch, CUDA) -> /vla/policy_trajectory
                         |
                         v
               safety_gate -> /vla/selected_trajectory
@@ -129,9 +129,11 @@ def generate_launch_description():
                 "model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "policy_sine_near_image_color_seed42.onnx"
+                    "policy_sine_near_image_color_seed42.pt"
                 ),
             ),
+            DeclareLaunchArgument("policy_backend", default_value="torch_cuda"),
+            DeclareLaunchArgument("policy_device", default_value="cuda"),
             DeclareLaunchArgument(
                 "perception_model_path",
                 default_value=(
@@ -152,7 +154,7 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("active_embedding", default_value=""),
-            DeclareLaunchArgument("language_backend", default_value="stub"),
+            DeclareLaunchArgument("language_backend", default_value="qwen"),
             DeclareLaunchArgument(
                 "language_model_path",
                 default_value=(
@@ -165,10 +167,10 @@ def generate_launch_description():
                 "language_model_id", default_value="Qwen3-Embedding-0.6B"
             ),
             DeclareLaunchArgument(
-                "language_release_after_encode", default_value="false"
+                "language_release_after_encode", default_value="true"
             ),
             DeclareLaunchArgument(
-                "language_staging_delay_sec", default_value="30.0"
+                "language_staging_delay_sec", default_value="20.0"
             ),
             DeclareLaunchArgument(
                 "task_text", default_value="跟随红色目标船，保持3米距离"
@@ -212,6 +214,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[{
                     "model_path": LaunchConfiguration("perception_model_path"),
+                    "device": "cuda",
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"), value_type=bool
                     ),
@@ -228,7 +231,7 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── Language embedding (stub default, Qwen CUDA selectable) ──
+            # ── Language embedding (Qwen CUDA default, stub only for smoke) ──
             Node(
                 package="asv_vla",
                 executable="language_stub",
@@ -292,7 +295,7 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── VLA policy inference (ONNX, CPU) ──
+            # ── VLA policy inference (JetPack PyTorch, CUDA) ──
             Node(
                 package="asv_vla",
                 executable="vla_policy",
@@ -301,6 +304,8 @@ def generate_launch_description():
                 parameters=[
                     {
                         "model_path": LaunchConfiguration("model_path"),
+                        "backend": LaunchConfiguration("policy_backend"),
+                        "device": LaunchConfiguration("policy_device"),
                     },
                     {
                         "use_sim_time": ParameterValue(

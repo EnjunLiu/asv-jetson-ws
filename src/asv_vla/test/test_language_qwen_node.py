@@ -12,6 +12,7 @@ import numpy as np
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 NODE = REPOSITORY / "src/asv_vla/asv_vla/language_qwen_node.py"
+ENCODER = REPOSITORY / "src/asv_vla/asv_vla/language_encoder.py"
 SETUP = REPOSITORY / "src/asv_vla/setup.py"
 LAUNCH = REPOSITORY / "src/asv_bringup/launch/vla_closed_loop.launch.py"
 
@@ -99,6 +100,7 @@ def test_embedding_helper_enforces_fixed_finite_contract():
 
 def test_qwen_node_contract_is_fail_closed_and_cuda_explicit():
     source = NODE.read_text(encoding="utf-8")
+    encoder_source = ENCODER.read_text(encoding="utf-8")
     assert "USVLanguageEncoder" in source
     assert 'device=self.device' in source
     assert "LanguageEncoderError" in source
@@ -116,6 +118,8 @@ def test_qwen_node_contract_is_fail_closed_and_cuda_explicit():
     assert "torch.cuda.empty_cache()" in source
     assert "MODEL_RELEASED_AFTER_FIRST_ENCODE" in source
     assert "LANGUAGE_READY_VALID" in source
+    assert "batch_size=1" in encoder_source
+    assert "CUDA_MEMORY_ERROR" in encoder_source
 
 
 def test_first_task_trace_is_bounded_and_includes_instruction():
@@ -128,9 +132,9 @@ def test_first_task_trace_is_bounded_and_includes_instruction():
     assert "if not instruction:" in source
 
 
-def test_launch_selects_exactly_one_language_backend_and_stub_is_default():
+def test_launch_selects_exactly_one_language_backend_and_qwen_is_default():
     launch = LAUNCH.read_text(encoding="utf-8")
-    assert 'DeclareLaunchArgument("language_backend", default_value="stub")' in launch
+    assert 'DeclareLaunchArgument("language_backend", default_value="qwen")' in launch
     assert 'executable="language_stub"' in launch
     assert 'executable="language_qwen"' in launch
     assert "UnlessCondition" in launch
@@ -140,11 +144,14 @@ def test_launch_selects_exactly_one_language_backend_and_stub_is_default():
     assert 'LaunchConfiguration("language_device")' in launch
     assert (
         'DeclareLaunchArgument(\n                "language_release_after_encode", '
-        'default_value="false"\n            )'
+        'default_value="true"\n            )'
     ) in launch
     assert 'LaunchConfiguration("language_release_after_encode")' in launch
     assert "TimerAction" in launch
-    assert 'DeclareLaunchArgument(\n                "language_staging_delay_sec"' in launch
+    assert (
+        'DeclareLaunchArgument(\n                "language_staging_delay_sec", '
+        'default_value="20.0"\n            )'
+    ) in launch
 
 
 def test_setup_registers_online_qwen_entrypoint():

@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -13,9 +15,13 @@ from asv_vla.image_entity_perception import (
     LEGACY_MODEL_VERSION,
     OUTPUT_DIM,
     ImageEntityModel,
+    ImageEntityPerceptionError,
+    ImageEntityPrediction,
     calibrated_red_geometry,
     extract_image_features,
+    parse_task_instruction,
     save_model,
+    select_task_entities,
 )
 
 
@@ -100,3 +106,46 @@ def test_calibrated_red_geometry_fails_closed_without_red_component() -> None:
     assert area == 0.0
     assert np.isnan(centroid[0])
     assert np.isnan(centroid[1])
+
+
+def test_task_parser_covers_color_bearing_and_stop() -> None:
+    red = parse_task_instruction("跟随红色目标船，保持3米距离")
+    assert red.valid and red.is_follow
+    assert red.color == "red"
+    assert red.bearing == ""
+    assert red.instruction_id == "follow_red"
+
+    left = parse_task_instruction("follow the left target")
+    assert left.valid and left.is_follow
+    assert left.bearing == "left"
+    assert left.instruction_id == "follow_left"
+
+    stop = parse_task_instruction("STOP")
+    assert stop.valid and stop.is_stop
+    assert stop.instruction_id == "stop"
+
+    assert not parse_task_instruction("unknown task").valid
+
+
+def test_task_selection_only_returns_relevant_visible_entities() -> None:
+    predictions = (
+        ImageEntityPrediction("target_red", True, 0.9, 4.0, 1.0, 0.0),
+        ImageEntityPrediction("target_blue", True, 0.9, 4.0, -1.0, 0.0),
+        ImageEntityPrediction("target_left", True, 0.9, 4.0, 1.0, 0.0),
+    )
+    selected_red = select_task_entities(predictions, "follow red")
+    assert [prediction.entity_id for prediction in selected_red] == ["target_red"]
+
+    selected_left = select_task_entities(predictions, "follow left")
+    assert [prediction.entity_id for prediction in selected_left] == ["target_left"]
+
+    assert select_task_entities(predictions, "stop") == ()
+
+
+def test_cuda_request_fails_closed_without_silent_numpy_fallback(monkeypatch) -> None:
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False)
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    with pytest.raises(ImageEntityPerceptionError, match="CUDA perception requested"):
+        ImageEntityModel.validate_device("cuda")

@@ -27,9 +27,9 @@ UE5 (Main_Map, 无限海洋)                    Jetson (ROS 2 Humble)
               ├──────────────────────────────────► task_entity_tensor ──────────┤
               │                                      (16×16 实体几何张量)        │
               │                      language_backend ────► /vla/language_embedding
-              │                          (Qwen CUDA staged；stub 可选)           │
+              │                   (Qwen CUDA 首指令分阶段；stub 仅测试)           │
               ▼                                          ▼
-   vla_policy (ONNX, CPU) ──► /vla/policy_trajectory    expert_policy_bridge ──┘
+   vla_policy (Torch, CUDA) ──► /vla/policy_trajectory expert_policy_bridge ──┘
               │                  (学习策略, 5 帧平滑)         (专家对照, 规格允许)
               ▼
    safety_gate ──► /vla/selected_trajectory   （唯一发布者；曲率/方向/速度/碰撞/
@@ -45,6 +45,12 @@ UE5 (Main_Map, 无限海洋)                    Jetson (ROS 2 Humble)
 
 ## 2. 关键接口（话题契约）
 
+`image_entity_perception` 的输入只有 JPEG 和 `/task/text`。它先从图像产生候选实体，
+再用当前指令选择任务相关实体并写入 `instruction_id`；未知/空指令 fail-closed。
+`/ue/entities` 的真值实体只允许进入 recorder、离线标签和验证脚本，不能进入这条在线
+链。单帧图像不填写速度，`temporal_entity_tracker` 依据相邻帧的身份字段和时间戳计算
+速度；`/ue/asv_state` 是唯一 ego 来源。
+
 | 话题 | 类型 | 发布者 | 说明 |
 |---|---|---|---|
 | /ue/camera_frame | CameraFrame | bridge | 1280x720 JPEG，FOV 90° 水平 |
@@ -52,7 +58,7 @@ UE5 (Main_Map, 无限海洋)                    Jetson (ROS 2 Humble)
 | /ue/asv_state | UEASVState | bridge | 本船位姿/速度（在线 ego 来源） |
 | /vla/visual_features | VisualFeatures | visual_encoder | token_count=17, dim=576 |
 | /vla/task_features | TaskFeatures | task_entity_tensor | 16×16, 排序 targets→risks→normal |
-| /vla/language_embedding | TaskEmbedding | language_qwen / language_stub | Qwen CUDA staged；stub 可选 |
+| /vla/language_embedding | TaskEmbedding | language_qwen / language_stub | 首次指令真实 Qwen CUDA；成功后释放权重，embedding 继续在线；stub 仅测试 |
 | /vla/policy_trajectory | SelectedTrajectory | vla_policy / expert_policy_bridge | 20×2 位移, dt=0.2s |
 | /vla/selected_trajectory | SelectedTrajectory | safety_gate（唯一） | 门后轨迹 |
 | /decision/output | DecisionOutput | trajectory_controller | desired_x/y + valid + source Run/Scene/Frame/Model |
@@ -86,14 +92,17 @@ UE5 采集 (collect.ps1, 自动化) → episode 包 (tar.gz, SHA-256 校验)
   → 标签：expert_trajectory.py（FOLLOW/STOP，相机前守卫 x<=0 → STOP）
   → 训练：SmallTrajectoryPolicy (481K 参数, MLP 融合)，3 seeds
   → 验证门：stop_drift + ADE/FDE vs expert 基线 + finite/speed
-  → export_onnx.py：ONNX CPU 导出 + parity 校验（max_diff<1e-4）
-  → 部署 Jetson `~/jetson_asv_ws/models/policy_sine_near_image_color_seed42.onnx`
+  → 保留带 `model_config` 的 `pytorch_state_dict` checkpoint
+  → 部署 Jetson `~/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt`
+     并由 JetPack PyTorch CUDA strict-load
 ```
 
 指令集：`dataset/language/instructions.jsonl`（90 条，含 follow red/blue 3m/10m 等），
-训练缓存仍由 PC 端冻结 Qwen 编码；最终在线演示使用 Jetson 上
-`Qwen3-Embedding-0.6B` 的 CUDA staged 路径（首次文本编码并释放权重后再初始化
-MobileNet），stub 仅保留为确定性 smoke/无模型环境的可选后端。
+训练缓存仍由 PC 端冻结 Qwen 编码；为适配 Jetson Orin Nano 8 GB，最终在线演示默认先由
+Jetson 上 `Qwen3-Embedding-0.6B` 以 CUDA 编码首次任务文本，成功后释放 Qwen 权重，
+256-D embedding 继续在线发布。任务切换需要重启当前闭环，不在当前 S2 演示承诺内；stub
+仅保留为确定性 smoke/无模型环境的可选后端。`vla_closed_loop.launch.py` 默认
+`language_release_after_encode=true`、`language_staging_delay_sec=20.0`。
 
 ## 5. ESP32 硬件链（扩展路径）
 
@@ -135,14 +144,16 @@ MobileNet），stub 仅保留为确定性 smoke/无模型环境的可选后端�
 
 ## 8. 已知边界（诚实声明）
 
-- 当前唯一可录制演示是 L7/S2 近距离 image/color 在线链；seed=230906 与
-  seed=230902 两次运行已实际驱动 UE5 ASV，详见 [TODO.md](TODO.md) 和
+- 当前唯一可录制演示是 L7/S2 近距离 image/color 在线链；最终 seed=230908
+  已在全 CUDA 栈实际驱动 UE5 ASV（230906/230902 为对照），详见 [TODO.md](TODO.md) 和
   [docs/demo_runbook.md](docs/demo_runbook.md)。这不是所有距离、布局和随机种子都
   已泛化的结论。
 - L7/L7B 的白色干扰船约 7 m，超出当前图像校准域；目标不可见或证据非有限时必须
   `valid=false`/hold，不能用 UE `/ue/entities` 真值补齐，不能放宽安全门。
-- 在线 Qwen 必须按 CUDA staged 顺序运行；Qwen 编码/释放未完成前不初始化
-  MobileNet，不能静默降级到 CPU。策略 ONNX 保持 CPU 推理以避免 Orin 统一内存竞争。
+- 在线图像感知矩阵、MobileNet、Qwen 和策略均请求 CUDA；Qwen 默认只在首次指令编码
+  期间短暂驻留，成功后释放权重而保留 embedding 在线发布。任一 CUDA/模型加载失败都
+  保持 fail-closed，不静默降级到 CPU。时间跟踪、张量工程、安全门和控制器是确定性
+  CPU 代码，不属于神经网络推理。
 - UE5 仿真结果不等同真实感知或实船海试；仿真/硬件通道刻意分离
   （kinematic_setpoint 消息头注明“永不发 ESP32”）。专家路径仍可选，但不与最终在线
   策略并行发布。
@@ -151,13 +162,13 @@ MobileNet），stub 仅保留为确定性 smoke/无模型环境的可选后端�
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
-| 终极整理 | 完成 | PC 25c037f / Jetson 5877b30（去 dayX、清理 2.9 GB、HISTORY.md 保留审计） |
+| 终极整理 | 完成 | `cleanup/ultimate-restructure` 工作树（过期 near/ONNX/checkpoint 已移入 `/tmp/asv_vla_cleanup_20260802`；HISTORY.md 保留审计） |
 | 正弦编队场景 | 完成 | S2 运动 + L7/L7B 近距离布局 + YawFixWholeRun；headless 验证（docs/scene_verification.md） |
 | 近距离 image-only 数据 | 完成 | 12 runs / 1200 frames / 104720 samples；cache 不含 `/ue/entities` 真值 |
 | 感知校准 | **在线可用** | `image_entity_color_calibrated_v1.npz`；7m OOD 按设计 fail-closed |
-| near image/color 策略 | **验证门 PASS** | seed42 候选；ONNX CPU，默认模型见 `models/manifest.yaml` |
-| 在线语言 | **CUDA staged 已验证** | Qwen 首次编码并释放权重后初始化 MobileNet；无静默 CPU 降级 |
-| 在线闭环（图形 `-game`） | **S2 近距离通过** | L7/S2 seed=230906、230902；JPEG 感知、Qwen、guard、`SCENE_EXEC_APPLY` 连续链路 |
+| near image/color 策略 | **训练门 PASS；CUDA 在线 PASS** | seed42 checkpoint；Jetson Torch CUDA strict-load；S2 连续有效 setpoint |
+| 在线语言 | **CUDA 首指令分阶段 PASS** | 首次指令真实 Qwen CUDA 编码后释放权重，embedding 继续在线；任务切换需重启且不在当前 S2 承诺；无静默 CPU 降级 |
+| 在线闭环（图形 `-game`） | **S2 近距离通过** | L7/S2 seed=230908；JPEG 感知、Qwen、guard、`SCENE_EXEC_APPLY` 连续链路，35 s `SCENE_UE_COMPLETE` |
 | ESP32 扩展 | 完成 | hardware_loop.launch.py + 链烟测（fail-closed 验证）+ docs/esp32_interface.md |
 
 **诚实记录**：上述两次 S2 近距离运行是当前可录制证据；不要将其扩大成统计鲁棒性

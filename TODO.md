@@ -1,84 +1,81 @@
-# 最终系统状态与 TODO（2026-08-02）
+# 最终系统 TODO（2026-08-02）
 
 ## 目标
 
-项目的可演示目标是：在 UE5 的 S2 正弦场景中，被控 ASV 从相机图像和任务文本出发，
-在线识别红色目标船，连续保持约 3 m 间距；所有有效运动都由 Jetson 的在线链路产生，
-而不是读取 UE 真值或并行的专家控制器。
-
-当前结论：**近距离 S2 真实在线演示链已经通过，两次独立运行均实际驱动 UE5 中的
-ASV 运动。** 这不是“所有距离、布局和随机种子都已泛化”的结论；正式演示应使用目标
-初始距离不超过约 5 m 的 L7/L7B 近距离布局。
-
-## 在线数据流（最终边界）
+在 UE5 S2 正弦场景中，Jetson 只接收真实 SceneCapture JPEG、任务文本和本船
+`UEASVState`，在线完成：
 
 ```text
-UE5 SceneCapture JPEG + task text + ego
-        ↓
-image_entity_perception（只看 JPEG；不订阅 /ue/entities）
-        ↓
-temporal_entity_tracker（跨帧计算速度）
-        ↓
-visual_encoder（MobileNet，CUDA） + task_entity_tensor + Qwen task embedding（CUDA）
-        ↓
-policy_sine_near_image_color_seed42.onnx（ONNX/CPU，输出 20×2 轨迹和 STOP）
-        ↓
-visual_standoff_guard（只使用图像/跟踪张量，限制首个 waypoint 到约 3 m）
-        ↓
-5 帧平滑 → safety_gate（唯一有效发布者，fail-closed）
-        ↓
-trajectory_controller → decision_setpoint_adapter
-        ↓
-UE5 C++ kinematic executor（8081）→ ASV 世界位置变化 → 下一帧 JPEG
+图像 + 指令 → 任务条件 Entities → 跨帧速度 → ego 对齐
+          → CUDA 视觉/语言/策略 → 20×2 期望位移轨迹
+          → 安全门 → 单步 desired_x/desired_y → UE5 运动学执行
 ```
 
-`/ue/entities` 只进入录制器、离线监督和几何评估，不能进入在线策略。单帧图像不填写
-速度；速度来自 tracker 的相邻帧，并受 Run_Id、Scene_Seed、Frame_Index 和时间戳门控。
-专家轨迹可以用于训练标签和采集阶段，但最终在线演示没有专家 publisher，也没有 UE
-真值注入。
+最终视频必须能证明 ASV 是由这条在线链路运动，而不是 `/ue/entities` 真值、专家
+publisher、左右推力控制器或录播轨迹驱动。
 
-`visual_standoff_guard` 是透明的图像几何执行适配器：它不读取实体真值，不替代相机感知，
-也不是把专家轨迹接回在线链路；它只将策略的第一个位移点约束到图像跟踪得到的目标距离，
-避免小数据策略在动态水面上输出反向或过大的首步。策略仍负责有效位、STOP 和多模态
-输入一致性，安全门仍可拒绝整个决策。
+## 当前状态
 
-## 已完成且有证据
+### 已完成（源码与本地合同）
 
-- 图像、任务、tracker、ego、策略、安全门、setpoint adapter、UE5 C++ executor 已接通。
-- `/task/text` 使用可靠 + transient-local QoS；Jetson 先 launch、UE5 后 Play 时，Qwen
-  和图像节点不会错过首条任务。
-- Qwen3-Embedding-0.6B 在 Jetson 上真实 CUDA 编码一次后释放权重；MobileNet 随后在
-  CUDA 上加载。策略 ONNX 保持 CPU 推理以避免 Orin 统一内存竞争，不是静默 CPU 降级。
-- 近距离 image-only cache：12 runs / 1200 frames / 104720 samples；cache 不含
-  `/ue/entities` 真值。当前图像校准模型为
-  `pc_datasets/models/image_entity_color_calibrated_v1.npz`。
-- 当前候选模型为
-  `pc_datasets/models/policy_sine_near_image_color_seed42.onnx`，Jetson 已部署同名文件。
-  该模型是三 seed 中唯一通过当前验证门的候选；seed17/23 结果保留但不加载。
-- 本地完整测试：`231 passed, 5 skipped`；`py_compile` 和 `git diff --check` 通过。Jetson 的
-  `asv_vla`/`asv_bringup` 已用当前源码重建。
+- [x] `/ue/entities` 已从在线感知/策略输入边界排除，只保留采集和离线监督用途。
+- [x] `image_entity_perception` 订阅 `/task/text`，解析 follow red/blue/left/right
+  与 stop；输出 `instruction_id`，只把任务相关实体标为 `is_target/visible`。
+- [x] 图像实体模型的主要归一化/线性推理增加显式 CUDA 路径；CUDA 不可用时节点
+  fail-closed，不静默改用 NumPy。
+- [x] `SmallTrajectoryPolicy` 已下沉到可安装的 `asv_vla.policy_model`；PC 的
+  `training/model.py` 只保留兼容导入。
+- [x] 策略节点默认 `backend=torch_cuda`，strict-load `model_config` 与
+  `model_state_dict`；ONNX 仅作为显式 `onnx_cpu` 兼容后端。
+- [x] 本地无 ROS/CUDA 环境的合同测试通过：感知/任务选择、同步、安全和 Torch
+  运行时静态合同已覆盖；当前本地结果为 `238 passed, 7 skipped`。
 
-## S2 在线验收记录
+### 设备与在线验收（2026-08-02）
 
-| 运行 | Jetson/UE 证据 | 结果 |
-|---|---|---|
-| `L7/S2/seed=230906`，Run_Id=`FEB0142041FF570A8149F9B6FD69B28C` | JPEG 感知第 2 帧得到红船 `(4.542, 2.436) m`；Qwen `LANGUAGE_READY_VALID`；策略 guard `STANDOFF_ADJUSTED`；UE `SCENE_EXEC_APPLY` 连续出现约 350 次 | 初始距离 5.094 m，最小 3.089 m，中位数 3.291 m，末端 3.461 m |
-| `L7/S2/seed=230902`，Run_Id=`B6AFBD864B4CE41482A7ECA28BB9E39E` | JPEG 感知第 2 帧得到红船 `(4.406, 2.181) m`；重连后收到有效 setpoint；UE `SCENE_EXEC_APPLY` 至少到 count=275 | 初始距离 4.943 m，最小 3.029 m，中位数 3.304 m，末端 3.140 m |
-| `L7/S2/seed=230907`，Run_Id=`75A78C924E8CA586E4B7808D071444D7` | 初始距离约 7.117 m；前 5 帧图像目标均不可见；没有有效 setpoint | 正确 fail-closed/hold。该 seed 超出当前近距离图像校准域，不算跟踪失败 |
+- [x] 当前源码与 canonical `.pt` 已同步到 `/home/jetson/jetson_asv_ws`，
+  `colcon build --merge-install --symlink-install --packages-select asv_vla asv_bringup`
+  通过。
+- [x] Jetson 默认分阶段启动通过：真实 `LANGUAGE_READY_VALID ... release_model=true`，
+  随后 `visual_encoder ... device=cuda` 与 `POLICY_READY backend=torch_cuda device=cuda`。
+  感知节点启动 detail 也显式包含 `device=cuda`；无 CUDA/模型时仍 fail-closed。
+- [x] 真实 UE5 `L7/S2/seed=230908` 在线闭环通过。单一
+  `run_id=E82B58E6415C9AE61F3797BB1C7B7D99`、`scene_seed=230908` 链中，JPEG 感知
+  连续输出红目标约 `4.6 m` 的相对位置；策略安全门后连续发送有效
+  `Delta_X_Cm/Delta_Y_Cm`（Jetson 日志计数：`PERCEPTION_TRACE=5`、policy stamp
+  trace 约 20、有效 setpoint 约 32）。UE5 记录约 350 次 `SCENE_EXEC_APPLY`，ASV
+  世界 X 从约 `-10150 cm` 变化到 `-7899 cm`，并以 `SCENE_UE_COMPLETE runtime_seconds=35.00`
+  正常结束。
+- [x] 已修正 UE5 `SceneAutomationSubsystem`：bounded `MaxRuntimeSeconds` 现在记录
+  `SCENE_UE_COMPLETE`，不再把正常演示结束误报为 `SCENE_UE_FAIL`。
+- [x] PC 活动数据已收敛为 canonical near 数据、冻结特征、`full_seed42`、图像校准器
+  与 Qwen；旧远距离/旧版本特征、ONNX、旧 checkpoint 和日志已移入可恢复归档：
+  `/tmp/asv_vla_cleanup_20260802/pc_datasets`。
 
-前两次运行的运动来自在线 JPEG→感知→策略/guard→安全门→8081 setpoint 链；UE 日志中
-可见 `SCENE_EXEC_CLIENT_CONNECTED`、`SCENE_EXEC_APPLY` 和 ASV 世界位置连续变化。
-第三次是刻意保留的边界证据：看不清目标时系统不“猜”，而是停船。
+### 当前边界（仍需诚实保留）
 
-清理后回归运行（同一 `seed=230906`，Run_Id=`1C5612294974C8EA9402969B5991D79A`）
-再次通过：Jetson 日志显示图像第 2 帧 `(4.462, 2.400) m`、`POLICY_TRACE` 的
-`STANDOFF_ADJUSTED` 和带 `Scene_Seed=230906` 的 `DECISION_VALID` setpoint；UE
-日志从 t=0 的 ASV `(-10150,-10000)` 移动到 t=35 的 `(-7937.306,-10685.283)`，
-`SCENE_EXEC_APPLY` 至少到 count=339，红船末端距离约 3.369 m。
+- [ ] 当前 S2 演示的 Qwen 采用“首指令 CUDA 编码后释放权重”以适配 Jetson 8 GB；
+  embedding 继续在线，但任务热切换需要重启闭环，不把热切换列为本次验收能力。
+- [ ] 感知前处理和颜色几何标定仍是确定性 CPU/PIL/NumPy；模型归一化/线性矩阵、
+  MobileNet、Qwen 首指令和 policy 请求 CUDA。若目标是全链路 GPU 前处理，需要单独
+  的性能工程，不影响本次真实在线验收结论。
 
-## 当前唯一可录制的演示流程
+## Canonical 资源
 
-### 1. Jetson 先启动
+| 用途 | 活动资源 |
+|---|---|
+| 原始近距离数据 | `pc_datasets/extracted_sine_near` + 12 个 Day12 tar 包 |
+| 冻结特征 | `pc_datasets/features_sine_near_image_color_v1` |
+| 策略 checkpoint | `pc_datasets/models/policy_sine_near_image_color_seed42.pt` |
+| 图像实体模型 | `pc_datasets/models/image_entity_color_calibrated_v1.npz` |
+| 语言模型 | `pc_datasets/models/Qwen3-Embedding-0.6B` |
+| Jetson manifest | `models/manifest.yaml` |
+
+策略 checkpoint SHA-256：
+`6c4ed50d49a0ba9447a3d991cb09de130bbdbcc6eb98eca1b98c49dfd66d7685`。
+
+## 启动与验收命令
+
+Jetson 先启动：
 
 ```bash
 cd ~/jetson_asv_ws
@@ -86,52 +83,47 @@ source /opt/ros/humble/setup.bash
 source ~/microros_ws/install/setup.bash
 source install/setup.bash
 ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.onnx \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
   perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
-  language_backend:=qwen \
-  language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
-  language_device:=cuda language_release_after_encode:=true \
-  language_staging_delay_sec:=30.0 \
+  policy_backend:=torch_cuda policy_device:=cuda \
+  language_backend:=qwen language_device:=cuda \
+  language_release_after_encode:=true \
+  language_staging_delay_sec:=20.0 \
   execution_address:=192.168.137.1 execution_port:=8081
 ```
 
-等待日志同时出现 `LANGUAGE_READY_VALID ... device=cuda` 和 `visual_encoder ... device=cuda`，
-再启动 UE5。不要同时启动 `collect.launch.py`、`expert_closed_loop.launch.py` 或其它
-会向同一控制 topic 发布的 launch。
+然后用项目文件作为 UnrealEditor 第一个参数启动 UE5；录制时保留窗口模式。
+启动后检查：
 
-### 2. UE5 启动（项目文件必须是第一个参数）
-
-```powershell
-& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
-  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
-  -Slot=DEMO-S2-230906 -Layout=L7 -Motion=S2 -Seed=230906 `
-  -MaxRuntimeSeconds=35 -SceneExecPort=8081 -YawFixWholeRun `
-  -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+```bash
+ros2 topic echo /vla/perceived_entities --once
+ros2 topic echo /vla/tracked_entities --once
+ros2 topic echo /vla/policy_trajectory --once
+ros2 topic echo /decision/output --once
 ```
 
-要录制窗口可保留 `-windowed`；要做无界面验收可改成 `-RenderOffscreen -unattended`。
-目标初始距离必须保持在约 5 m 以内，否则系统按设计保持位置。
+必须满足：
 
-## 后续 TODO（不阻塞当前演示）
-
-- [x] 近距离 S2 图像数据采集、image-only cache、三 seed 训练和 ONNX 导出。
-- [x] Jetson staged CUDA 启动、单一 publisher、QoS 启动时序和真实 8081 执行器验收。
-- [x] 两次未见 Run_Id/Scene_Seed 的近距离 S2 在线运行。
-- [ ] 如需论文级统计结论，再补充 L7/L7B × 红/蓝的至少 8 个新 seed，报告稳态距离、
-  选中颜色、safe-gate PASS/hold 比例；在此之前不要宣称“8-run 泛化通过”。
-- [ ] 如需超过约 5 m 的通用感知，替换当前 RGB 颜色校准器为真实检测器并重新采集、
-  分组训练和在线验收；不能放宽当前可见性门来掩盖 OOD。
-- [ ] 录制视频后保存 Jetson/UE 日志和本 TODO 版本，作为最终演示证据。
+- Entities 的 `source` 是 `image_perception/temporal_tracker`，`instruction_id` 与
+  当前任务一致；不出现 `/ue/entities` 作为输入来源。
+- 速度字段第一帧 `velocity_valid=false`，后续才由 tracker 填写；不是单帧图像直接
+  猜速度。
+- 策略 `model_version=vla_torch_cuda_v1`、`valid=true` 时输出 20×2 body-frame
+  累计位移；控制器只取短前缀并发布 `desired_x/desired_y`。
+- `SCENE_EXEC_APPLY` 连续出现且 ASV 世界坐标变化；模型/身份/可见性失败时必须
+  hold/fail-closed。
 
 ## 不允许回退
 
-- 在线任何节点不得订阅 `/ue/entities`，不得把 UE BBox/速度或专家轨迹接入策略。
-- 不得从单帧图像直接输出速度；不得用 `valid=true` 的安全停止伪装成有效动作。
-- 不得并行启动多个 bridge、safety gate、trajectory controller 或专家 publisher。
-- CUDA/Qwen 失败、目标不可见、身份错帧、策略非有限或安全门拒绝时必须 hold/fail-closed。
+- 不得把 UE Entities、UE BBox、专家轨迹或左右推力接回最终在线策略。
+- 不得把历史 ONNX/CPU 作为默认模型；不得在 CUDA 失败时偷偷降级 CPU。
+- 不得并行启动第二套 bridge、policy、safety gate、controller 或 expert publisher。
+- 不得用“valid=true 的零轨迹”掩盖模型加载失败；失败必须 `valid=false` 并 hold。
 
-## 可恢复清理说明
+## 历史证据
 
-历史 checkpoint、旧 cache、旧诊断日志和 Jetson 同步前源码保存在
-`/tmp/asv_vla_cleanup_20260801` 或对应 archive 中，不能作为默认在线模型。当前默认
-运行时只使用上面列出的 image calibration、near-image policy 和 Qwen 模型。
+L7/S2 `seed=230906`、`230902` 是历史 JPEG→ONNX/CPU→guard→8081 对照运行；本轮
+`seed=230908` 已补齐真实 Qwen CUDA 首指令、CUDA policy、图像感知和 UE5 执行，
+不再把历史 ONNX/CPU 运行当作最终证据。上述结果证明“当前 near S2 演示链”闭环可录制，
+但不等于所有布局、距离、颜色和动态条件都已统计泛化；统计鲁棒性仍按下方可选 8-run
+表格单独记录。

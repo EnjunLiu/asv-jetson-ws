@@ -1,0 +1,614 @@
+"""Day 14 small multimodal policy with one bounded trajectory output."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+import numpy as np
+import torch
+from torch import Tensor, nn
+
+
+@dataclass(frozen=True)
+class SmallPolicyConfig:
+    language_dim: int = 256
+    visual_dim: int = 576
+    entity_count: int = 16
+    entity_geometry_dim: int = 16
+    ego_dim: int = 2
+    horizon: int = 20
+    action_dim: int = 2
+    language_hidden: int = 128
+    visual_hidden: int = 128
+    entity_geometry_hidden: int = 64
+    entity_hidden: int = 192
+    ego_hidden: int = 32
+    fusion_hidden: int = 256
+    maximum_step_m: float = 0.3
+    invalid_stop_logit: float = 20.0
+    maximum_trainable_parameters: int = 2_000_000
+    language_conditioned_entity_attention: bool = False
+    entity_attention_mode: str = "legacy"
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "SmallPolicyConfig":
+        model = value.get("model", value)
+        if not isinstance(model, Mapping):
+            raise ValueError("model configuration must be a mapping")
+        known = {field.name for field in cls.__dataclass_fields__.values()}
+        unknown = set(model) - known
+        if unknown:
+            raise ValueError(f"unknown model configuration keys: {sorted(unknown)}")
+        return cls(**dict(model))
+
+    def __post_init__(self) -> None:
+        positive_ints = (
+            self.language_dim,
+            self.visual_dim,
+            self.entity_count,
+            self.entity_geometry_dim,
+            self.ego_dim,
+            self.horizon,
+            self.action_dim,
+            self.language_hidden,
+            self.visual_hidden,
+            self.entity_geometry_hidden,
+            self.entity_hidden,
+            self.ego_hidden,
+            self.fusion_hidden,
+            self.maximum_trainable_parameters,
+        )
+        if any(value <= 0 for value in positive_ints):
+            raise ValueError("all dimensions and parameter limits must be positive")
+        if self.maximum_step_m <= 0.0:
+            raise ValueError("maximum_step_m must be positive")
+        if not torch.isfinite(torch.tensor(self.invalid_stop_logit)):
+            raise ValueError("invalid_stop_logit must be finite")
+        if self.entity_attention_mode not in {
+            "legacy",
+            "language_additive",
+            "language_only",
+        }:
+            raise ValueError(
+                f"unsupported entity_attention_mode={self.entity_attention_mode!r}"
+            )
+        if (
+            self.entity_attention_mode != "legacy"
+            and not self.language_conditioned_entity_attention
+        ):
+            raise ValueError(
+                "language attention mode requires "
+                "language_conditioned_entity_attention=true"
+            )
+
+
+@dataclass(frozen=True)
+class PolicyOutput:
+    """Policy tensors plus an explicit fail-closed sample-validity mask."""
+
+    trajectory: Tensor
+    stop_logit: Tensor
+    valid_mask: Tensor
+    increments: Tensor
+
+
+def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(input_dim, hidden_dim),
+        nn.GELU(),
+        nn.Linear(hidden_dim, output_dim),
+        nn.GELU(),
+    )
+
+
+class SmallTrajectoryPolicy(nn.Module):
+    """Fuse frozen cache features into one structurally bounded trajectory.
+
+    Language and visual tensors are detached at the model boundary. This keeps
+    the Day 13 backbones frozen even if a caller accidentally supplies tensors
+    connected to a live encoder graph.
+    """
+
+    def __init__(self, config: SmallPolicyConfig | None = None) -> None:
+        super().__init__()
+        self.config = config or SmallPolicyConfig()
+        cfg = self.config
+
+        self.language_encoder = _mlp(
+            cfg.language_dim, cfg.language_hidden, cfg.language_hidden
+        )
+        self.global_visual_encoder = nn.Sequential(
+            nn.Linear(cfg.visual_dim, cfg.visual_hidden),
+            nn.GELU(),
+        )
+        self.entity_visual_encoder = _mlp(
+            cfg.visual_dim, cfg.visual_hidden, cfg.visual_hidden
+        )
+        self.entity_geometry_encoder = _mlp(
+            cfg.entity_geometry_dim,
+            cfg.entity_geometry_hidden,
+            cfg.entity_geometry_hidden,
+        )
+        self.entity_fusion = nn.Sequential(
+            nn.Linear(
+                cfg.visual_hidden + cfg.entity_geometry_hidden,
+                cfg.entity_hidden,
+            ),
+            nn.GELU(),
+        )
+        self.entity_attention = nn.Linear(cfg.entity_hidden, 1)
+        if cfg.language_conditioned_entity_attention:
+            self.entity_language_query: nn.Linear | None = nn.Linear(
+                cfg.language_hidden,
+                cfg.entity_hidden,
+                bias=False,
+            )
+        else:
+            # Keep the Day 14/15 v1 state_dict exactly loadable.
+            self.entity_language_query = None
+        self.ego_encoder = _mlp(cfg.ego_dim, cfg.ego_hidden, cfg.ego_hidden)
+
+        fusion_input_dim = (
+            cfg.language_hidden
+            + cfg.visual_hidden
+            + cfg.entity_hidden
+            + cfg.ego_hidden
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(fusion_input_dim, cfg.fusion_hidden),
+            nn.GELU(),
+            nn.LayerNorm(cfg.fusion_hidden),
+            nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden),
+            nn.GELU(),
+        )
+        self.trajectory_head = nn.Linear(
+            cfg.fusion_hidden, cfg.horizon * cfg.action_dim
+        )
+        self.stop_head = nn.Linear(cfg.fusion_hidden, 1)
+
+        parameter_count = self.trainable_parameter_count()
+        if parameter_count > cfg.maximum_trainable_parameters:
+            raise ValueError(
+                f"policy has {parameter_count} trainable parameters; "
+                f"limit is {cfg.maximum_trainable_parameters}"
+            )
+
+    def trainable_parameter_count(self) -> int:
+        return sum(
+            parameter.numel()
+            for parameter in self.parameters()
+            if parameter.requires_grad
+        )
+
+    @staticmethod
+    def _expect_shape(tensor: Tensor, shape: tuple[int, ...], name: str) -> None:
+        if tuple(tensor.shape) != shape:
+            raise ValueError(
+                f"{name} shape {tuple(tensor.shape)} does not match {shape}"
+            )
+
+    @staticmethod
+    def _as_mask(
+        mask: Tensor | None,
+        *,
+        batch_size: int,
+        device: torch.device,
+        name: str,
+    ) -> Tensor:
+        if mask is None:
+            return torch.ones(batch_size, dtype=torch.bool, device=device)
+        if tuple(mask.shape) != (batch_size,):
+            raise ValueError(
+                f"{name} shape {tuple(mask.shape)} does not match "
+                f"{(batch_size,)}"
+            )
+        return mask.to(device=device, dtype=torch.bool)
+
+    @staticmethod
+    def _sanitize_masked(values: Tensor, mask: Tensor, name: str) -> Tensor:
+        expanded = mask
+        while expanded.ndim < values.ndim:
+            expanded = expanded.unsqueeze(-1)
+        expanded = expanded.expand_as(values)
+        active_values = values[expanded]
+        if active_values.numel() and not torch.isfinite(active_values).all():
+            raise ValueError(f"{name} contains NaN or Inf in an active position")
+        return torch.where(expanded, values, torch.zeros_like(values))
+
+    def forward(
+        self,
+        *,
+        language: Tensor,
+        global_visual: Tensor,
+        entity_visual: Tensor,
+        entity_geometry: Tensor,
+        ego: Tensor,
+        language_valid: Tensor | None = None,
+        global_visual_mask: Tensor | None = None,
+        entity_visual_mask: Tensor | None = None,
+        entity_geometry_mask: Tensor | None = None,
+        ego_valid: Tensor | None = None,
+        policy_input_valid: Tensor | None = None,
+    ) -> PolicyOutput:
+        cfg = self.config
+        if language.ndim != 2:
+            raise ValueError("language must have shape [B, language_dim]")
+        batch_size = int(language.shape[0])
+        device = language.device
+        dtype = language.dtype
+        expected_device_dtype = (
+            global_visual,
+            entity_visual,
+            entity_geometry,
+            ego,
+        )
+        if any(tensor.device != device for tensor in expected_device_dtype):
+            raise ValueError("all policy inputs must be on the same device")
+        if any(tensor.dtype != dtype for tensor in expected_device_dtype):
+            raise ValueError("all floating policy inputs must share one dtype")
+
+        self._expect_shape(
+            language, (batch_size, cfg.language_dim), "language"
+        )
+        self._expect_shape(
+            global_visual,
+            (batch_size, cfg.visual_dim),
+            "global_visual",
+        )
+        self._expect_shape(
+            entity_visual,
+            (batch_size, cfg.entity_count, cfg.visual_dim),
+            "entity_visual",
+        )
+        self._expect_shape(
+            entity_geometry,
+            (
+                batch_size,
+                cfg.entity_count,
+                cfg.entity_geometry_dim,
+            ),
+            "entity_geometry",
+        )
+        self._expect_shape(ego, (batch_size, cfg.ego_dim), "ego")
+
+        language_mask = self._as_mask(
+            language_valid,
+            batch_size=batch_size,
+            device=device,
+            name="language_valid",
+        )
+        global_mask = self._as_mask(
+            global_visual_mask,
+            batch_size=batch_size,
+            device=device,
+            name="global_visual_mask",
+        )
+        ego_mask = self._as_mask(
+            ego_valid,
+            batch_size=batch_size,
+            device=device,
+            name="ego_valid",
+        )
+        input_mask = self._as_mask(
+            policy_input_valid,
+            batch_size=batch_size,
+            device=device,
+            name="policy_input_valid",
+        )
+
+        if entity_visual_mask is None:
+            entity_visual_mask = torch.ones(
+                batch_size,
+                cfg.entity_count,
+                dtype=torch.bool,
+                device=device,
+            )
+        if entity_geometry_mask is None:
+            entity_geometry_mask = torch.ones(
+                batch_size,
+                cfg.entity_count,
+                dtype=torch.bool,
+                device=device,
+            )
+        self._expect_shape(
+            entity_visual_mask,
+            (batch_size, cfg.entity_count),
+            "entity_visual_mask",
+        )
+        self._expect_shape(
+            entity_geometry_mask,
+            (batch_size, cfg.entity_count),
+            "entity_geometry_mask",
+        )
+        visual_entity_mask = entity_visual_mask.to(
+            device=device, dtype=torch.bool
+        )
+        geometry_entity_mask = entity_geometry_mask.to(
+            device=device, dtype=torch.bool
+        )
+
+        valid_mask = language_mask & global_mask & ego_mask & input_mask
+        geometry_entity_mask = geometry_entity_mask & valid_mask.unsqueeze(1)
+        visual_entity_mask = (
+            visual_entity_mask
+            & geometry_entity_mask
+            & valid_mask.unsqueeze(1)
+        )
+
+        language_clean = self._sanitize_masked(
+            language.detach(), language_mask, "language"
+        )
+        global_clean = self._sanitize_masked(
+            global_visual.detach(), global_mask, "global_visual"
+        )
+        entity_visual_clean = self._sanitize_masked(
+            entity_visual.detach(), visual_entity_mask, "entity_visual"
+        )
+        entity_geometry_clean = self._sanitize_masked(
+            entity_geometry, geometry_entity_mask, "entity_geometry"
+        )
+        ego_clean = self._sanitize_masked(ego, ego_mask, "ego")
+
+        language_token = self.language_encoder(language_clean)
+        global_token = self.global_visual_encoder(global_clean)
+        entity_visual_token = self.entity_visual_encoder(entity_visual_clean)
+        entity_geometry_token = self.entity_geometry_encoder(
+            entity_geometry_clean
+        )
+        entity_token = self.entity_fusion(
+            torch.cat((entity_visual_token, entity_geometry_token), dim=-1)
+        )
+
+        attention_score = self.entity_attention(entity_token).squeeze(-1)
+        if self.entity_language_query is not None:
+            language_query = self.entity_language_query(language_token)
+            language_score = torch.sum(
+                entity_token * language_query.unsqueeze(1), dim=-1
+            ) / (cfg.entity_hidden**0.5)
+            mode = cfg.entity_attention_mode
+            # The first v2 checkpoint predates the explicit mode field and
+            # used the additive form.  Preserve that behavior when its boolean
+            # flag is true and the new field retains the legacy default.
+            if mode in {"legacy", "language_additive"}:
+                attention_score = attention_score + language_score
+            else:
+                attention_score = language_score
+        attention_weight = torch.exp(attention_score.clamp(-20.0, 20.0))
+        attention_weight = attention_weight * geometry_entity_mask.to(
+            dtype=dtype
+        )
+        attention_weight = attention_weight / attention_weight.sum(
+            dim=1, keepdim=True
+        ).clamp_min(1.0e-12)
+        pooled_entity = torch.sum(
+            entity_token * attention_weight.unsqueeze(-1), dim=1
+        )
+        ego_token = self.ego_encoder(ego_clean)
+
+        fused = self.fusion(
+            torch.cat(
+                (language_token, global_token, pooled_entity, ego_token),
+                dim=-1,
+            )
+        )
+        stop_logit = self.stop_head(fused)
+        raw_increments = self.trajectory_head(fused).reshape(
+            batch_size, cfg.horizon, cfg.action_dim
+        )
+        raw_norm = torch.linalg.vector_norm(
+            raw_increments, dim=-1, keepdim=True
+        )
+        radial_scale = torch.where(
+            raw_norm > 1.0e-6,
+            torch.tanh(raw_norm) / raw_norm.clamp_min(1.0e-6),
+            torch.ones_like(raw_norm),
+        )
+        movement_gate = torch.sigmoid(-stop_logit).unsqueeze(1)
+        increments = (
+            raw_increments
+            * radial_scale
+            * cfg.maximum_step_m
+            * movement_gate
+        )
+        trajectory = torch.cumsum(increments, dim=1)
+        # A positive STOP decision is an execution contract, not merely a
+        # request to move less. Keep the continuous gate above for useful
+        # training gradients, then make the published policy output exactly
+        # stationary whenever the classifier selects STOP.
+        movement_selected = (stop_logit < 0.0).view(batch_size, 1, 1)
+        increments = torch.where(
+            movement_selected, increments, torch.zeros_like(increments)
+        )
+        trajectory = torch.where(
+            movement_selected, trajectory, torch.zeros_like(trajectory)
+        )
+
+        sample_mask = valid_mask.view(batch_size, 1, 1)
+        increments = torch.where(
+            sample_mask, increments, torch.zeros_like(increments)
+        )
+        trajectory = torch.where(
+            sample_mask, trajectory, torch.zeros_like(trajectory)
+        )
+        stop_logit = torch.where(
+            valid_mask.view(batch_size, 1),
+            stop_logit,
+            torch.full_like(stop_logit, cfg.invalid_stop_logit),
+        )
+        return PolicyOutput(
+            trajectory=trajectory,
+            stop_logit=stop_logit,
+            valid_mask=valid_mask,
+            increments=increments,
+        )
+
+
+DEFAULT_POLICY_MODEL_PATH = (
+    "/home/jetson/jetson_asv_ws/models/"
+    "policy_sine_near_image_color_seed42.pt"
+)
+
+_FLOAT_INPUT_NAMES = (
+    "language",
+    "global_visual",
+    "entity_visual",
+    "entity_geometry",
+    "ego",
+)
+_MASK_INPUT_NAMES = (
+    "language_valid",
+    "global_visual_mask",
+    "entity_visual_mask",
+    "entity_geometry_mask",
+    "ego_valid",
+    "policy_input_valid",
+)
+
+
+class PolicyRuntimeError(RuntimeError):
+    """Raised when a policy checkpoint cannot satisfy the CUDA contract."""
+
+
+@dataclass
+class TorchPolicyRunner:
+    """A checked, inference-only instance of :class:`SmallTrajectoryPolicy`."""
+
+    model: SmallTrajectoryPolicy
+    config: SmallPolicyConfig
+    device: torch.device
+    model_path: str
+
+    @classmethod
+    def load(
+        cls, model_path: str | Path, *, device: str = "cuda"
+    ) -> "TorchPolicyRunner":
+        """Load a training checkpoint onto CUDA without a CPU fallback."""
+
+        requested = str(device).strip().lower()
+        if requested != "cuda":
+            raise PolicyRuntimeError(
+                f"torch policy requires device='cuda', got {device!r}"
+            )
+        if not torch.cuda.is_available():
+            raise PolicyRuntimeError("CUDA is unavailable for the torch policy")
+
+        path = Path(model_path).expanduser()
+        if not path.is_file():
+            raise PolicyRuntimeError(f"policy checkpoint not found: {path}")
+
+        try:
+            try:
+                checkpoint = torch.load(
+                    path, map_location="cpu", weights_only=True
+                )
+            except TypeError:
+                # Torch versions before ``weights_only`` accepted only the
+                # map-location argument.  Validate before copying to CUDA.
+                checkpoint = torch.load(path, map_location="cpu")
+            if not isinstance(checkpoint, Mapping):
+                raise PolicyRuntimeError("policy checkpoint must be a mapping")
+            raw_config = checkpoint.get("model_config")
+            config = (
+                SmallPolicyConfig()
+                if raw_config is None
+                else SmallPolicyConfig.from_mapping(raw_config)
+            )
+            state_dict = checkpoint.get("model_state_dict")
+            if not isinstance(state_dict, Mapping):
+                raise PolicyRuntimeError(
+                    "policy checkpoint is missing model_state_dict"
+                )
+            model = SmallTrajectoryPolicy(config)
+            model.load_state_dict(state_dict, strict=True)
+            target = torch.device("cuda")
+            model.to(device=target)
+            model.eval()
+        except PolicyRuntimeError:
+            raise
+        except Exception as exc:
+            raise PolicyRuntimeError(
+                f"failed to load torch policy checkpoint {path}: {exc}"
+            ) from exc
+
+        try:
+            parameter_device = next(model.parameters()).device
+        except StopIteration as exc:
+            raise PolicyRuntimeError("torch policy has no parameters") from exc
+        if parameter_device.type != "cuda":
+            raise PolicyRuntimeError(
+                f"torch policy loaded on {parameter_device}, expected CUDA"
+            )
+        return cls(
+            model=model,
+            config=config,
+            device=target,
+            model_path=str(path),
+        )
+
+    def run(
+        self, inputs: Mapping[str, np.ndarray]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run one or more policy samples and return NumPy outputs."""
+
+        missing = [
+            name for name in (*_FLOAT_INPUT_NAMES, *_MASK_INPUT_NAMES)
+            if name not in inputs
+        ]
+        if missing:
+            raise PolicyRuntimeError(
+                f"policy inputs missing required fields: {', '.join(missing)}"
+            )
+
+        try:
+            tensors: dict[str, torch.Tensor] = {}
+            for name in _FLOAT_INPUT_NAMES:
+                tensors[name] = torch.as_tensor(
+                    np.asarray(inputs[name]),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+            for name in _MASK_INPUT_NAMES:
+                tensors[name] = torch.as_tensor(
+                    np.asarray(inputs[name]),
+                    dtype=torch.bool,
+                    device=self.device,
+                )
+            with torch.inference_mode():
+                output: PolicyOutput = self.model(**tensors)
+            trajectory = output.trajectory.detach().to("cpu").numpy()
+            stop_logit = output.stop_logit.detach().to("cpu").numpy()
+            valid_mask = output.valid_mask.detach().to("cpu").numpy()
+        except Exception as exc:
+            raise PolicyRuntimeError(f"torch policy inference failed: {exc}") from exc
+
+        if (
+            trajectory.ndim != 3
+            or trajectory.shape[1:] != (self.config.horizon, self.config.action_dim)
+            or stop_logit.ndim != 2
+            or stop_logit.shape[1:] != (1,)
+            or valid_mask.ndim != 1
+            or valid_mask.shape[0] != trajectory.shape[0]
+        ):
+            raise PolicyRuntimeError(
+                "torch policy returned an invalid output shape: "
+                f"trajectory={trajectory.shape}, stop_logit={stop_logit.shape}, "
+                f"valid_mask={valid_mask.shape}"
+            )
+        if not (
+            np.all(np.isfinite(trajectory))
+            and np.all(np.isfinite(stop_logit))
+        ):
+            raise PolicyRuntimeError("torch policy returned NaN or Inf")
+        return trajectory, stop_logit, valid_mask.astype(bool, copy=False)
+
+
+__all__ = [
+    "DEFAULT_POLICY_MODEL_PATH",
+    "PolicyOutput",
+    "PolicyRuntimeError",
+    "SmallPolicyConfig",
+    "SmallTrajectoryPolicy",
+    "TorchPolicyRunner",
+]

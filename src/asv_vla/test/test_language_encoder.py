@@ -5,6 +5,7 @@ from asv_vla.language_encoder import (
     EmptyInstructionError,
     InstructionTooLongError,
     InvalidEmbeddingError,
+    LanguageEncoderMemoryError,
     USVLanguageEncoder,
 )
 
@@ -21,6 +22,8 @@ class FakeParameter:
 class FakeModel:
     def __init__(self, values=None, native_dim=1024):
         self.calls = 0
+        self.call_sentences = []
+        self.call_kwargs = []
         self.eval_called = False
         self.parameter = FakeParameter()
         self.native_dim = native_dim
@@ -40,6 +43,8 @@ class FakeModel:
 
     def encode(self, sentences, **kwargs):
         self.calls += 1
+        self.call_sentences.append(tuple(sentences))
+        self.call_kwargs.append(dict(kwargs))
         return np.vstack([self.values for _ in sentences])
 
 
@@ -68,7 +73,30 @@ def test_fixed_shape_dtype_norm_and_cache():
     assert second.cached is True
     assert np.array_equal(first.embedding, second.embedding)
     assert model.calls == 1
+    assert model.call_sentences == [
+        ("Instruct: Encode an instruction for a twin-thruster unmanned "
+         "surface vessel performing follow or stop tasks.\n"
+         "Query: 跟随红色目标船，保持5米",)
+    ]
+    assert model.call_kwargs[0]["batch_size"] == 1
     assert encoder.cache_entries == 1
+
+
+def test_changed_instruction_reencodes_one_item_and_keeps_cache_isolated():
+    model = FakeModel()
+    encoder = make_encoder(model=model)
+
+    first = encoder.encode_with_metadata("跟随红色目标船")
+    changed = encoder.encode_with_metadata("立即停止")
+    repeated = encoder.encode_with_metadata("跟随红色目标船")
+
+    assert first.cached is False
+    assert changed.cached is False
+    assert repeated.cached is True
+    assert model.calls == 2
+    assert [len(sentences) for sentences in model.call_sentences] == [1, 1]
+    assert [kwargs["batch_size"] for kwargs in model.call_kwargs] == [1, 1]
+    assert encoder.cache_entries == 2
 
 
 def test_model_is_put_in_eval_mode_and_frozen():
@@ -124,4 +152,14 @@ def test_zero_backend_vector_is_rejected():
     values = np.zeros(1024, dtype=np.float32)
     encoder = make_encoder(model=FakeModel(values=values))
     with pytest.raises(InvalidEmbeddingError):
+        encoder.encode("立即停止")
+
+
+def test_cuda_memory_failure_is_diagnostic_and_not_swallowed():
+    class OutOfMemoryModel(FakeModel):
+        def encode(self, sentences, **kwargs):
+            raise RuntimeError("CUDA out of memory while allocating input")
+
+    encoder = make_encoder(model=OutOfMemoryModel(), device="cuda")
+    with pytest.raises(LanguageEncoderMemoryError, match="CUDA_MEMORY_ERROR"):
         encoder.encode("立即停止")

@@ -28,6 +28,10 @@ class LanguageEncoderError(RuntimeError):
     """Base class for deterministic language-encoder failures."""
 
 
+class LanguageEncoderMemoryError(LanguageEncoderError):
+    """Raised when the backend reports an allocation/low-memory failure."""
+
+
 class EmptyInstructionError(LanguageEncoderError):
     """Raised when the task instruction is empty."""
 
@@ -193,12 +197,39 @@ class USVLanguageEncoder:
             with self._inference_context():
                 raw = self._model.encode(
                     [prompt],
+                    # Online ROS callbacks encode one changed instruction at a
+                    # time.  SentenceTransformer's default batch_size=32 can
+                    # create a large temporary peak on Jetson unified memory.
+                    batch_size=1,
                     convert_to_numpy=True,
                     normalize_embeddings=False,
                     show_progress_bar=False,
                 )
         except Exception as exc:
-            raise LanguageEncoderError(f"embedding inference failed: {exc}") from exc
+            error_text = str(exc).lower()
+            if isinstance(exc, MemoryError) or any(
+                marker in error_text
+                for marker in (
+                    "out of memory",
+                    "cuda oom",
+                    "nvmapmemalloc",
+                    "nvml_success",
+                    "memory allocation",
+                )
+            ):
+                error_kind = (
+                    "CUDA_MEMORY_ERROR"
+                    if self.device.startswith("cuda")
+                    else "MEMORY_ERROR"
+                )
+                raise LanguageEncoderMemoryError(
+                    f"{error_kind}: batch_size=1; "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise LanguageEncoderError(
+                f"embedding inference failed; batch_size=1; "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         array = np.asarray(raw)
         if array.ndim == 2 and array.shape[0] == 1:

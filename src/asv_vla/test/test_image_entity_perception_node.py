@@ -103,10 +103,20 @@ class _Prediction:
 class _Model:
     model_version = "test_model"
 
-    def predict(self, _image):
+    def predict(self, _image, *, device="numpy"):
+        assert device == "numpy"
         return (
             _Prediction("target_red", x=5.0, y=100.0, visible=True),
             _Prediction("target_blue", x=5.0, y=0.0, visible=False),
+        )
+
+
+class _BothVisibleModel(_Model):
+    def predict(self, _image, *, device="numpy"):
+        assert device == "numpy"
+        return (
+            _Prediction("target_red", x=5.0, y=100.0, visible=True),
+            _Prediction("target_blue", x=5.0, y=0.0, visible=True),
         )
 
 
@@ -124,14 +134,15 @@ def _jpeg_bytes() -> bytes:
     return stream.getvalue()
 
 
-def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
-    module = _load_node_module()
+def _test_node(module):
     node = object.__new__(module.ImageEntityPerceptionNode)
     node.model = _Model()
     node.profile = module.CameraProfile()
     node.confidence_threshold = 0.55
     node.publisher = _Publisher()
-    node.task_text = ""
+    node.task_text = "follow red"
+    node.task_spec = module.parse_task_instruction(node.task_text)
+    node.device = "numpy"
     node.input_ready = False
     node.output_valid = False
     node.module_state = module.ModuleStatus.STARTING
@@ -142,6 +153,12 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     node.get_logger = lambda: types.SimpleNamespace(
         info=node.trace_logs.append
     )
+    return node
+
+
+def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
+    module = _load_node_module()
+    node = _test_node(module)
 
     frame = types.SimpleNamespace(
         stamp_us=100,
@@ -164,12 +181,46 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     assert hidden.bbox_valid is True
     assert hidden.visible is False
     assert node.output_valid is True
+    assert message.instruction == "follow red"
+    assert message.instruction_id == "follow_red"
+    assert message.entities[0].is_target is True
+    assert message.entities[1].is_target is False
     assert len(node.trace_logs) == 1
     assert "PERCEPTION_TRACE" in node.trace_logs[0]
     assert "relative_x=5.000000" in node.trace_logs[0]
     assert "relative_y=100.000000" in node.trace_logs[0]
     assert "visible=False" in node.trace_logs[0]
     assert "bbox_valid=False" in node.trace_logs[0]
+
+
+def test_task_switch_changes_selected_entity_and_instruction_provenance():
+    module = _load_node_module()
+    node = _test_node(module)
+    node.model = _BothVisibleModel()
+    frame = types.SimpleNamespace(
+        stamp_us=100,
+        run_id="RUN",
+        scene_seed=1,
+        frame_index=0,
+        valid=True,
+        data=_jpeg_bytes(),
+        encoding="jpeg",
+    )
+    node.on_frame(frame)
+    first = node.publisher.messages[-1]
+    assert first.instruction_id == "follow_red"
+    assert first.entities[0].is_target is True
+    assert first.entities[1].visible is False
+
+    node.on_task(types.SimpleNamespace(data="follow blue"))
+    frame.frame_index = 1
+    node.on_frame(frame)
+    second = node.publisher.messages[-1]
+    assert second.instruction == "follow blue"
+    assert second.instruction_id == "follow_blue"
+    assert second.entities[0].is_target is False
+    assert second.entities[1].is_target is True
+    assert second.entities[1].visible is True
 
 
 def test_perception_trace_formatter_keeps_required_red_diagnostics():

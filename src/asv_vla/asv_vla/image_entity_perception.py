@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from PIL import Image
@@ -49,6 +49,82 @@ COLOR_AREA_MAX = 0.0172222222
 
 class ImageEntityPerceptionError(RuntimeError):
     """Raised when the image perception model or input is unusable."""
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    """Small deterministic task contract used by image-only selection."""
+
+    instruction: str
+    instruction_id: str
+    action: str
+    color: str = ""
+    bearing: str = ""
+    valid: bool = False
+
+    @property
+    def is_stop(self) -> bool:
+        return self.action == "stop"
+
+    @property
+    def is_follow(self) -> bool:
+        return self.action == "follow"
+
+
+def parse_task_instruction(instruction: object) -> TaskSpec:
+    """Parse the minimal runtime task vocabulary without using UE truth.
+
+    The parser deliberately accepts both the English test vocabulary and the
+    Chinese task text used by the online demo. Unknown or empty text is
+    invalid and therefore makes the perception output fail closed.
+    """
+
+    text = " ".join(str(instruction).strip().split())
+    folded = text.casefold()
+    if not text:
+        return TaskSpec("", "unknown", "unknown")
+
+    stop_tokens = ("stop", "halt", "hold", "emergency", "停", "停止", "急停")
+    if any(token in folded for token in stop_tokens):
+        return TaskSpec(text, "stop", "stop", valid=True)
+
+    color = ""
+    if any(token in folded for token in ("red", "红", "紅")):
+        color = "red"
+    elif any(token in folded for token in ("blue", "蓝", "藍")):
+        color = "blue"
+
+    bearing = ""
+    if any(token in folded for token in ("left", "左")):
+        bearing = "left"
+    elif any(token in folded for token in ("right", "右")):
+        bearing = "right"
+
+    follow_tokens = (
+        "follow",
+        "track",
+        "target",
+        "跟随",
+        "跟住",
+        "跟踪",
+        "追踪",
+        "锁定",
+        "鎖定",
+        "驶向",
+    )
+    if (color or bearing) and any(token in folded for token in follow_tokens):
+        selector = color or bearing
+        if color and bearing:
+            selector = f"{color}_{bearing}"
+        return TaskSpec(
+            text,
+            f"follow_{selector}",
+            "follow",
+            color=color,
+            bearing=bearing,
+            valid=True,
+        )
+    return TaskSpec(text, "unknown", "unknown")
 
 
 def _largest_red_component(mask: np.ndarray) -> tuple[int, float, float]:
@@ -281,6 +357,35 @@ def _feature_dim_for_model(model_version: str) -> int:
     return BASE_FEATURE_DIM if model_version == LEGACY_MODEL_VERSION else FEATURE_DIM
 
 
+def _torch_for_device(device: str):
+    """Load torch lazily and require the requested CUDA device explicitly."""
+
+    normalized = str(device).strip().lower()
+    if normalized in {"", "numpy", "cpu"}:
+        return None
+    if not normalized.startswith("cuda"):
+        raise ImageEntityPerceptionError(
+            f"unsupported perception device {device!r}; use cuda or numpy"
+        )
+    try:
+        import torch
+    except Exception as exc:
+        raise ImageEntityPerceptionError(
+            f"CUDA perception requested but torch is unavailable: {exc}"
+        ) from exc
+    if not bool(torch.cuda.is_available()):
+        raise ImageEntityPerceptionError(
+            "CUDA perception requested but torch.cuda.is_available() is false"
+        )
+    try:
+        torch.device(device)
+    except Exception as exc:
+        raise ImageEntityPerceptionError(
+            f"invalid CUDA perception device {device!r}: {exc}"
+        ) from exc
+    return torch
+
+
 @dataclass(frozen=True)
 class ImageEntityPrediction:
     entity_id: str
@@ -289,6 +394,66 @@ class ImageEntityPrediction:
     relative_x: float
     relative_y: float
     relative_z: float
+
+
+def _prediction_color(entity_id: str) -> str:
+    return {
+        "target_red": "red",
+        "target_blue": "blue",
+    }.get(str(entity_id), "")
+
+
+def _prediction_bearing(entity: ImageEntityPrediction) -> str:
+    entity_id = str(entity.entity_id)
+    if entity_id == "target_left":
+        return "left"
+    if entity_id == "target_right":
+        return "right"
+    # The canonical bearing task is represented by the dedicated left/right
+    # slots. Do not relabel a color target as a bearing target merely because
+    # its current pixel happens to be on that side of the image.
+    if entity_id in {"target_red", "target_blue"}:
+        return ""
+    if not math.isfinite(float(entity.relative_y)):
+        return ""
+    if float(entity.relative_y) > 0.0:
+        return "left"
+    if float(entity.relative_y) < 0.0:
+        return "right"
+    return ""
+
+
+def task_matches_entity(
+    entity: ImageEntityPrediction,
+    task: TaskSpec | str,
+) -> bool:
+    """Return whether a model prediction is relevant to the parsed task."""
+
+    spec = parse_task_instruction(task) if isinstance(task, str) else task
+    if not spec.valid or not spec.is_follow:
+        return False
+    if spec.color and _prediction_color(entity.entity_id) != spec.color:
+        return False
+    if spec.bearing:
+        bearing = _prediction_bearing(entity)
+        if not bearing and spec.color and math.isfinite(float(entity.relative_y)):
+            bearing = "left" if float(entity.relative_y) > 0.0 else "right"
+        if bearing != spec.bearing:
+            return False
+    return bool(entity.visible)
+
+
+def select_task_entities(
+    predictions: Sequence[ImageEntityPrediction],
+    task: TaskSpec | str,
+) -> tuple[ImageEntityPrediction, ...]:
+    """Return only visible predictions selected by the task instruction."""
+
+    return tuple(
+        prediction
+        for prediction in predictions
+        if task_matches_entity(prediction, task)
+    )
 
 
 @dataclass(frozen=True)
@@ -301,6 +466,12 @@ class ImageEntityModel:
     bias: np.ndarray
     model_version: str = MODEL_VERSION
     visibility_threshold: float = 0.0
+
+    @staticmethod
+    def validate_device(device: str) -> None:
+        """Validate an inference device before a node accepts the model."""
+
+        _torch_for_device(device)
 
     def __post_init__(self) -> None:
         expected_feature_dim = _feature_dim_for_model(self.model_version)
@@ -346,15 +517,52 @@ class ImageEntityModel:
                 f"cannot load perception model {model_path}: {exc}"
             ) from exc
 
-    def predict(self, image: Image.Image | np.ndarray) -> tuple[ImageEntityPrediction, ...]:
+    def predict(
+        self,
+        image: Image.Image | np.ndarray,
+        *,
+        device: str = "numpy",
+    ) -> tuple[ImageEntityPrediction, ...]:
+        """Predict entities using NumPy or an explicitly requested CUDA matmul."""
+
         feature_extractor = (
             _extract_legacy_image_features
             if self.model_version == LEGACY_MODEL_VERSION
             else extract_image_features
         )
         features = feature_extractor(image)
-        normalized = (features - self.feature_mean) / self.feature_scale
-        output = normalized @ self.weights + self.bias
+        torch = _torch_for_device(device)
+        if torch is None:
+            normalized = (features - self.feature_mean) / self.feature_scale
+            output = normalized @ self.weights + self.bias
+        else:
+            # Keep the main normalization and linear projection on CUDA.  The
+            # small RGB feature extractor remains dependency-light NumPy/PIL.
+            try:
+                feature_tensor = torch.as_tensor(
+                    features, dtype=torch.float32, device=device
+                )
+                mean_tensor = torch.as_tensor(
+                    self.feature_mean, dtype=torch.float32, device=device
+                )
+                scale_tensor = torch.as_tensor(
+                    self.feature_scale, dtype=torch.float32, device=device
+                )
+                weight_tensor = torch.as_tensor(
+                    self.weights, dtype=torch.float32, device=device
+                )
+                bias_tensor = torch.as_tensor(
+                    self.bias, dtype=torch.float32, device=device
+                )
+                output = (
+                    ((feature_tensor - mean_tensor) / scale_tensor)
+                    @ weight_tensor
+                    + bias_tensor
+                ).detach().cpu().numpy()
+            except Exception as exc:
+                raise ImageEntityPerceptionError(
+                    f"CUDA perception matrix inference failed: {exc}"
+                ) from exc
         if output.shape != (OUTPUT_DIM,) or not np.all(np.isfinite(output)):
             raise ImageEntityPerceptionError("perception output is non-finite")
 

@@ -27,6 +27,9 @@ from asv_jetson_interfaces.msg import CameraFrame, ModuleStatus, UEEntity, UEEnt
 from .image_entity_perception import (
     ImageEntityModel,
     ImageEntityPerceptionError,
+    TaskSpec,
+    parse_task_instruction,
+    select_task_entities,
 )
 from .visual_encoder import (
     CameraProfile,
@@ -129,6 +132,9 @@ def _apply_prediction_projection(
 class ImageEntityPerceptionNode(Node):
     def __init__(self) -> None:
         super().__init__("image_entity_perception")
+        self.device = str(
+            self.declare_parameter("device", "cuda").value
+        ).strip() or "cuda"
         default_model = str(
             Path.home()
             / "jetson_asv_ws"
@@ -165,27 +171,37 @@ class ImageEntityPerceptionNode(Node):
         self.create_subscription(CameraFrame, "/ue/camera_frame", self.on_frame, SENSOR_QOS)
         self.create_subscription(String, "/task/text", self.on_task, TASK_QOS)
         self.task_text = ""
+        self.task_spec: TaskSpec = parse_task_instruction("")
         self._trace_run_id = ""
         self._trace_count = 0
         self.model: ImageEntityModel | None = None
-        self.detail = "loading image-only perception model"
+        self.detail = (
+            "loading image-only perception model;"
+            f"device={self.device}"
+        )
         self.module_state = ModuleStatus.STARTING
         self.input_ready = False
         self.output_valid = False
         try:
             self.model = ImageEntityModel.load(model_path)
+            self.model.validate_device(self.device)
         except ImageEntityPerceptionError as exc:
-            self.detail = f"MODEL_LOAD_ERROR:{exc}"
+            self.model = None
+            self.detail = f"MODEL_LOAD_ERROR:device={self.device}:{exc}"
             self.module_state = ModuleStatus.ERROR
             self.get_logger().error(self.detail)
         else:
-            self.detail = f"ready model={self.model.model_version} path={model_path}"
+            self.detail = (
+                f"ready model={self.model.model_version};"
+                f"device={self.device};path={model_path}"
+            )
             self.module_state = ModuleStatus.READY
             self.get_logger().info(self.detail)
         self.create_timer(1.0, self.publish_status)
 
     def on_task(self, message: String) -> None:
         self.task_text = str(message.data).strip()
+        self.task_spec = parse_task_instruction(self.task_text)
 
     @staticmethod
     def _new_array(frame: CameraFrame) -> UEEntityArray:
@@ -204,6 +220,12 @@ class ImageEntityPerceptionNode(Node):
 
     def on_frame(self, frame: CameraFrame) -> None:
         message = self._new_array(frame)
+        task_spec = getattr(
+            self, "task_spec", parse_task_instruction(getattr(self, "task_text", ""))
+        )
+        task_text = str(getattr(self, "task_text", ""))
+        message.instruction = task_text
+        message.instruction_id = task_spec.instruction_id
         run_id = str(frame.run_id)
         if run_id != self._trace_run_id:
             self._trace_run_id = run_id
@@ -220,13 +242,19 @@ class ImageEntityPerceptionNode(Node):
             return
         try:
             image = decode_camera_image(frame.data, frame.encoding)
-            predictions = self.model.predict(image)
+            predictions = self.model.predict(
+                image, device=str(getattr(self, "device", "numpy"))
+            )
         except (ImageEntityPerceptionError, ValueError) as exc:
             message.detail = f"PERCEPTION_ERROR:{type(exc).__name__}:{exc}"
             self.publisher.publish(message)
             self.output_valid = False
             return
 
+        selected_ids = {
+            prediction.entity_id
+            for prediction in select_task_entities(predictions, task_spec)
+        }
         for prediction in predictions:
             entity = UEEntity()
             entity.entity_id = prediction.entity_id
@@ -237,7 +265,7 @@ class ImageEntityPerceptionNode(Node):
                 "target_left": "white",
                 "target_right": "white",
             }[prediction.entity_id]
-            entity.is_target = True
+            entity.is_target = prediction.entity_id in selected_ids
             entity.relative_x = prediction.relative_x
             entity.relative_y = prediction.relative_y
             entity.relative_z = prediction.relative_z
@@ -261,13 +289,17 @@ class ImageEntityPerceptionNode(Node):
                 self.profile,
                 self.confidence_threshold,
             )
+            # A perception prediction can be geometrically valid while still
+            # being irrelevant to the active task. Only selected entities are
+            # visible/target-bearing in the online task stream.
+            entity.visible = bool(entity.is_target and entity.visible)
             message.entities.append(entity)
 
-        message.valid = True
+        message.valid = bool(task_spec.valid)
         message.source = "image_perception"
-        message.instruction = self.task_text
         message.detail = (
-            f"OK:image_only;entities={len(message.entities)};"
+            f"OK:image_only;task={task_spec.instruction_id};"
+            f"entities={len(message.entities)};"
             f"model={self.model.model_version}"
         )
         red_entity = next(
@@ -282,6 +314,7 @@ class ImageEntityPerceptionNode(Node):
             message.valid
             and red_entity is not None
             and bool(red_entity.valid)
+            and bool(red_entity.is_target)
             and self._trace_count < PERCEPTION_TRACE_LIMIT
         ):
             self._trace_count += 1
@@ -296,8 +329,10 @@ class ImageEntityPerceptionNode(Node):
             )
         self.publisher.publish(message)
         self.input_ready = True
-        self.output_valid = True
-        self.module_state = ModuleStatus.READY
+        self.output_valid = bool(message.valid)
+        self.module_state = (
+            ModuleStatus.READY if message.valid else ModuleStatus.DEGRADED
+        )
         self.detail = message.detail
 
     def publish_status(self) -> None:

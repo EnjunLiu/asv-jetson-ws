@@ -42,9 +42,11 @@ def generate_launch_description():
                 "model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "policy_sine_near_image_color_seed42.onnx"
+                    "policy_sine_near_image_color_seed42.pt"
                 ),
             ),
+            DeclareLaunchArgument("policy_backend", default_value="torch_cuda"),
+            DeclareLaunchArgument("policy_device", default_value="cuda"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("use_fake_esp32", default_value="true"),
             # ── TCP bridge in thruster mode (hardware command channel) ──
@@ -108,14 +110,18 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── VLA policy inference (ONNX, CPU) ──
+            # ── VLA policy inference (JetPack PyTorch, CUDA) ──
             Node(
                 package="asv_vla",
                 executable="vla_policy",
                 name="vla_policy",
                 output="screen",
                 parameters=[
-                    {"model_path": LaunchConfiguration("model_path")},
+                    {
+                        "model_path": LaunchConfiguration("model_path"),
+                        "backend": LaunchConfiguration("policy_backend"),
+                        "device": LaunchConfiguration("policy_device"),
+                    },
                     {
                         "use_sim_time": ParameterValue(
                             LaunchConfiguration("use_sim_time"),
