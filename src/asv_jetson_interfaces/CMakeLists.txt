@@ -5,24 +5,16 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  # Existing UE5/perception/control path. PredictedWorldState remains because
-  # the legacy state_predictor_node and decision_node still consume it.
-  # UEEntity and UEEntityArray append provenance, instruction, bbox,
+  # UE5/VLA path. UEEntity and UEEntityArray append provenance, instruction, bbox,
   # confidence, and velocity-validity fields with ROS-compatible defaults.
   "msg/UEASVState.msg"
   "msg/UEEntity.msg"
   "msg/UEEntityArray.msg"
-  "msg/TargetGroundTruth.msg"
   "msg/CameraFrame.msg"
-  "msg/WorldState.msg"
-  "msg/PredictedWorldState.msg"
   "msg/DecisionOutput.msg"
-  "msg/ThrusterCommand.msg"
   # UE5-only kinematic execution bypasses the physical controller. The
   # ObjectDeliverer bridge sends one body-frame displacement per source frame.
   "msg/UEKinematicSetpoint.msg"
-  "msg/SystemStatus.msg"
-  "msg/RunContext.msg"
   "msg/TaskEmbedding.msg"
   "msg/VisualFeatures.msg"
   "msg/TaskFeatures.msg"

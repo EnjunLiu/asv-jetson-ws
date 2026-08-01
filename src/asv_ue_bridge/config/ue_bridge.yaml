@@ -26,9 +26,9 @@ ue_object_deliverer_bridge_node:
     # Publish UE5 Get Game Time in Seconds as the ROS 2 /clock source.
     publish_clock: true
 
-    # Exactly one outbound actuation family may own the ObjectDeliverer socket:
-    # thruster (legacy), kinematic (UE5-only teleport), or disabled.
-    outbound_command_mode: "thruster"
+    # The VLA boundary emits only kinematic desired displacement. Physical
+    # thruster control is owned by the separate low-level controller project.
+    outbound_command_mode: "kinematic"
 
     # ROS base_link metres -> UE actor-local centimetres. ROS +Y is left while
     # UE local +Y is right, so the outbound lateral sign is negative.

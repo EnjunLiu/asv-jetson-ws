@@ -3,8 +3,6 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include <asv_jetson_interfaces/msg/camera_frame.hpp>
-#include <asv_jetson_interfaces/msg/target_ground_truth.hpp>
-#include <asv_jetson_interfaces/msg/thruster_command.hpp>
 #include <asv_jetson_interfaces/msg/ueasv_state.hpp>
 #include <asv_jetson_interfaces/msg/ue_entity.hpp>
 #include <asv_jetson_interfaces/msg/ue_entity_array.hpp>
@@ -212,7 +210,7 @@ public:
     log_raw_json_ = declare_parameter<bool>("log_raw_json", false);
     publish_clock_ = declare_parameter<bool>("publish_clock", true);
     outbound_command_mode_ =
-      declare_parameter<std::string>("outbound_command_mode", "thruster");
+      declare_parameter<std::string>("outbound_command_mode", "kinematic");
     kinematic_position_scale_ =
       declare_parameter<double>("kinematic_position_scale", 100.0);
     kinematic_lateral_sign_ =
@@ -239,12 +237,11 @@ public:
       throw std::runtime_error("max_entities must be positive");
     }
     if (
-      outbound_command_mode_ != "thruster" &&
       outbound_command_mode_ != "kinematic" &&
       outbound_command_mode_ != "disabled")
     {
       throw std::runtime_error(
-              "outbound_command_mode must be thruster, kinematic or disabled");
+              "outbound_command_mode must be kinematic or disabled");
     }
     if (
       !std::isfinite(kinematic_position_scale_) ||
@@ -264,10 +261,6 @@ public:
     asv_state_pub_ = create_publisher<asv_jetson_interfaces::msg::UEASVState>(
       "/ue/asv_state", rclcpp::QoS(10).reliable());
 
-    target_truth_pub_ =
-      create_publisher<asv_jetson_interfaces::msg::TargetGroundTruth>(
-      "/ue/target_ground_truth", rclcpp::QoS(10).reliable());
-
     camera_pub_ = create_publisher<asv_jetson_interfaces::msg::CameraFrame>(
       "/ue/camera_frame", rclcpp::QoS(2).best_effort());
 
@@ -280,17 +273,7 @@ public:
     clock_pub_ = create_publisher<rosgraph_msgs::msg::Clock>(
       "/clock", rclcpp::QoS(1).best_effort());
 
-    if (outbound_command_mode_ == "thruster") {
-      thruster_command_sub_ =
-        create_subscription<asv_jetson_interfaces::msg::ThrusterCommand>(
-          "/ue/thruster_command",
-          rclcpp::QoS(10).reliable(),
-          [this](
-            const asv_jetson_interfaces::msg::ThrusterCommand::SharedPtr message)
-          {
-            send_thruster_command(*message);
-          });
-    } else if (outbound_command_mode_ == "kinematic") {
+    if (outbound_command_mode_ == "kinematic") {
       kinematic_setpoint_sub_ =
         create_subscription<asv_jetson_interfaces::msg::UEKinematicSetpoint>(
           "/ue/kinematic_setpoint",
@@ -596,20 +579,14 @@ private:
 
       const json * asv_location = read_object(
         body, {"ASV_Location", "ASVLocation", "AsvLocation", "asv_location"});
-      const json * target_location = read_object(
-        body, {"Target_Location", "TargetLocation", "target_location"});
       const json * asv_rotation = read_object(
         body, {"ASV_Rotation", "ASVRotation", "AsvRotation", "asv_rotation"});
 
-      valid = valid && asv_location != nullptr && target_location != nullptr &&
-        asv_rotation != nullptr;
+      valid = valid && asv_location != nullptr && asv_rotation != nullptr;
 
       double asv_x = 0.0;
       double asv_y = 0.0;
       double asv_z = 0.0;
-      double target_x = 0.0;
-      double target_y = 0.0;
-      double target_z = 0.0;
       double roll_degrees = 0.0;
       double pitch_degrees = 0.0;
       double yaw_degrees = 0.0;
@@ -619,9 +596,6 @@ private:
           read_number(*asv_location, {"X", "x"}, asv_x) &&
           read_number(*asv_location, {"Y", "y"}, asv_y) &&
           read_number(*asv_location, {"Z", "z"}, asv_z) &&
-          read_number(*target_location, {"X", "x"}, target_x) &&
-          read_number(*target_location, {"Y", "y"}, target_y) &&
-          read_number(*target_location, {"Z", "z"}, target_z) &&
           read_number(*asv_rotation, {"Roll", "roll"}, roll_degrees) &&
           read_number(*asv_rotation, {"Pitch", "pitch"}, pitch_degrees) &&
           read_number(*asv_rotation, {"Yaw", "yaw"}, yaw_degrees);
@@ -670,17 +644,6 @@ private:
       state.yaw_rate = yaw_rate_sign_ * yaw_rate * yaw_rate_scale_;
       state.valid = true;
       asv_state_pub_->publish(state);
-
-      asv_jetson_interfaces::msg::TargetGroundTruth target;
-      target.stamp_us = stamp_us;
-      target.run_id = metadata.run_id;
-      target.scene_seed = metadata.scene_seed;
-      target.frame_index = metadata.frame_index;
-      target.position_x = target_x * position_scale_;
-      target.position_y = target_y * position_scale_;
-      target.position_z = target_z * position_scale_;
-      target.valid = true;
-      target_truth_pub_->publish(target);
 
       publish_optional_entities(body, stamp_us, metadata, metadata_detail);
       publish_optional_camera(body, stamp_us, metadata);
@@ -929,19 +892,6 @@ private:
     camera_pub_->publish(frame);
   }
 
-  void send_thruster_command(
-    const asv_jetson_interfaces::msg::ThrusterCommand & command)
-  {
-    const json response = {
-      {"Stamp_Us", command.stamp_us},
-      {"Left_Thruster", command.left_thruster},
-      {"Right_Thruster", command.right_thruster},
-      {"Valid", command.valid}
-    };
-
-    send_json_payload(response, "thruster command");
-  }
-
   void send_kinematic_setpoint(
     const asv_jetson_interfaces::msg::UEKinematicSetpoint & command)
   {
@@ -1048,7 +998,7 @@ private:
   int max_camera_bytes_{8 * 1024 * 1024};
   bool log_raw_json_{false};
   bool publish_clock_{true};
-  std::string outbound_command_mode_{"thruster"};
+  std::string outbound_command_mode_{"kinematic"};
   double kinematic_position_scale_{100.0};
   double kinematic_lateral_sign_{-1.0};
 
@@ -1069,14 +1019,10 @@ private:
   uint64_t last_frame_index_{0};
 
   rclcpp::Publisher<asv_jetson_interfaces::msg::UEASVState>::SharedPtr asv_state_pub_;
-  rclcpp::Publisher<asv_jetson_interfaces::msg::TargetGroundTruth>::SharedPtr
-    target_truth_pub_;
   rclcpp::Publisher<asv_jetson_interfaces::msg::CameraFrame>::SharedPtr camera_pub_;
   rclcpp::Publisher<asv_jetson_interfaces::msg::UEEntityArray>::SharedPtr entities_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr connected_pub_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
-  rclcpp::Subscription<asv_jetson_interfaces::msg::ThrusterCommand>::SharedPtr
-    thruster_command_sub_;
   rclcpp::Subscription<asv_jetson_interfaces::msg::UEKinematicSetpoint>::SharedPtr
     kinematic_setpoint_sub_;
 };

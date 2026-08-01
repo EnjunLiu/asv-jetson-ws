@@ -17,12 +17,11 @@ def test_policy_node_defaults_to_explicit_torch_cuda_backend() -> None:
     source = POLICY_NODE.read_text(encoding="utf-8")
     for token in (
         'DEFAULT_POLICY_BACKEND = "torch_cuda"',
-        'self.declare_parameter("backend", DEFAULT_POLICY_BACKEND)',
         'self.declare_parameter("device", "cuda")',
         "POLICY_READY",
         "TorchPolicyRunner.load",
         "device=policy_device",
-        'self._backend == "onnx_cpu"',
+        "policy backend is not ready",
     ):
         assert token in source
 

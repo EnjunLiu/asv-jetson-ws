@@ -147,7 +147,7 @@ def hash_weight_tree(path: str | Path) -> str:
         return _sha256_file(root)
     if not root.is_dir():
         raise FeatureCacheError(f"model path does not exist: {root}")
-    suffixes = {".bin", ".onnx", ".pt", ".pth", ".safetensors"}
+    suffixes = {".bin", ".pt", ".pth", ".safetensors"}
     files = sorted(
         candidate
         for candidate in root.rglob("*")

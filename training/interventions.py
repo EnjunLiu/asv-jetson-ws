@@ -1,4 +1,4 @@
-"""Day 16 frozen-policy language, visual, and entity interventions."""
+"""Frozen-policy language, visual, and entity intervention evaluation."""
 
 from __future__ import annotations
 
@@ -1096,7 +1096,7 @@ def evaluate(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate frozen Day 15 checkpoints under Day 16 interventions."
+        description="Evaluate the frozen policy under offline interventions."
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-config", type=Path, required=True)

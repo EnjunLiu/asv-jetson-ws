@@ -1,67 +1,61 @@
-# ASV VLA — 无人船视觉-语言-动作控制
+# ASV VLA
 
-ROS 2 工作空间：UE5 仿真提供多模态观测，Jetson 上的 VLA 流水线输出二维期望位移/
-轨迹，经确定性安全门后执行（仿真运动学执行或 ESP32 推力链）。**故障时 fail-closed
-（宁可停止，不可执行不安全轨迹）**。
+这是一个面向 UE5 S2 正弦跟踪场景的模块化 VLA 原型。最终在线边界只有：
 
-动作接口是任务级二维 body-frame 轨迹，而不是左右推力：策略输出 20 个累计位移
-waypoint（`dt=0.2 s`），安全门通过后控制器取短前缀，仿真 adapter 每个观测帧只发送
-一个 setpoint。底层推力控制器可以独立调参，不改变 VLA 的任务接口。
-
-## 系统概览
-
-```
-UE5 (相机/实体/本船状态)
-  → JPEG + 任务文本 → 任务条件 image→Entities（速度由跨帧 tracker 计算）
-  → 视觉编码 (MobileNetV3 冻结特征) + 实体张量 + 指令 embedding
-  → 图像+指令实体筛选 → 策略 (JetPack PyTorch, CUDA) / 专家对照
-  → 安全门 (唯一发布者) → 轨迹控制器 → /decision/output
-  → 仿真: decision_setpoint_adapter → UE5
-  → 硬件: control_input_mux → [ESP32] → safety_supervisor → thruster_allocator → UE5
+```text
+UE5 JPEG + 任务指令 + 本船 UEASVState
+  -> 图像+指令感知 -> 任务相关 Entities -> 跨帧速度 -> ego 对齐
+  -> CUDA 视觉/Qwen/策略 -> 20x2 期望位移轨迹
+  -> 安全门 -> desired_x/desired_y -> UE5 运动学执行
 ```
 
-在线策略只接收 JPEG 派生的实体、Qwen 指令 embedding 和带身份的 ego 状态；UE
-`/ue/entities` 仍由 bridge 发布，但只能用于录制/离线监督，绝不进入默认闭环。
+UE5 的 `/ue/entities` 仍可随图像一起发送，但只进入 recorder 和 PC 离线监督；它不
+进入在线感知、实体张量或策略。专家轨迹同样只用于离线标签。VLA 不输出左右推力，
+底层推力控制器可在独立工程中调参而不改变本仓库接口。
 
-详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、任务级动作边界、接口契约、安全设计、ESP32 扩展路径）、
-[TODO.md](TODO.md)（当前严格验收状态）和 [docs/demo_runbook.md](docs/demo_runbook.md)（可复现实验步骤）；
-[HISTORY.md](HISTORY.md) 保留历史根因与审计记录。
+## 当前活动面
 
-## 目录结构
+仓库只保留四个 ROS 2 包：
 
+- `asv_jetson_interfaces`：UE5/VLA 消息
+- `asv_ue_bridge`：TCP JSON、JPEG、本船状态和运动学 setpoint bridge
+- `asv_vla`：图像实体感知、tracker、视觉/Qwen/策略、安全门和采集器
+- `asv_bringup`：在线闭环、离线采集、回放 launch
+
+旧的 CPU/ONNX、语言 `.npy` stub、旧硬件控制 ROS 包和历史训练配置已经从活动树移除。
+可恢复副本位于本机 `/tmp/asv_vla_cleanup_20260802/`，不属于运行时。
+
+PC 训练数据和模型不提交进 Git，唯一活动目录是：
+
+```text
+C:\Users\LIU\Documents\jetson_ws\pc_datasets
 ```
-src/                  ROS 2 包（9 个，见 ARCHITECTURE.md §3）
-training/             训练管线（特征缓存构建、训练、验证门、ONNX 导出）
-dataset/language/     指令集 (instructions.jsonl) 与对比对
-models/               演示指令 embedding + manifest
-tools/ue5/            UE5 采集/验证自动化（C++ 子系统 + PowerShell 脚本）
-tools/pc_reference/   PC 侧参考运行脚本
-scripts/              Jetson 采集脚本
-docs/                 接口与契约文档
-```
 
-## 快速开始（Jetson）
+其中保留 near S2 原始帧、冻结特征、seed42 policy、图像校准器和 Qwen3-Embedding-0.6B。
+
+## Jetson 在线启动
+
+先启动 Jetson：
 
 ```bash
 cd ~/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 source ~/microros_ws/install/setup.bash
-colcon build --symlink-install
+colcon build --merge-install --symlink-install --packages-select asv_vla asv_bringup asv_ue_bridge asv_jetson_interfaces
 source install/setup.bash
+ros2 launch asv_bringup vla_closed_loop.launch.py \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
+  perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
+  language_device:=cuda language_release_after_encode:=false \
+  policy_device:=cuda visual_device:=cuda \
+  execution_address:=192.168.137.1 execution_port:=8081
 ```
 
-- 单元测试：`PYTHONPATH=src/asv_vla python -m pytest -q src/asv_vla/test`
-- VLA 闭环（仿真，默认 image-only + Qwen CUDA + Torch CUDA）：`ros2 launch asv_bringup vla_closed_loop.launch.py`
-  （可用 `model_path:=...`、`perception_model_path:=...`、`policy_backend:=torch_cuda`、
-  `language_device:=cuda`、`execution_address:=192.168.137.1`、`execution_port:=8081`
-  显式指定部署资源；默认 `language_release_after_encode=true`、
-  `language_staging_delay_sec=20.0`，缺少 CUDA/模型时系统保持 fail-closed）
-- 专家对照闭环：`ros2 launch asv_bringup expert_closed_loop.launch.py`
-- 完整硬件链：`ros2 launch asv_bringup full_system.launch.py`
-  （micro_ros_agent + control manager；ESP32 通过 `/control/control_input` 接入）
+默认使用常驻 Qwen CUDA，可在任务文本更新时重新编码。只有设备级内存验证失败时，才
+显式使用 `language_release_after_encode:=true`；这仍然是实时 Qwen 首次编码，不得改
+回 `.npy` 或 CPU。
 
-可录制的 UE5 图形闭环顺序是“先启动 Jetson launch，再启动 UE5 游戏窗口”；
-项目文件必须是 UnrealEditor 的第一个参数：
+然后启动 UE5，项目文件必须是 UnrealEditor 的第一个参数：
 
 ```powershell
 & "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
@@ -71,34 +65,43 @@ source install/setup.bash
   -ResX=1280 -ResY=720 -windowed
 ```
 
-默认策略与感知模型分别为 `policy_sine_near_image_color_seed42.pt` 和
-`image_entity_color_calibrated_v1.npz`；在线图像感知、MobileNet、策略和 Qwen 均请求
-Jetson CUDA。为适配 Jetson Orin Nano 8 GB，默认启动采用分阶段 Qwen：首次任务文本由
-真实 Qwen CUDA 编码，成功后释放 Qwen 权重，但 256-D embedding 继续在线发布；任务切换
-需要重启当前闭环，**不属于当前 S2 演示承诺**。不静默回退 CPU。最终全 CUDA 在线验收使用
-`seed=230908`（230906/230902 为此前对照）；约 7 m 的 OOD 目标必须保持
-`valid=false`/hold。详见
-[`docs/demo_runbook.md`](docs/demo_runbook.md) 与 [`models/manifest.yaml`](models/manifest.yaml)。
+验收时应看到：
 
-## 数据采集与训练（PC）
+```text
+image_entity_perception ... device=cuda
+LANGUAGE_READY_VALID ... device=cuda
+visual_encoder ... device=cuda
+POLICY_READY backend=torch_cuda device=cuda
+PERCEPTION_TRACE ... source=image_perception
+POLICY_TRACE ... ego_valid=true
+SCENE_EXEC_APPLY ...
+SCENE_UE_COMPLETE ...
+```
 
-1. 采集：`tools/ue5/collect.ps1`（自动化：Jetson 查 slot → UE5 headless 运行 →
-   打包回传 + SHA-256 校验）
-2. 特征：`training/build_feature_caches.py`（冻结 MobileNet + Qwen）
-3. 训练：`training/train.py`（配置在 `training/config/`）
-4. 导出/部署：保留带 `model_config` 的 `pytorch_state_dict` checkpoint，复制
-   `policy_sine_near_image_color_seed42.pt`、`image_entity_color_calibrated_v1.npz`
-   与 Qwen 模型目录到 Jetson `models/`；策略运行时在 JetPack PyTorch CUDA 上 strict-load。
-5. 验证：
-   SHA/验证门状态以 [`models/manifest.yaml`](models/manifest.yaml) 为准。
+## 数据采集与训练
 
-## 平台
+训练数据采集单独运行，不与在线 VLA 同时启动：
 
-- Jetson Orin Nano 8 GB / Ubuntu 22.04 / ROS 2 Humble
-- UE5 项目：`D:\Unreal Projects\VLA`（无限海洋地图，TCP :8080 对接）
-- ESP32-P4 固件：独立仓库 `asv-esp32-firmware`（micro-ROS over UART2）
-- PC 训练：RTX 5060 / PyTorch / Qwen3-Embedding-0.6B + MobileNetV3-small
+```bash
+ros2 launch asv_bringup collect.launch.py \
+  slot_id:=L7 layout_id:=L7 motion_state:=S2 scene_seed:=230908 \
+  execution_address:=192.168.137.1 execution_port:=8081
+```
 
-## 许可
+采集器保存 JPEG、`UEASVState`、UE Entities 和身份元数据。PC 训练时 Entities 只作为
+监督标签，速度由相邻图像实体和时间戳计算；策略训练输入是图像推断的 Entities、
+语言 embedding 和真实 ego。
 
-Apache-2.0（见 [LICENSE](LICENSE)）。
+## 本地验证
+
+```bash
+cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
+PYTHONPATH=src/asv_vla pytest -q
+git diff --check
+```
+
+不允许并行启动第二套 bridge、expert、policy 或 safety gate。CUDA/模型/身份/ego 任一
+项失败，都必须输出 `valid=false` 并 hold。
+
+详细边界见 [ARCHITECTURE.md](ARCHITECTURE.md)、[TODO.md](TODO.md) 和
+[docs/demo_runbook.md](docs/demo_runbook.md)。

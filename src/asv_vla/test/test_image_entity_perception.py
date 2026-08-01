@@ -142,6 +142,67 @@ def test_task_selection_only_returns_relevant_visible_entities() -> None:
     assert select_task_entities(predictions, "stop") == ()
 
 
+def _all_visible_model() -> ImageEntityModel:
+    return ImageEntityModel(
+        feature_mean=np.zeros(FEATURE_DIM, dtype=np.float32),
+        feature_scale=np.ones(FEATURE_DIM, dtype=np.float32),
+        weights=np.zeros((FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
+        bias=np.ones(OUTPUT_DIM, dtype=np.float32),
+    )
+
+
+def test_predict_applies_task_condition_at_model_output_boundary() -> None:
+    image = Image.new("RGB", (1280, 720), (40, 50, 60))
+    model = _all_visible_model()
+
+    unconditioned = model.predict(image)
+    red = model.predict(image, task=parse_task_instruction("follow red"))
+    blue = model.predict(image, task="follow blue")
+
+    assert all(prediction.visible for prediction in unconditioned)
+    assert [prediction.entity_id for prediction in red if prediction.visible] == [
+        "target_red"
+    ]
+    assert [prediction.entity_id for prediction in blue if prediction.visible] == [
+        "target_blue"
+    ]
+    for red_prediction, blue_prediction in zip(red, blue):
+        if red_prediction.entity_id in {"target_red", "target_blue"}:
+            assert red_prediction.visible != blue_prediction.visible
+        assert (
+            red_prediction.relative_x,
+            red_prediction.relative_y,
+            red_prediction.relative_z,
+        ) == (
+            blue_prediction.relative_x,
+            blue_prediction.relative_y,
+            blue_prediction.relative_z,
+        )
+
+
+def test_cuda_path_uses_torch_feature_helper_without_numpy_fallback(
+    monkeypatch,
+) -> None:
+    model = _all_visible_model()
+    monkeypatch.setattr(
+        "asv_vla.image_entity_perception._torch_for_device",
+        lambda _device: object(),
+    )
+    monkeypatch.setattr(
+        "asv_vla.image_entity_perception._extract_torch_image_features",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ImageEntityPerceptionError("CUDA_FEATURE_PATH")
+        ),
+    )
+    monkeypatch.setattr(
+        "asv_vla.image_entity_perception.extract_image_features",
+        lambda _image: pytest.fail("CUDA path used NumPy feature extraction"),
+    )
+
+    with pytest.raises(ImageEntityPerceptionError, match="CUDA_FEATURE_PATH"):
+        model.predict(np.zeros((24, 32, 3), dtype=np.uint8), device="cuda")
+
+
 def test_cuda_request_fails_closed_without_silent_numpy_fallback(monkeypatch) -> None:
     fake_torch = types.SimpleNamespace(
         cuda=types.SimpleNamespace(is_available=lambda: False)

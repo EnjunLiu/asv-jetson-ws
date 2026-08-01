@@ -67,7 +67,8 @@ private:
     // C++ kinematic setpoint executor.  The Connection blueprint does not
     // apply kinematic setpoints when running headless, so this subsystem
     // listens on SceneExecPort (default 8081) and moves the ASV itself
-    // (same semantics as ue5_kinematic_command_v1: incremental world-space
+    // (same semantics as the final UE5 kinematic setpoint contract:
+    // incremental world-space
     // cm displacement, y already sign-flipped by the bridge).  The
     // blueprint's TCP channel (8080) keeps serving entity/camera reports
     // untouched.  Enabled only when SceneExecPort > 0.

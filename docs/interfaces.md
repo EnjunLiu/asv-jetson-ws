@@ -1,135 +1,103 @@
-# Jetson VLA interface contract
+# 最终接口契约
 
-This document freezes the Day 1–3 Jetson boundary. UE5 blueprint design and
-payload evolution are intentionally outside this contract.
+本文档只描述活动的 VLA/UE5 路径。Jetson 上层和底层实体执行解耦：上层只给二维
+期望位移，UE5 仿真执行器或后续独立底层控制器负责把它变成运动。
 
-## Control boundary
+## 输入边界
 
-The VLA side may publish only a two-dimensional desired displacement trajectory.
-It never publishes left/right thruster values.
+UE5 bridge 发布：
 
-```text
-language + visual + task features
-                |
-                v
-      trajectory policy
-                |
-                v
-/vla/selected_trajectory  [H=20, 2], dt=0.2 s, base_link
-                |
-                v
-      trajectory controller
-                |
-                v
-/decision/output  desired_x, desired_y, valid
-                |
-                v
-existing control / ESP32 boundary
-```
+- `/ue/camera_frame`：SceneCapture 的 JPEG、`run_id`、`scene_seed`、`frame_index`、
+  `stamp_us`。
+- `/ue/asv_state`：实时自船状态。策略目前使用 `surge_velocity` 和 `yaw_rate`，不使用
+  UE 目标真值。
+- `/ue/entities`：原始实体标签和速度，仅供 `record_episode` 及离线监督；不能被在线
+  VLA 节点订阅。
 
-`+X` is forward and `+Y` is port/left in the ASV body frame.
-`delta_p_xy` contains interleaved `[dx0, dy0, ..., dx19, dy19]` values in
-metres. A future learned policy must preserve this contract.
-
-## Day 1 fail-closed semantics
-
-`SelectedTrajectory.valid=true` means that the message container has the
-expected shape, frame, timestamp and finite values. It does **not** authorize
-actuation.
-
-The Day 1 policy always publishes a well-formed zero trajectory with
-`safe_stop=true`. The Day 1 trajectory controller maps it to:
+任务输入 `/task/text` 是事件驱动字符串，例如：
 
 ```text
-DecisionOutput.desired_x = 0
-DecisionOutput.desired_y = 0
-DecisionOutput.valid = false
+跟随红色目标船，保持3米距离
+follow the blue boat
+follow the left target
+stop
 ```
 
-The existing control chain must then keep `ControlInput`, wrench and thruster
-messages at zero with `valid=false`. A valid zero displacement is not used as a
-fallback because a controller could interpret it as position hold.
+`image_entity_perception` 同时消费 JPEG 和任务指令。模型先从 JPEG 产生候选几何，
+再用解析后的任务选择相关实体；这里的选择改变可见性/目标标记，不读取 `/ue/entities`。
+当前部署 artifact 的几何验收范围是约 5 m 内的红色目标；蓝色/左右任务若没有对应
+校准模型会安全地输出不可见/hold。
 
-## Day 2 language contract
+## 感知和速度
 
-`/task/text` is event driven. The real encoder publishes
-`/vla/language_embedding` with:
+`/vla/perceived_entities` 的 `UEEntityArray` 是图像推断结果：
 
-- `embedding_dim=256`;
-- finite, L2-normalized `float32` values;
-- `model_id=Qwen/Qwen3-Embedding-0.6B`;
-- `cached=true` for repeated normalized text;
-- `valid=false` and an all-zero vector for empty, oversized, unavailable-model
-  or inference-failure cases.
+- `source=image_perception`；
+- `relative_x/y/z` 来自图像模型（当前近距离红色目标使用可审计 RGB 校准器）；
+- 首帧速度字段为零且 `velocity_valid=false`；
+- `bbox_*` 是从图像推断几何投影出的诊断框，不是 UE 传入的真值框。
 
-The online Jetson runtime uses `LanguageEncoderStub` with a precomputed 256-D
-embedding; the Qwen encoder is a PC-only feature-cache tool and is not installed
-as an online ROS node. Never start two publishers for the same topic.
+`/vla/tracked_entities` 由相邻图像帧的几何和时间戳计算相对速度，跨 Run 或帧身份不
+连续时会清空历史并 fail-closed。任何单帧都不会声称直接观察到速度。
 
-## Day 3 data boundary
+`task_entity_tensor` 只接受 `image_perception` 或 `temporal_tracker` 来源；传入其他来源
+会发布无效消息。它输出固定形状的 `TaskFeatures`，供 visual encoder 和 policy 使用。
 
-Labels in `dataset/language/*.jsonl` exist only for dataset construction,
-splitting and evaluation. They are not an online parser output and may not
-bypass the embedding or trajectory policy.
+## 任务级多模态策略
 
-## Day 9 expert-label boundary
+```text
+/ue/camera_frame + /task/text + /ue/asv_state
+       |             |              |
+       v             v              v
+image perception  Qwen CUDA       ego normalization
+       |             |              |
+temporal tracker -> visual/task tensors
+                       |
+                       v
+             Torch CUDA policy checkpoint
+                       |
+                       v
+             SelectedTrajectory [H=20, 2]
+```
 
-The deterministic FOLLOW/STOP expert publishes `ExpertTrajectory` only on
-`/vla/expert_trajectory`. This is a data-label topic, not the executable
-`/vla/selected_trajectory` topic. It is never connected directly to the
-trajectory controller, control manager, ESP32, or left/right thrusters.
+语言向量为 256-D、有限、L2 归一化的真实 Qwen3-Embedding-0.6B 输出。在线默认权重
+常驻 CUDA 并支持新的 `/task/text`；若显式设置 `language_release_after_encode=true`，
+只释放 Qwen 权重而保留已编码向量，不能改用 `.npy` 或 CPU stub。
 
-`ExpertTrajectory` retains `run_id`, `scene_seed`, `frame_index`, and
-`stamp_us`. The full identity is required because adjacent UE5 Frame Index
-values can legitimately share one game-time timestamp.
+策略输入的实体、视觉、语言、ego 和身份必须全部匹配同一
+`run_id/scene_seed/frame_index`。策略输出为一条 20 点二维位移序列
+`[dx0,dy0,...,dx19,dy19]`（米，`base_link`，`dt=0.2 s`）。缺失 CUDA 模型、身份或
+有效输入时，输出固定零轨迹并 `valid=false/safe_stop=true`。
 
-The structured `action`, `target_attribute`, and `distance_bucket` inputs come
-from offline dataset metadata:
+## 执行边界
 
-- FOLLOW selectors: `color:red`, `color:blue`, `bearing:left`,
-  `bearing:right`;
-- FOLLOW standoff distances: `3m` or `10m`;
-- STOP: `target_attribute=none`, `distance_bucket=none`.
+```text
+/vla/policy_trajectory
+        -> /vla/selected_trajectory (safety gate 唯一发布者)
+        -> /decision/output (desired_x, desired_y)
+        -> /ue/kinematic_setpoint
+        -> UE5 C++ executor:8081
+```
 
-FOLLOW predicts the selected target with constant relative velocity, places
-the desired ASV waypoint at the requested line-of-sight standoff, and limits
-each 0.2 s waypoint increment to the configured expert speed. STOP produces a
-20-step zero-displacement label with `safe_stop=true`. Missing, invalid,
-ambiguous, or non-finite target data produces the fixed zero shape with
-`valid=false`; it never silently becomes a valid STOP label.
+上层不发布左右推力。`+X` 为船体前方，`+Y` 为左舷/左方；`desired_x/y` 是米制二维
+期望位移。UE5 仿真可以直接设置下一期望位姿用于演示；真实船接入时，应由独立底层
+控制器消费同一 setpoint，不改变 VLA 契约。
 
-Bearing selection uses a 0.25 m lateral deadband around the body-frame
-centerline. Sub-millimetre UE/float noise therefore cannot turn a centered
-color target into a left/right training label.
+## 数据和专家轨迹边界
 
-## Day 10 supervised-data boundary
+UE `Entities` 与离线 `ExpertTrajectory` 只用于收集图像监督和训练标签：
 
-Day 10 pairs immutable Day 8 `FrameRecord` observations with compatible Day 3
-instructions and recomputed Day 9 expert trajectories. The output contains
-only `manifest.json` and `samples.jsonl`; source JSON and JPEG files remain in
-their original episode and are referenced by relative path and SHA-256.
+```text
+JPEG + Entities + Run metadata -> PC dataset -> frozen model checkpoint
+JPEG + task + ego             -> Jetson online inference -> desired_x/y
+```
 
-Each sample retains:
+专家轨迹不能发布到 `/vla/selected_trajectory`，不能直接连接执行器。速度标签可用于
+训练/验证 tracker，但在线速度必须来自连续感知帧。
 
-- `run_id / scene_seed / frame_index / stamp_us / frame_id`;
-- source FrameRecord and JPEG paths plus SHA-256 hashes;
-- instruction text, offline structured labels, and language-template split;
-- expert version, `dt=0.2`, `horizon=20`, selected target, stop flag, and a
-  finite nested `20x2` trajectory.
+## 失败闭环
 
-The builder overlays multiple language interventions on the same observation
-deliberately. `language_split` therefore measures held-out wording families,
-not visual or scene generalization. Future visual-generalization evaluation
-must group independent UE runs by Run ID or Scene Seed.
-
-Dataset construction never publishes ROS control topics. A changed source
-file, duplicate sample identity, missing instruction, invalid target, hash
-mismatch, or trajectory mismatch causes validation failure rather than a
-partially trusted sample.
-
-## Legacy path
-
-`PredictedWorldState`, `state_predictor_node` and `decision_node` belong to the
-existing formal non-VLA path. They remain buildable until a later integration
-branch introduces an explicit `legacy|vla` launch mode. They are not the
-deleted VLA world-model evaluation stage.
+以下任一条件会让在线输出 hold：空任务、相机无效、感知模型加载失败、实体来源不可信、
+Run identity 不匹配、Qwen/Torch CUDA 不可用、策略输出非有限或 safety gate 拒绝。
+这类 hold 是最终系统的可接受行为，不得通过 UE 真值、旧专家 publisher、ONNX/CPU 后端
+或预计算语言 embedding 绕过。

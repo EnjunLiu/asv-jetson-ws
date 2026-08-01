@@ -130,51 +130,6 @@ def _make_run(
     return episode, supervision
 
 
-def test_repository_plan_has_twelve_unique_counterbalanced_slots() -> None:
-    plan_path = (
-        Path(__file__).parents[1]
-        / "config"
-        / "collection_plan_v1.json"
-    )
-    plan = load_plan(plan_path)
-
-    assert len(plan["slots"]) == 12
-    assert len({slot["slot_id"] for slot in plan["slots"]}) == 12
-    assert len({slot["scene_seed"] for slot in plan["slots"]}) == 12
-    assert {slot["layout_id"] for slot in plan["slots"]} == {
-        "L1",
-        "L2",
-        "L3",
-        "L4",
-    }
-    assert {slot["motion_state"] for slot in plan["slots"]} == {"S0", "S1"}
-    assert {
-        slot["layout_id"]
-        for slot in plan["slots"]
-        if slot["motion_state"] == "S0"
-    } == {"L1", "L2", "L3", "L4"}
-    assert plan["relation_evaluation_frames"] == 1
-
-
-def test_repository_extended_plan_inherits_twelve_and_reaches_thirty() -> None:
-    plan_path = (
-        Path(__file__).parents[1]
-        / "config"
-        / "collection_plan_30_v1.json"
-    )
-    plan = load_plan(plan_path)
-
-    assert len(plan["slots"]) == 30
-    assert plan["minimum_complete_runs"] == 30
-    assert len({slot["slot_id"] for slot in plan["slots"]}) == 30
-    assert len({slot["scene_seed"] for slot in plan["slots"]}) == 30
-    counts = {
-        layout: sum(slot["layout_id"] == layout for slot in plan["slots"])
-        for layout in ("L1", "L2", "L3", "L4")
-    }
-    assert counts == {"L1": 8, "L2": 8, "L3": 7, "L4": 7}
-
-
 def test_near_range_sine_plan_has_mirrored_l7_slots() -> None:
     plan_path = (
         Path(__file__).parents[1]
@@ -187,6 +142,16 @@ def test_near_range_sine_plan_has_mirrored_l7_slots() -> None:
     assert len(plan["slots"]) == 12
     assert {slot["layout_id"] for slot in plan["slots"]} == {"L7", "L7B"}
     assert {slot["motion_state"] for slot in plan["slots"]} == {"S2"}
+    assert plan["minimum_frames_per_run"] == 80
+    assert plan["target_frames_per_run"] == 100
+    assert plan["required_execution_mode"] == "ue5_kinematic_expert_v1"
+    assert plan["relation_evaluation_frames"] == 1
+    assert plan["motion_evaluation_frames"] == 50
+    assert plan["minimum_relation_pass_fraction"] == 1.0
+    assert plan["minimum_motion_pass_fraction"] == 0.6
+    assert "Final S2 near-range collection" in plan["note"]
+    assert "4.5 m target-pair spawn distance" in plan["note"]
+    assert "7 m white distractors" in plan["note"]
     assert {slot["scene_seed"] for slot in plan["slots"]} == set(
         range(220701, 220707)
     ) | set(range(220801, 220807))
@@ -233,20 +198,6 @@ def test_remote_collection_forwards_execution_endpoint() -> None:
     term_index = completion.index('kill -TERM "$recorder_pid"')
     assert wait_index < term_index
     assert 'if kill -0 "$recorder_pid" 2>/dev/null; then' in completion
-
-
-def test_color_swap_plan_holds_ego_with_stop_rollout() -> None:
-    plan_path = (
-        Path(__file__).parents[1]
-        / "config"
-        / "color_swap_plan_v1.json"
-    )
-    plan = load_plan(plan_path)
-
-    assert plan["rollout_action"] == "stop"
-    assert plan["minimum_complete_runs"] == 2
-    assert [slot["layout_id"] for slot in plan["slots"]] == ["L3", "L4"]
-    assert {slot["scene_seed"] for slot in plan["slots"]} == {161302, 161402}
 
 
 def test_collection_plan_inheritance_cycle_is_rejected(

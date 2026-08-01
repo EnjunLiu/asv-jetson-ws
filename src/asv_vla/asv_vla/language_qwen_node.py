@@ -1,10 +1,10 @@
-"""ROS 2 adapter for the frozen, cached Qwen language encoder.
+"""ROS 2 adapter for the live Qwen language encoder.
 
 The node deliberately treats CUDA as a requested execution contract. If the
 model cannot be loaded on the requested device, it stays alive and publishes
 an invalid embedding plus an ``ERROR`` module status; it never silently
-retries on CPU. The pre-computed ``language_stub`` remains a separate launch
-backend for deterministic demos and for hosts without the Qwen model.
+retries on CPU. The model remains resident by default so new task text is
+encoded online rather than read from a cached ``.npy`` file.
 """
 
 from __future__ import annotations
@@ -161,9 +161,9 @@ class LanguageQwenNode(Node):
         self._publish_current()
         self._publish_status()
 
-        # Keep the node alive on startup failures so diagnostics and the
-        # deterministic stub backend remain available. This exception path
-        # does not alter ``self.device`` or retry on CPU.
+        # Keep the node alive on startup failures so diagnostics can be
+        # observed. This exception path does not alter ``self.device`` or
+        # retry on CPU; subsequent task messages remain invalid/hold.
         try:
             self._encoder = USVLanguageEncoder(
                 self.model_path,

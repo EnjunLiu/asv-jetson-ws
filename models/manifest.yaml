@@ -25,7 +25,7 @@ deployment:
       max_geometry_rmse_m: 0.5
       min_run_visibility_accuracy: 0.95
       max_run_geometry_rmse_m: 0.5
-    validation_report: models/image_entity_color_calibrated_v1.json
+    validation_report: ../pc_datasets/models/image_entity_color_calibrated_v1.json
   policy:
     path: models/policy_sine_near_image_color_seed42.pt
     model_id: policy_sine_near_image_color_seed42
@@ -34,25 +34,25 @@ deployment:
     device: cuda
     input_contract: frozen_multimodal_481k_v1
     validation_gate_passed: true
-    validation_status: seed42_training_gate_passed;cuda_online_passed
+    validation_scope: full_seed42_only
+    validation_status: seed42_training_gate_passed;cuda_online_passed;other_seeds_pending
     validation_metrics: seed=230908;standoff_target=3m;online_setpoint_stream=35s
     deployment_status: torch_cuda_online_passed
     validation_report: ../pc_datasets/checkpoints/sine_near_image_color_v1/summary.json
   language:
-    mode: online_qwen_cuda_staged_first_instruction
+    mode: online_qwen_cuda_resident
     feature_dim: 256
     model_id: Qwen3-Embedding-0.6B
     model_path: models/Qwen3-Embedding-0.6B
     device: cuda
-    release_model_after_encode: true
-    staging_delay_sec: 20.0
+    release_model_after_encode: false
     online_qwen_runtime: true
     first_instruction_encoding: real_qwen_cuda
-    qwen_weight_resident_after_encode: false
+    qwen_weight_resident_after_encode: true
     post_encode_embedding_online: true
-    task_switch_policy: restart_required
+    task_switch_policy: live_instruction_update_for_calibrated_tasks
     s2_task_switch_promised: false
-    validation_status: cuda_staged_first_instruction_online_passed
+    validation_status: cuda_resident_online_pending_device_recheck;blue_visual_calibration_pending
   visual:
     model_id: torchvision:mobilenet_v3_small:IMAGENET1K_V1
     feature_dim: 576

@@ -1,11 +1,11 @@
-"""VLA policy inference node (CUDA Torch by default, ONNX CPU optional).
+"""VLA policy inference node (strict CUDA Torch runtime).
 
 Subscribes to encoder topics, runs the frozen policy, and publishes one
 trajectory per frame to ``/vla/policy_trajectory``.
 
-The default path keeps the policy and visual encoder on separate, explicit
-CUDA ownership boundaries.  ONNX Runtime remains available only when the
-``backend`` parameter is explicitly set to ``onnx``/``onnx_cpu``.
+The policy and visual encoder use explicit CUDA ownership boundaries.  There
+is no CPU/ONNX fallback in the final runtime: a missing CUDA model publishes
+an invalid hold command.
 
 The node also:
 - Pads entity tokens from the 2-token visual encoder output to the
@@ -39,7 +39,6 @@ from .visual_standoff_guard import apply_standoff_guard
 
 DEFAULT_POLICY_BACKEND = "torch_cuda"
 POLICY_MODEL_VERSION = "vla_torch_cuda_v1"
-ONNX_POLICY_MODEL_VERSION = "vla_onnx_cpu_v1"
 
 # Model contract (frozen at export time).
 ENTITY_COUNT = 16
@@ -334,21 +333,8 @@ class VLAPolicyNode(Node):
         super().__init__("vla_policy")
 
         self.declare_parameter("model_path", model_path)
-        self.declare_parameter("checkpoint_path", "")  # deprecated alias
-        self.declare_parameter("backend", DEFAULT_POLICY_BACKEND)
         self.declare_parameter("device", "cuda")
-
-        requested_backend = str(
-            self.get_parameter("backend")
-            .get_parameter_value()
-            .string_value
-        ).strip().lower()
-        if requested_backend in {"torch_cuda", "torch", "cuda"}:
-            self._backend = DEFAULT_POLICY_BACKEND
-        elif requested_backend in {"onnx", "onnx_cpu", "legacy_onnx"}:
-            self._backend = "onnx_cpu"
-        else:
-            self._backend = requested_backend or DEFAULT_POLICY_BACKEND
+        self._backend = DEFAULT_POLICY_BACKEND
         policy_device = str(
             self.get_parameter("device").get_parameter_value().string_value
         ).strip() or "cuda"
@@ -403,64 +389,30 @@ class VLAPolicyNode(Node):
             SelectedTrajectory, "/vla/policy_trajectory", 10
         )
 
-        # Resolve model path: model_path takes precedence, then checkpoint_path.
+        # Resolve the canonical CUDA checkpoint path.
         model_path = (
             str(self.get_parameter("model_path").get_parameter_value().string_value)
             or model_path
         )
-        if not model_path:
-            model_path = str(
-                self.get_parameter("checkpoint_path")
-                .get_parameter_value()
-                .string_value
-            )
-        self._session = None
         self._torch_runner = None
         self._policy_load_error = ""
         try:
-            if self._backend == DEFAULT_POLICY_BACKEND:
-                from .policy_model import (
-                    DEFAULT_POLICY_MODEL_PATH,
-                    TorchPolicyRunner,
-                )
+            from .policy_model import DEFAULT_POLICY_MODEL_PATH, TorchPolicyRunner
 
-                model_path = model_path or DEFAULT_POLICY_MODEL_PATH
-                self._torch_runner = TorchPolicyRunner.load(
-                    model_path,
-                    device=policy_device,
-                )
-                self._model_version = POLICY_MODEL_VERSION
-                self.get_logger().info(
-                    "POLICY_READY "
-                    f"backend={self._backend} device={policy_device} model={model_path}"
-                )
-            elif self._backend == "onnx_cpu":
-                self._session = self._load_session(model_path) if model_path else None
-                self._model_version = ONNX_POLICY_MODEL_VERSION
-                if self._session is not None:
-                    self.get_logger().info(
-                        "POLICY_READY "
-                        f"backend=onnx_cpu device=cpu model={model_path}"
-                    )
-                else:
-                    self._policy_load_error = "NO_MODEL_LOADED"
-                    self.get_logger().warn(
-                        "no ONNX model — publishing safe stop only"
-                    )
-            else:
-                raise ValueError(
-                    f"unsupported policy backend {requested_backend!r}; "
-                    "choose torch_cuda or onnx_cpu"
-                )
+            model_path = model_path or DEFAULT_POLICY_MODEL_PATH
+            self._torch_runner = TorchPolicyRunner.load(
+                model_path,
+                device=policy_device,
+            )
+            self._model_version = POLICY_MODEL_VERSION
+            self.get_logger().info(
+                "POLICY_READY "
+                f"backend={self._backend} device={policy_device} model={model_path}"
+            )
         except Exception as exc:
             self._policy_load_error = f"MODEL_LOAD_ERROR:{exc}"
-            self._session = None
             self._torch_runner = None
-            self._model_version = (
-                POLICY_MODEL_VERSION
-                if self._backend == DEFAULT_POLICY_BACKEND
-                else ONNX_POLICY_MODEL_VERSION
-            )
+            self._model_version = POLICY_MODEL_VERSION
             self.get_logger().error(
                 "POLICY_LOAD_ERROR "
                 f"backend={self._backend} error={self._policy_load_error}"
@@ -486,14 +438,6 @@ class VLAPolicyNode(Node):
         self._recent_trajectories: deque[np.ndarray] = deque(
             maxlen=self._smooth_window
         )
-
-    def _load_session(self, path: str) -> Any:
-        import onnxruntime as ort
-
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
-        providers = ["CPUExecutionProvider"]
-        return ort.InferenceSession(path, sess_options=options, providers=providers)
 
     def _trace_policy_decision(
         self,
@@ -664,7 +608,7 @@ class VLAPolicyNode(Node):
 
         msg = self._new_output(ent)
 
-        if self._session is None and self._torch_runner is None:
+        if self._torch_runner is None:
             _, ego_valid = normalize_ego_message(ego_msg)
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
             msg.safe_stop = True
@@ -710,12 +654,9 @@ class VLAPolicyNode(Node):
             return
 
         try:
-            if self._torch_runner is not None:
-                outputs = self._torch_runner.run(inputs)
-            elif self._session is not None:
-                outputs = self._session.run(None, inputs)
-            else:
+            if self._torch_runner is None:
                 raise RuntimeError("policy backend is not ready")
+            outputs = self._torch_runner.run(inputs)
             traj, stop_logit, valid_mask = outputs
         except Exception as exc:
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
@@ -868,7 +809,7 @@ class VLAPolicyNode(Node):
         ent: TaskFeatures,
         ego_msg: UEASVState,
     ) -> dict[str, np.ndarray]:
-        """Build ONNX inputs, padding entities to the frozen 16-entity layout."""
+        """Build CUDA policy inputs, padding entities to 16 slots."""
 
         # Language [256].
         lang_arr = np.array(lang.embedding, dtype=np.float32).reshape(1, LANGUAGE_DIM)

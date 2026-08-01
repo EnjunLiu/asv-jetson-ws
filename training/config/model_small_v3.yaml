@@ -1,5 +1,5 @@
-# Day 16 grounding repair v3: entity selection is exclusively language-query
-# attention.  The unconditioned score cannot dominate and pin one entity.
+# Final S2 policy contract: entity selection is exclusively language-query
+# attention. The unconditioned score cannot dominate and pin one entity.
 
 schema_version: "model_small_v3"
 

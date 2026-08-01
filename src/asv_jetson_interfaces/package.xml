@@ -2,7 +2,7 @@
 <package format="3">
   <name>asv_jetson_interfaces</name>
   <version>0.1.0</version>
-  <description>Jetson-only messages for UE5, perception, prediction, decision and actuation.</description>
+  <description>Jetson/UE5 messages for camera, ego, inferred entities and VLA setpoints.</description>
   <maintainer email="liuenjun1010@gmail.com">ASV Developer</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

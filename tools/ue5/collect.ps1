@@ -5,7 +5,7 @@ param(
     [string]$JetsonUser = "jetson",
     [string]$IdentityFile = "$env:USERPROFILE\.ssh\asv_day12_ed25519",
     [string]$RemoteRepo = "/home/jetson/jetson_asv_ws",
-    [string]$RemotePlan = "training/config/collection_plan_30_v1.json",
+    [string]$RemotePlan = "training/config/sine_near_collection_plan_v1.json",
     [string]$UeProject = "D:\Unreal Projects\VLA\VLA.uproject",
     [string]$UnrealExe = "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe",
     [string]$LocalOutput = "",

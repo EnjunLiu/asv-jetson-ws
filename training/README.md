@@ -1,231 +1,102 @@
-# PC Training Pipeline
+# PC 数据与训练流水线
 
-Day 11B PC data registry, Day 13 frozen feature caching, and the foundation
-for Day 14–16 training and evaluation.
+`training/` 是离线 PC 流水线。它只读取已录制的图像、`Entities` 监督和真实自船
+状态，生成冻结特征、训练 checkpoint 和验证报告；它不会启动 ROS，也不会向 UE5
+发送控制命令。
 
-## Directory conventions
+## 外部数据布局
 
-```text
-C:\Users\LIU\Documents\asv_vla_pc\
-├── repo\                         # Git checkout — only code lives here
-│   ├── training\                 # THIS directory
-│   │   ├── config\
-│   │   │   └── dataset_v1.yaml
-│   │   ├── dataset_registry.py
-│   │   ├── make_group_splits.py
-│   │   ├── test\
-│   │   │   └── test_group_splits.py
-│   │   └── README.md
-│   └── ...
-└── data\                         # NEVER in Git
-    ├── incoming\                 # Raw Jetson tar.gz
-    ├── extracted\                # Unpacked episodes + supervision
-    │   └── artifacts\
-    │       ├── day8_episode\<RUN_ID>\
-    │       └── day10_supervised\<RUN_ID>\
-    ├── registry\                 # JSONL registry + split JSON
-    ├── features\                 # Day 13 feature cache
-    ├── checkpoints\              # Day 15 model checkpoints
-    └── reports\                  # Metrics, curves, failure cases
-```
-
-## Quick-start (Day 11B pilot validation)
-
-From the repo root (`asv_vla_pc\repo`):
-
-```powershell
-# 1. Environment
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install pytest jsonschema pillow numpy pyyaml
-
-# 2. Copy pilot data into place
-New-Item -ItemType Directory -Force data\incoming, data\extracted\pilot | Out-Null
-Copy-Item <path-to>\day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz data\incoming\
-tar -xzf data\incoming\day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz -C data\extracted\pilot
-
-# 3. Verify SHA-256 (compare with the value recorded in ROADMAP_RESUME.md)
-certutil -hashfile data\incoming\day10_A1D7BAAE49F39E3BB7B1808AB8443CA9.tar.gz SHA256
-
-# 4. Verify supervision data
-$env:PYTHONPATH = "src\asv_vla"
-python -c "from asv_vla.supervised_dataset import evaluate_main; raise SystemExit(evaluate_main())" data\extracted\pilot\artifacts\day10_supervised\A1D7BAAE49F39E3BB7B1808AB8443CA9 --require-all-labels
-```
-
-## Build registry
-
-```powershell
-$env:PYTHONPATH = "src\asv_vla"
-python -m training.dataset_registry --data-root data\extracted\pilot --output data\registry\dataset_registry_v1.jsonl
-```
-
-**Expected output for the old 50-frame pilot:**
-```text
-REGISTRY_PASS ... eligible_runs=0 training_ready=False
-TRAINING_NOT_READY: need at least 12 eligible Runs ...
-```
-
-## Create splits
-
-```powershell
-python -m training.make_group_splits --registry data\registry\dataset_registry_v1.jsonl --output data\registry\group_split_v1.json
-```
-
-**Expected output for pilot:**
-```text
-SPLIT_PASS runs=0 seeds=0 train=0 val=0 test=0 training_ready=False
-TRAINING_NOT_READY: registry has no training-eligible Runs
-```
-
-## Run tests
-
-```powershell
-$env:PYTHONPATH = "src\asv_vla"
-python -m pytest -q training\test
-```
-
-## When `training_ready` becomes `true`
-
-An eligible Run must have at least 80 frames, a passing quality report,
-complete 9/9 supervision, and Day 12 collection-slot metadata. The registry
-requires at least 12 eligible Runs across at least three Scene Seeds.
-The 12-Run split is frozen to 8/2/2; the 30-Run split is 18/6/6.
-
-Use `training/collection.py` to verify that the recorded entity
-geometry really matches the counterbalanced plan. Full instructions are in
-`docs/SCENE_COLLECTION.md`.
-
-## Day 13 frozen feature cache
-
-`training.feature_cache` caches each camera frame once and keeps the
-instruction-specific expert trajectories as sample rows. It reuses the frozen
-Day 2 language encoder, Day 6 MobileNet backbone, and Day 7 entity ordering.
-The policy-facing entity tensor always zeros columns 14 and 15, so UE5 color
-truth cannot leak into the learned policy.
-
-Each Run produces:
+仓库外的 `pc_datasets/` 是唯一数据根目录：
 
 ```text
-features/<RUN_ID>/
-├── manifest.json
-├── language.npz
-├── frames_000.npz
-└── quality_report.json
+pc_datasets/
+├── incoming/       # Jetson/UE5 录制压缩包
+├── extracted/      # day8_episode + day10_supervised
+├── registry/       # Run/Scene-Seed 分组注册表
+├── features/       # 冻结语言/视觉/实体/ego 特征
+├── checkpoints/    # 训练模型和 summary.json
+├── models/         # image_entity_color_calibrated_v1.npz/json、Qwen
+└── reports/        # 训练与验证报告
 ```
 
-The immutable key includes every source-frame and image SHA-256, both model
-IDs and weight SHA-256 values, preprocessing/schema versions, and Git SHA.
-Changing any of them returns a cache miss instead of silently reusing stale
-features.
+Git 中只保存代码、配置和接口；原始 JPEG、实体真值、权重和生成报告不进入仓库。
 
-On Jetson, the CLI keeps the CUDA path without quantization: it encodes the 90
-unique language instructions first, releases Qwen and clears the CUDA cache,
-then loads MobileNet for frame processing. A transient `NvMap` allocation
-failure is retried a bounded number of times (`--cuda-load-attempts`, default
-2); a persistent failure remains a hard error instead of silently switching
-to CPU.
+## 当前采集计划
 
-On the machine with the frozen models:
+最终演示和训练使用
+`training/config/sine_near_collection_plan_v1.json`：12 个 L7/L7B、S2、近距离
+（约 5 m）slot。它要求每个 Run 至少 80 帧，并保留 `run_id/scene_seed/frame_index`
+以及 JPEG/Entities 的 SHA-256。`Entities` 是监督标签，不是在线策略输入。
+
+Jetson 端批量采集入口：
 
 ```bash
-PYTHONPATH=src/asv_vla python3 -m training.feature_cache build \
-  --episode <bundle>/artifacts/day8_episode/<RUN_ID> \
-  --supervision <bundle>/artifacts/day10_supervised/<RUN_ID> \
+cd ~/jetson_asv_ws
+bash scripts/remote_collect.sh \
+  L7_S2_R1 L7 S2 220701 \
+  training/config/sine_near_collection_plan_v1.json follow
+```
+
+Windows 自动化入口为 `tools/ue5/collect.ps1`，其默认计划也指向同一个 near S2
+计划；UE5 必须以 `.uproject` 作为第一个参数启动。
+
+## 从录制到 checkpoint
+
+1. `training.dataset_registry` 扫描每个 Run，检查帧数、身份、质量和监督完整性。
+2. `training.make_group_splits` 按 Run/Scene Seed 分组，避免相邻帧泄漏到验证集。
+3. `training.feature_cache` 在 PC CUDA 上冻结 Qwen、MobileNet、图像实体和 ego 特征。
+   相对速度只使用相邻帧 tracker 结果；不能从单张图像标签直接伪造速度。
+4. `training.train` 训练 20 点二维位移策略；策略不接收颜色真值、实体 ID、专家候选
+   轨迹或左右推力。
+5. `training.evaluate_selection`、`training.contract_checks` 和近距离 S2 回放生成
+   外部报告，只有通过验证的 checkpoint 才能复制到 Jetson `models/`。
+
+典型命令（在仓库根目录，`PYTHONPATH=src/asv_vla`）：
+
+```bash
+python3 -m training.dataset_registry \
+  --data-root /path/to/pc_datasets/extracted \
+  --output /path/to/pc_datasets/registry/dataset_registry_v1.jsonl
+
+python3 -m training.make_group_splits \
+  --registry /path/to/pc_datasets/registry/dataset_registry_v1.jsonl \
+  --output /path/to/pc_datasets/registry/group_split_v1.json
+
+python3 -m training.feature_cache build \
+  --episode /path/to/pc_datasets/extracted/artifacts/day8_episode/RUN_ID \
+  --supervision /path/to/pc_datasets/extracted/artifacts/day10_supervised/RUN_ID \
   --instructions dataset/language/instructions.jsonl \
-  --output-root <data-root>/features \
-  --language-model-path models/Qwen3-Embedding-0.6B \
-  --language-weights-sha256 auto \
-  --visual-weights-sha256 auto \
-  --git-sha <exact-git-sha> \
+  --output-root /path/to/pc_datasets/features \
+  --language-model-path /path/to/pc_datasets/models/Qwen3-Embedding-0.6B \
   --device cuda
 ```
 
-Validate a cache or compare independently generated PC/Jetson caches:
+Jetson 内存紧张时，feature-cache 允许分阶段加载 Qwen 后释放 CUDA 权重再加载视觉
+骨干；持久化 CUDA 分配失败必须报错，不能静默改用 CPU。
+
+## 在线模型契约
+
+部署模型由 `models/manifest.yaml` 指定：
+
+- `image_entity_color_calibrated_v1.npz`：JPEG -> 近距离图像几何；约 5 m 外 fail-closed；
+- `policy_sine_near_image_color_seed42.pt`：Torch CUDA，输入固定多模态 481k 合同；
+- `Qwen3-Embedding-0.6B`：真实 CUDA 语言编码，默认常驻，可显式释放权重但不允许 `.npy`。
+
+在线链路永远是：
+
+```text
+JPEG + task text + real ego
+  -> image entities -> temporal velocity -> visual/task/language/ego
+  -> Torch CUDA policy -> safety gate -> desired_x/y
+```
+
+## 验证
 
 ```bash
-PYTHONPATH=src/asv_vla python3 -m training.feature_cache validate \
-  <data-root>/features/<RUN_ID>
-
-PYTHONPATH=src/asv_vla python3 -m training.feature_cache compare \
-  <pc-cache>/<RUN_ID> <jetson-cache>/<RUN_ID> \
-  --sample-count 20 --cosine-threshold 0.999
+PYTHONPATH=src/asv_vla pytest -q training/test
+PYTHONPATH=src/asv_vla pytest -q
 ```
 
-For the frozen Windows reference paths used by this project, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File `
-  .\tools\pc_reference\run_pc_reference.ps1
-```
-
-The script runs offline, uses the external `.venv`, Qwen and Torch
-checkpoint directories under `pc_datasets`, rebuilds the fixed high-coverage
-`L2_S0_R1` cache on PC CUDA, and compares it against the independently
-generated Jetson cache over 20 frames at the frozen `0.999` threshold.
-
-A missing/corrupt image sets the global visual mask false and every visual
-token to zero. The complete cache gate rejects such a Run; it never fabricates
-a valid policy input.
-
-## Day 14 small single-trajectory policy
-
-`training.model.SmallTrajectoryPolicy` consumes only the frozen Day 13 cache:
-language, global visual, aligned entity visual/geometry, ego, and validity
-masks. It never receives structured task labels, entity colors, entity IDs,
-candidate trajectories, world-model state, or thruster commands.
-
-The trajectory head predicts 20 two-dimensional increments. `tanh` bounds each
-increment to 0.3 m before `cumsum` produces cumulative body-frame displacement.
-Missing required language/global-visual/ego input returns an explicit invalid
-mask, a zero trajectory, and a fail-closed stop logit. An all-false entity mask
-uses a zero pooled entity token without a softmax NaN.
-
-The dataset loader preserves Run-level and language-template split filters:
-
-```python
-from torch.utils.data import DataLoader
-from training.dataset import (
-    FrozenFeatureDataset,
-    discover_feature_caches,
-    load_split_assignments,
-)
-
-dataset = FrozenFeatureDataset(
-    discover_feature_caches(r"C:\path\to\pc_datasets\features"),
-    selected_split="train",
-    split_assignments=load_split_assignments(
-        r"C:\path\to\pc_datasets\registry\group_split_v1.json"
-    ),
-    allowed_language_splits={"train"},
-    frame_stride=3,
-)
-loader = DataLoader(dataset, batch_size=8, shuffle=True)
-```
-
-Run the executable shape, mask, determinism, gradient, parameter, checkpoint,
-and peak-memory contract before Day 15 training:
-
-```powershell
-$env:PYTHONPATH = "src\asv_vla"
-python -m training.contract_checks `
-  --config training\config\model_small_v1.yaml `
-  --report C:\path\to\pc_datasets\reports\policy_contract_pc.json `
-  --device cuda
-```
-
-Success prints `POLICY_CONTRACT_PASS`. The report is external training
-evidence and must not be committed with datasets or checkpoints.
-
-## Environment report
-
-Before any training, capture and save this information:
-
-```powershell
-# Windows
-systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
-nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
-python --version
-python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA {torch.version.cuda}')"
-```
-
-Save the output to `data\reports\environment_v1.json`.
+提交新的模型前，至少提供独立 Scene Seed 的 S2 近距离闭环日志、图像感知 trace、
+策略 CUDA ready、有效 setpoint 和 UE5 executor apply 计数。一次成功演示不等于跨场景
+泛化；统计结论应在新增 Runs 后再报告。

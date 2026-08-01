@@ -103,7 +103,9 @@ class _Prediction:
 class _Model:
     model_version = "test_model"
 
-    def predict(self, _image, *, device="numpy"):
+    def predict(self, _image, *, task=None, device="numpy"):
+        assert task is not None
+        assert task.instruction_id == "follow_red"
         assert device == "numpy"
         return (
             _Prediction("target_red", x=5.0, y=100.0, visible=True),
@@ -112,7 +114,8 @@ class _Model:
 
 
 class _BothVisibleModel(_Model):
-    def predict(self, _image, *, device="numpy"):
+    def predict(self, _image, *, task=None, device="numpy"):
+        assert task is not None
         assert device == "numpy"
         return (
             _Prediction("target_red", x=5.0, y=100.0, visible=True),
@@ -183,6 +186,7 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     assert node.output_valid is True
     assert message.instruction == "follow red"
     assert message.instruction_id == "follow_red"
+    assert "image+instruction" in message.detail
     assert message.entities[0].is_target is True
     assert message.entities[1].is_target is False
     assert len(node.trace_logs) == 1
@@ -209,6 +213,7 @@ def test_task_switch_changes_selected_entity_and_instruction_provenance():
     node.on_frame(frame)
     first = node.publisher.messages[-1]
     assert first.instruction_id == "follow_red"
+    assert "image+instruction" in first.detail
     assert first.entities[0].is_target is True
     assert first.entities[1].visible is False
 

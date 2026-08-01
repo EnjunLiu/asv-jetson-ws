@@ -1,4 +1,0 @@
-int64 stamp_us
-float64 left_thruster
-float64 right_thruster
-bool valid

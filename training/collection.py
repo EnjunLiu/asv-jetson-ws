@@ -512,7 +512,7 @@ def main() -> int:
     parser.add_argument(
         "--plan",
         type=Path,
-        default=Path("training/config/collection_plan_v1.json"),
+        default=Path("training/config/sine_near_collection_plan_v1.json"),
     )
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument(

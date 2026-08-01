@@ -23,7 +23,7 @@ from training.model import SmallPolicyConfig, SmallTrajectoryPolicy  # noqa: E40
 
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "config" / "model_small_v1.yaml"
+    Path(__file__).resolve().parents[1] / "config" / "model_small_v3.yaml"
 )
 
 

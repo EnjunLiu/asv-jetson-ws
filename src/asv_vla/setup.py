@@ -65,8 +65,6 @@ setup(
             "safety_gate = asv_vla.safety_gate_node:main",
             "trajectory_controller = asv_vla.trajectory_controller_node:main",
             "vla_policy = asv_vla.vla_policy_node:main",
-            "expert_policy_bridge = asv_vla.expert_policy_bridge:main",
-            "language_stub = asv_vla.language_stub_node:main",
             "language_qwen = asv_vla.language_qwen_node:main",
             "task_instruction = asv_vla.task_instruction_node:main",
             "decision_setpoint_adapter = asv_vla.decision_setpoint_adapter:main",

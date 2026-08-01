@@ -29,8 +29,8 @@ def _load_config(path: Path) -> dict[str, Any]:
         raise ValueError(f"cannot read policy config {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError("policy config must contain a mapping")
-    if value.get("schema_version") != "model_small_v1":
-        raise ValueError("policy config schema_version must be model_small_v1")
+    if value.get("schema_version") != "model_small_v3":
+        raise ValueError("policy config schema_version must be model_small_v3")
     return value
 
 
@@ -296,7 +296,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).parent / "config" / "model_small_v1.yaml",
+        default=Path(__file__).parent / "config" / "model_small_v3.yaml",
     )
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--device", default="auto")

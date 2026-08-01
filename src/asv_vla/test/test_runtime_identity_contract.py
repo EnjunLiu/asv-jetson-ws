@@ -12,10 +12,7 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 INTERFACES = REPOSITORY / "src/asv_jetson_interfaces/msg"
 VLA = REPOSITORY / "src/asv_vla/asv_vla"
 LAUNCH = REPOSITORY / "src/asv_bringup/launch/vla_closed_loop.launch.py"
-HARDWARE_LAUNCH = REPOSITORY / "src/asv_bringup/launch/hardware_loop.launch.py"
-REPLAY_LAUNCH = REPOSITORY / "src/asv_bringup/launch/replay_episode.launch.py"
 PERCEPTION_NODE = REPOSITORY / "src/asv_vla/asv_vla/image_entity_perception_node.py"
-BENCHMARK = REPOSITORY / "training/benchmark_onnx.py"
 COLLECT_LAUNCH = REPOSITORY / "src/asv_bringup/launch/collect.launch.py"
 MANIFEST = REPOSITORY / "models/manifest.yaml"
 README = REPOSITORY / "README.md"
@@ -45,12 +42,7 @@ def test_decision_and_selected_messages_carry_source_identity() -> None:
 
 def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
     source = LAUNCH.read_text(encoding="utf-8")
-    for argument in (
-        "embedding_path",
-        "active_embedding",
-        "execution_port",
-        "visual_device",
-    ):
+    for argument in ("execution_port", "visual_device"):
         assert (
             f'DeclareLaunchArgument("{argument}"' in source
             or f'"{argument}",' in source
@@ -58,7 +50,11 @@ def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
         assert f'LaunchConfiguration("{argument}")' in source
     assert 'DeclareLaunchArgument("visual_device", default_value="cuda")' in source
     assert "/home/jetson/jetson_asv_ws/models/" in source
-    assert "demo_instruction_embedding.npy" in source
+    assert "demo_instruction_embedding.npy" not in source
+    assert 'executable="language_qwen"' in source
+    assert 'executable="language_stub"' not in source
+    assert 'executable="expert_trajectory"' not in source
+    assert 'executable="expert_kinematic_executor"' not in source
     assert "zero embedding" not in source.lower()
     assert "day 19" not in source.lower()
 
@@ -85,32 +81,35 @@ def test_closed_loop_uses_final_near_image_color_policy_candidate() -> None:
     ) in manifest
     assert "validation_gate_passed: true" in manifest
     assert "deployment_status: torch_cuda_online_passed" in manifest
-    assert "mode: online_qwen_cuda_staged_first_instruction" in manifest
+    assert "mode: online_qwen_cuda_resident" in manifest
     assert "online_qwen_runtime: true" in manifest
-    assert "release_model_after_encode: true" in manifest
-    assert "staging_delay_sec: 20.0" in manifest
+    assert "release_model_after_encode: false" in manifest
     assert "first_instruction_encoding: real_qwen_cuda" in manifest
-    assert "qwen_weight_resident_after_encode: false" in manifest
+    assert "qwen_weight_resident_after_encode: true" in manifest
     assert "post_encode_embedding_online: true" in manifest
-    assert "task_switch_policy: restart_required" in manifest
+    assert "task_switch_policy: live_instruction_update_for_calibrated_tasks" in manifest
     assert "s2_task_switch_promised: false" in manifest
-    assert "validation_status: cuda_staged_first_instruction_online_passed" in manifest
+    assert "validation_status: cuda_resident_online_pending_device_recheck;blue_visual_calibration_pending" in manifest
     assert "policy_sine_near_image_color_seed42.pt" in readme
     assert "image_entity_color_calibrated_v1.npz" in readme
     assert "policy_image_seed17.onnx" not in readme
     assert "policy.onnx" not in readme
-    assert "policy_sine_near_image_color_seed42.pt" in HARDWARE_LAUNCH.read_text(
-        encoding="utf-8"
-    )
-    assert "image_entity_color_calibrated_v1.npz" in REPLAY_LAUNCH.read_text(
-        encoding="utf-8"
-    )
     assert "image_entity_color_calibrated_v1.npz" in PERCEPTION_NODE.read_text(
         encoding="utf-8"
     )
-    assert "policy_sine_near_image_color_seed42.onnx" in BENCHMARK.read_text(
-        encoding="utf-8"
-    )
+    assert "device={self.device}" in PERCEPTION_NODE.read_text(encoding="utf-8")
+
+
+def test_online_perception_boundary_excludes_privileged_entities_and_cpu_policy() -> None:
+    perception_source = PERCEPTION_NODE.read_text(encoding="utf-8")
+    launch_source = LAUNCH.read_text(encoding="utf-8")
+    policy_source = (VLA / "vla_policy_node.py").read_text(encoding="utf-8")
+
+    assert '"/ue/entities"' not in perception_source
+    assert '"/ue/entities"' not in launch_source
+    assert 'self.declare_parameter("backend"' not in policy_source
+    assert "onnxruntime" not in policy_source
+    assert "TorchPolicyRunner.load" in policy_source
 
 
 def test_collect_launch_exposes_kinematic_executor_address_and_port() -> None:
@@ -147,10 +146,6 @@ def test_identity_is_copied_and_mixed_frames_stop_before_inference() -> None:
     assert "self._pub.publish(msg)" in policy
     assert "self._recent_trajectories.clear()" in policy
 
-    for name, fields in (
-        ("expert_policy_bridge.py", ("out.scene_seed", "out.frame_index")),
-        ("safety_gate_node.py", ("output.scene_seed", "output.frame_index")),
-    ):
-        source = (VLA / name).read_text(encoding="utf-8")
-        for field in fields:
-            assert field in source
+    safety_gate = (VLA / "safety_gate_node.py").read_text(encoding="utf-8")
+    for field in ("output.scene_seed", "output.frame_index"):
+        assert field in safety_gate

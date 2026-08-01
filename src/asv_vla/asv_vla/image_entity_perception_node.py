@@ -243,7 +243,9 @@ class ImageEntityPerceptionNode(Node):
         try:
             image = decode_camera_image(frame.data, frame.encoding)
             predictions = self.model.predict(
-                image, device=str(getattr(self, "device", "numpy"))
+                image,
+                task=task_spec,
+                device=str(getattr(self, "device", "numpy")),
             )
         except (ImageEntityPerceptionError, ValueError) as exc:
             message.detail = f"PERCEPTION_ERROR:{type(exc).__name__}:{exc}"
@@ -298,7 +300,7 @@ class ImageEntityPerceptionNode(Node):
         message.valid = bool(task_spec.valid)
         message.source = "image_perception"
         message.detail = (
-            f"OK:image_only;task={task_spec.instruction_id};"
+            f"OK:image+instruction;task={task_spec.instruction_id};"
             f"entities={len(message.entities)};"
             f"model={self.model.model_version}"
         )

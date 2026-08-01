@@ -1,10 +1,11 @@
 """Image-only entity geometry model used by the online VLA path.
 
-This is deliberately small and dependency-light: the PC trainer learns a
-multi-output ridge regressor from RGB image tiles to the calibrated relative
-geometry of four canonical boat slots.  At runtime the Jetson only needs
-NumPy and Pillow.  UE ``Entities`` never enter this module; they are used by
-the trainer as supervision labels only.
+This is deliberately small and auditable: the PC trainer learns a multi-output
+ridge regressor from RGB image tiles to the calibrated relative geometry of
+four canonical boat slots.  At runtime JPEG/PIL decoding stays on the host,
+while feature construction, normalization and the learned projection run on
+the requested CUDA device.  UE ``Entities`` never enter this module; they are
+used by the trainer as supervision labels only.
 
 It is a first perception model, not a claim of general-purpose object
 detection.  The manifest records its data split and metrics, and a later
@@ -266,6 +267,118 @@ def _resized_rgb(image: Image.Image | np.ndarray) -> np.ndarray:
     ) / 255.0
 
 
+def _decoded_rgb_array(image: Image.Image | np.ndarray) -> np.ndarray:
+    """Return decoded RGB bytes before device-side feature construction."""
+
+    if isinstance(image, np.ndarray):
+        array = np.asarray(image)
+        if array.ndim != 3 or array.shape[2] != 3:
+            raise ImageEntityPerceptionError(
+                f"expected HxWx3 image, got {array.shape}"
+            )
+        if not np.all(np.isfinite(array)):
+            raise ImageEntityPerceptionError("image array contains non-finite values")
+        if np.issubdtype(array.dtype, np.floating) and np.max(array) <= 1.0:
+            array = array * 255.0
+        return np.ascontiguousarray(
+            np.clip(array, 0.0, 255.0).astype(np.uint8)
+        )
+    if not isinstance(image, Image.Image):
+        raise ImageEntityPerceptionError("image must be a PIL image or RGB array")
+    return np.ascontiguousarray(np.asarray(image.convert("RGB"), dtype=np.uint8))
+
+
+def _extract_torch_image_features(
+    image: Image.Image | np.ndarray,
+    torch: Any,
+    *,
+    device: str,
+    model_version: str,
+):
+    """Construct the feature map and moments on the requested CUDA device."""
+
+    array = _decoded_rgb_array(image)
+    image_tensor = torch.as_tensor(
+        array, dtype=torch.float32, device=device
+    ).div(255.0)
+    image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
+    resized = torch.nn.functional.interpolate(
+        image_tensor,
+        size=(GRID_HEIGHT, GRID_WIDTH),
+        mode="bilinear",
+        align_corners=False,
+    )[0].permute(1, 2, 0)
+
+    red = torch.clamp(
+        resized[..., 0]
+        - torch.maximum(resized[..., 1], resized[..., 2]),
+        min=0.0,
+    )
+    blue = torch.clamp(
+        resized[..., 2]
+        - torch.maximum(resized[..., 0], resized[..., 1]),
+        min=0.0,
+    )
+    brightness = resized.mean(dim=-1)
+    saturation = resized.amax(dim=-1) - resized.amin(dim=-1)
+    white = torch.clamp(brightness - 1.5 * saturation, min=0.0, max=1.0)
+    bright = torch.clamp(brightness - 0.45, min=0.0, max=1.0)
+    spatial = torch.cat(
+        (
+            resized,
+            red.unsqueeze(-1),
+            blue.unsqueeze(-1),
+            white.unsqueeze(-1),
+            bright.unsqueeze(-1),
+        ),
+        dim=-1,
+    )
+    if model_version == LEGACY_MODEL_VERSION:
+        features = spatial.reshape(-1)
+    else:
+        x_coordinates = torch.linspace(
+            -1.0,
+            1.0,
+            GRID_WIDTH,
+            dtype=torch.float32,
+            device=device,
+        )[None, :]
+        y_coordinates = torch.linspace(
+            0.0,
+            1.0,
+            GRID_HEIGHT,
+            dtype=torch.float32,
+            device=device,
+        )[:, None]
+        moments = []
+        for evidence in (red, blue, white, bright):
+            total = evidence.sum()
+            denominator = torch.clamp(total, min=1.0e-6)
+            center_x = (evidence * x_coordinates).sum() / denominator
+            center_y = (evidence * y_coordinates).sum() / denominator
+            moments.extend(
+                (
+                    torch.log1p(total),
+                    center_x,
+                    center_y,
+                    (evidence * (x_coordinates - center_x) ** 2).sum()
+                    / denominator,
+                    (evidence * (y_coordinates - center_y) ** 2).sum()
+                    / denominator,
+                    evidence.amax(),
+                    evidence.mean(),
+                    (evidence > 0.08).to(dtype=torch.float32).mean(),
+                )
+            )
+        features = torch.cat((spatial.reshape(-1), torch.stack(moments)))
+    expected = _feature_dim_for_model(model_version)
+    if tuple(features.shape) != (expected,) or not bool(torch.isfinite(features).all()):
+        raise ImageEntityPerceptionError(
+            "CUDA image feature vector is invalid"
+        )
+    return features.contiguous()
+
+
 def _extract_legacy_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
     """Extract the v1 RGB/evidence vector for deployed model compatibility."""
 
@@ -520,27 +633,38 @@ class ImageEntityModel:
     def predict(
         self,
         image: Image.Image | np.ndarray,
+        task: TaskSpec | str | None = None,
         *,
         device: str = "numpy",
     ) -> tuple[ImageEntityPrediction, ...]:
-        """Predict entities using NumPy or an explicitly requested CUDA matmul."""
+        """Predict entities and optionally apply task selection at the boundary.
 
-        feature_extractor = (
-            _extract_legacy_image_features
-            if self.model_version == LEGACY_MODEL_VERSION
-            else extract_image_features
-        )
-        features = feature_extractor(image)
+        ``task=None`` preserves the legacy all-candidate API used by offline
+        callers.  A supplied :class:`TaskSpec` or instruction string changes
+        only the returned visibility mask; geometry and confidence remain the
+        image-model outputs.  CUDA requests never fall back to NumPy.
+        """
+
         torch = _torch_for_device(device)
         if torch is None:
+            feature_extractor = (
+                _extract_legacy_image_features
+                if self.model_version == LEGACY_MODEL_VERSION
+                else extract_image_features
+            )
+            features = feature_extractor(image)
             normalized = (features - self.feature_mean) / self.feature_scale
             output = normalized @ self.weights + self.bias
         else:
-            # Keep the main normalization and linear projection on CUDA.  The
-            # small RGB feature extractor remains dependency-light NumPy/PIL.
+            # Decode RGB/PIL on the host, then keep the feature map,
+            # normalization, and linear projection on the requested CUDA
+            # device.  This branch has no NumPy fallback.
             try:
-                feature_tensor = torch.as_tensor(
-                    features, dtype=torch.float32, device=device
+                feature_tensor = _extract_torch_image_features(
+                    image,
+                    torch,
+                    device=device,
+                    model_version=self.model_version,
                 )
                 mean_tensor = torch.as_tensor(
                     self.feature_mean, dtype=torch.float32, device=device
@@ -602,7 +726,25 @@ class ImageEntityModel:
                     relative_z=float(geometry[2]),
                 )
             )
-        return tuple(predictions)
+        result = tuple(predictions)
+        if task is None:
+            return result
+        spec = parse_task_instruction(task) if isinstance(task, str) else task
+        if not isinstance(spec, TaskSpec):
+            raise ImageEntityPerceptionError(
+                f"task must be TaskSpec, string, or None; got {type(task).__name__}"
+            )
+        return tuple(
+            ImageEntityPrediction(
+                entity_id=prediction.entity_id,
+                visible=task_matches_entity(prediction, spec),
+                confidence=prediction.confidence,
+                relative_x=prediction.relative_x,
+                relative_y=prediction.relative_y,
+                relative_z=prediction.relative_z,
+            )
+            for prediction in result
+        )
 
 
 def save_model(

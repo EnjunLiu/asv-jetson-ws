@@ -1,6 +1,6 @@
 """VLA closed-loop launch (UE5 simulation).
 
-Pipeline (no duplicate publishers, one selectable language backend):
+Pipeline (no duplicate publishers, real Qwen language encoder):
 
     UE5 -> bridge -> /ue/camera_frame + /ue/asv_state
                         |
@@ -9,7 +9,7 @@ Pipeline (no duplicate publishers, one selectable language backend):
               temporal_tracker -> /vla/tracked_entities
               visual_encoder -> /vla/visual_features
               task_entity_tensor -> /vla/task_features
-              language_backend -> /vla/language_embedding
+              Qwen CUDA encoder -> /vla/language_embedding
                         |
                         v
                         vla_policy (PyTorch, CUDA) -> /vla/policy_trajectory
@@ -33,9 +33,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
-from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -46,16 +46,6 @@ def generate_launch_description():
         "config",
         "ue_bridge.yaml",
     )
-    staged_language = PythonExpression(
-        [
-            "'",
-            LaunchConfiguration("language_backend"),
-            "' == 'qwen' and '",
-            LaunchConfiguration("language_release_after_encode"),
-            "' == 'true'",
-        ]
-    )
-
     visual_parameters = [{
         "entities_topic": "/vla/tracked_entities",
         "device": ParameterValue(
@@ -66,14 +56,6 @@ def generate_launch_description():
         ),
     }]
     visual_encoder_node = Node(
-        package="asv_vla",
-        executable="visual_encoder",
-        name="visual_encoder",
-        output="screen",
-        parameters=visual_parameters,
-        condition=UnlessCondition(staged_language),
-    )
-    staged_visual_encoder = Node(
         package="asv_vla",
         executable="visual_encoder",
         name="visual_encoder",
@@ -108,18 +90,6 @@ def generate_launch_description():
                 value_type=bool,
             ),
         }],
-        condition=IfCondition(
-            PythonExpression(
-                ["'", LaunchConfiguration("language_backend"), "' == 'qwen'"]
-            )
-        ),
-    )
-    staged_visual_action = TimerAction(
-        # The delay is an explicit bounded startup guard for Jetson unified
-        # memory; the Qwen node still fails closed if CUDA/model startup fails.
-        period=LaunchConfiguration("language_staging_delay_sec"),
-        actions=[staged_visual_encoder],
-        condition=IfCondition(staged_language),
     )
 
     return LaunchDescription(
@@ -132,7 +102,6 @@ def generate_launch_description():
                     "policy_sine_near_image_color_seed42.pt"
                 ),
             ),
-            DeclareLaunchArgument("policy_backend", default_value="torch_cuda"),
             DeclareLaunchArgument("policy_device", default_value="cuda"),
             DeclareLaunchArgument(
                 "perception_model_path",
@@ -147,15 +116,6 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("execution_port", default_value="8081"),
             DeclareLaunchArgument(
-                "embedding_path",
-                default_value=(
-                    "/home/jetson/jetson_asv_ws/models/"
-                    "demo_instruction_embedding.npy"
-                ),
-            ),
-            DeclareLaunchArgument("active_embedding", default_value=""),
-            DeclareLaunchArgument("language_backend", default_value="qwen"),
-            DeclareLaunchArgument(
                 "language_model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
@@ -167,10 +127,7 @@ def generate_launch_description():
                 "language_model_id", default_value="Qwen3-Embedding-0.6B"
             ),
             DeclareLaunchArgument(
-                "language_release_after_encode", default_value="true"
-            ),
-            DeclareLaunchArgument(
-                "language_staging_delay_sec", default_value="20.0"
+                "language_release_after_encode", default_value="false"
             ),
             DeclareLaunchArgument(
                 "task_text", default_value="跟随红色目标船，保持3米距离"
@@ -231,36 +188,7 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── Language embedding (Qwen CUDA default, stub only for smoke) ──
-            Node(
-                package="asv_vla",
-                executable="language_stub",
-                name="language_stub",
-                output="screen",
-                parameters=[{
-                    "embedding_path": ParameterValue(
-                        LaunchConfiguration("embedding_path"),
-                        value_type=str,
-                    ),
-                    "active_embedding": ParameterValue(
-                        LaunchConfiguration("active_embedding"),
-                        value_type=str,
-                    ),
-                    "use_sim_time": ParameterValue(
-                        LaunchConfiguration("use_sim_time"),
-                        value_type=bool,
-                    ),
-                }],
-                condition=UnlessCondition(
-                    PythonExpression(
-                        [
-                            "'",
-                            LaunchConfiguration("language_backend"),
-                            "' == 'qwen'",
-                        ]
-                    )
-                ),
-            ),
+            # ── Language embedding (real Qwen CUDA; no .npy stub) ──
             Node(
                 package="asv_vla",
                 executable="task_instruction",
@@ -278,7 +206,6 @@ def generate_launch_description():
                 }],
             ),
             language_qwen_node,
-            staged_visual_action,
             # ── Visual encoder (MobileNet, CUDA) ──
             visual_encoder_node,
             # ── Task entity tensor ──
@@ -304,7 +231,6 @@ def generate_launch_description():
                 parameters=[
                     {
                         "model_path": LaunchConfiguration("model_path"),
-                        "backend": LaunchConfiguration("policy_backend"),
                         "device": LaunchConfiguration("policy_device"),
                     },
                     {

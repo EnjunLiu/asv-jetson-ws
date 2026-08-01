@@ -132,26 +132,18 @@ def test_first_task_trace_is_bounded_and_includes_instruction():
     assert "if not instruction:" in source
 
 
-def test_launch_selects_exactly_one_language_backend_and_qwen_is_default():
+def test_launch_uses_real_qwen_cuda_without_cached_stub_backend():
     launch = LAUNCH.read_text(encoding="utf-8")
-    assert 'DeclareLaunchArgument("language_backend", default_value="qwen")' in launch
-    assert 'executable="language_stub"' in launch
     assert 'executable="language_qwen"' in launch
-    assert "UnlessCondition" in launch
-    assert "IfCondition" in launch
-    assert 'LaunchConfiguration("language_backend")' in launch
+    assert 'executable="language_stub"' not in launch
+    assert "demo_instruction_embedding.npy" not in launch
     assert 'LaunchConfiguration("language_model_path")' in launch
     assert 'LaunchConfiguration("language_device")' in launch
     assert (
         'DeclareLaunchArgument(\n                "language_release_after_encode", '
-        'default_value="true"\n            )'
+        'default_value="false"\n            )'
     ) in launch
     assert 'LaunchConfiguration("language_release_after_encode")' in launch
-    assert "TimerAction" in launch
-    assert (
-        'DeclareLaunchArgument(\n                "language_staging_delay_sec", '
-        'default_value="20.0"\n            )'
-    ) in launch
 
 
 def test_setup_registers_online_qwen_entrypoint():
