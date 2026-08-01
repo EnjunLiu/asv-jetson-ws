@@ -20,6 +20,9 @@
 - ROS 契约和构建：UEEntity/UEEntityArray/TaskFeatures 增加来源、bbox、置信度、
   velocity_valid 和任务元数据；纯单测 149 passed，训练单测 39 passed；接口、VLA
   Python 包和 UE bridge 已在本机构建。
+- Jetson 已同步并固化为 `4e2d9f3`：Humble 下接口、VLA、UE bridge、bringup 及四个
+  底层包构建通过；无 UE bridge 的启动烟测通过，且在线视觉节点只使用
+  `/vla/tracked_entities`。
 
 ## 当前诚实边界
 
@@ -36,11 +39,9 @@
 
 ## 下一步（按阻塞顺序）
 
-1. 在 Jetson 同步本分支并构建，确认 ros2 topic info 显示在线节点没有订阅
-   /ue/entities，而是订阅 /vla/tracked_entities。
-2. 用 collect.launch.py max_target_distance_m:=5 采集至少 8 个新的近距离 run；
+1. 用 collect.launch.py max_target_distance_m:=5 采集至少 8 个新的近距离 run；
    每个 run 先检查 JPEG 与真值投影/ego yaw 连续性，再放入 PC 数据集。
-3. 在 PC 运行：
+2. 在 PC 运行：
 
    PYTHONPATH=src/asv_vla python3 training/train_image_entity_perception.py
      --episodes ../pc_datasets/extracted_sine/artifacts/day8_episode
@@ -49,10 +50,10 @@
      --max-abs-surge-velocity-mps 1.0
 
    只有验证误差达标，才把 acceptance_ready 改为 true 并部署模型。
-4. 用新感知特征（颜色列仍不接受 UE truth；速度来自 tracker，ego 来自
+3. 用新感知特征（颜色列仍不接受 UE truth；速度来自 tracker，ego 来自
    UEASVState）重建 feature cache，重新训练/导出 policy.onnx；在 Jetson 用
    onnxruntime 做输入输出 parity 和延迟/内存测量。
-5. 最后做在线验收：只启动 VLA launch，再 Play UE5；记录
+4. 最后做在线验收：只启动 VLA launch，再 Play UE5；记录
    image_perception -> temporal_tracker -> policy -> safety_gate ->
    kinematic_setpoint 的同一 Run/Scene/Frame 链和真实画面，才录制演示视频。
 
