@@ -126,7 +126,7 @@ For the reproducible demo, start Jetson first, then run UE5 with a complete
 `.uproject` path as the first argument:
 
 ```powershell
-D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe `
+& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
   "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map.Main_Map -game -log `
   -SceneAuto -Slot=DEMO-L6-S0-RED -Layout=L6 -Motion=S0 -Seed=23 `
   -SceneExecPort=8081 -MaxRuntimeSeconds=120 -YawFixWholeRun `

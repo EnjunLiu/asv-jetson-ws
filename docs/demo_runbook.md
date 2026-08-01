@@ -44,7 +44,7 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
 
 ```powershell
 # 可直接录制的静态 L6 红色演示（目标约 3 m 处收敛并保持）：
-D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe `
+& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
   "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map.Main_Map -game -log `
   -SceneAuto -Slot=DEMO-L6-S0-RED -Layout=L6 -Motion=S0 -Seed=23 `
   -SceneExecPort=8081 -MaxRuntimeSeconds=120 -YawFixWholeRun `
