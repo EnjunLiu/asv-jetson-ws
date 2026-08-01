@@ -32,6 +32,8 @@ def generate_launch_description():
     distance_bucket = LaunchConfiguration("distance_bucket")
     max_speed_mps = LaunchConfiguration("max_speed_mps")
     output_root = LaunchConfiguration("output_root")
+    execution_address = LaunchConfiguration("execution_address")
+    execution_port = LaunchConfiguration("execution_port")
     ue_bridge_config = os.path.join(
         get_package_share_directory("asv_ue_bridge"),
         "config",
@@ -109,6 +111,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("distance_bucket", default_value="3m"),
         DeclareLaunchArgument("max_speed_mps", default_value="0.15"),
+        DeclareLaunchArgument("execution_address", default_value=""),
+        DeclareLaunchArgument("execution_port", default_value="8081"),
         DeclareLaunchArgument(
             "output_root",
             default_value=PathJoinSubstitution([
@@ -128,6 +132,12 @@ def generate_launch_description():
                 {
                     "outbound_command_mode": "kinematic",
                     "use_sim_time": True,
+                    "execution_address": ParameterValue(
+                        execution_address, value_type=str
+                    ),
+                    "execution_port": ParameterValue(
+                        execution_port, value_type=int
+                    ),
                 },
             ],
             respawn=True,

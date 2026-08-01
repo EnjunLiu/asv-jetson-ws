@@ -63,7 +63,11 @@ def benchmark(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Day 20 ONNX benchmark")
-    p.add_argument("--model", type=Path, default=Path("models/policy.onnx"))
+    p.add_argument(
+        "--model",
+        type=Path,
+        default=Path("models/policy_sine_near_image_color_seed42.onnx"),
+    )
     p.add_argument("--duration", type=float, default=60.0)
     p.add_argument("--output", type=Path, default=None)
     args = p.parse_args()

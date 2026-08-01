@@ -1,231 +1,109 @@
-# 操作交接（2026-08-01 最终审计）
+# 当前运行说明（2026-08-02）
 
-> 当前权威状态只看 [TODO.md](TODO.md)、[models/manifest.yaml](models/manifest.yaml)、
-> 工作树和 Jetson `install/`。下面第 1--3 节是当前可执行架构；第 4 节以后保留为
-> 历史审计，不得覆盖 TODO 中较新的结论。
+本文件只记录当前可运行系统；历史失败实验请看 [HISTORY.md](HISTORY.md)，当前验收
+和 TODO 以 [TODO.md](TODO.md) 为准。项目目标是 UE5 S2 正弦场景中的近距离真实在线
+跟踪，不是专家轨迹回放。
 
-当前系统边界已经固定：UE5 的 `/ue/entities` 只用于录制和离线标签；在线链路是
-`camera -> image_entity_perception -> temporal_entity_tracker -> tracked_entities`。
-图像感知不输出速度，速度由带 `(Run_ID, Scene_Seed, Frame_Index, stamp_us)` 的多帧
-跟踪得到。候选策略 `policy_image_seed17.onnx` 已在 Jetson 加载并完成真实 UE 在线
-链路演示，但 `validation_gate_passed=false`，不得称为最终策略验收通过。
+## 当前结论
 
-本地分支为 `cleanup/ultimate-restructure`，当前最终提交包含 `d51aab3`（越界预测不再
-杀死感知节点）和 `5e301cb`（部署 manifest、默认 launch、TODO 与在线证据更新）。
-全量测试为 **201 passed、5 skipped**；Jetson 9 包重建通过，运行时只保留源码、
-`install/`、模型和文档。
+- L7/S2 `seed=230906` 和 `seed=230902` 已各完成一次真实在线运行：UE5 相机 JPEG
+  进入 Jetson，图像感知识别红船，Qwen 在 CUDA 上编码任务，ONNX 策略和图像跟踪
+  standoff guard 产生有效 setpoint，UE5 C++ 8081 executor 实际改变 ASV 世界位置。
+- `/ue/entities` 只用于录制和离线监督，不能进入在线策略。单帧图像不提供速度；
+  tracker 用相邻帧和 `Run_Id/Scene_Seed/Frame_Index/stamp_us` 计算速度。
+- 当前图像校准器的主要工作范围是约 5 m 内。超过范围看不清时必须 hold/fail-closed，
+  不得为了视频向 UE 真值或专家控制器回退。
 
----
+## 双端路径
 
-## 1. 项目是什么
-
-无人船视觉-语言-动作（VLA）闭环项目：
-- **UE5 仿真**（Windows）：海洋场景，红/蓝两艘目标船并行走正弦编队（波长 60m、
-  幅度 6m、0.6m/s，分居曲线两侧），两艘白船直线干扰；被控 ASV 按语言指令
-  （"跟随红色/蓝色目标船，保持3米距离"）选择性地跟随其中一艘。
-- **Jetson Orin Nano**（ROS 2 Humble）：视觉编码（MobileNetV3 冻结特征）+
-  实体张量 + 语言 embedding → 481K 参数 MLP 策略（ONNX/CPU）→ 确定性安全门 →
-  运动控制 → UE5 执行。
-- 目标：**真实模型在线推理闭环**（不是专家控制器），为 ESP32 硬件扩展留接口。
-
-## 2. 双端环境
-
-| | PC（训练侧） | Jetson（推理侧） |
-|---|---|---|
-| 位置 | `C:\Users\LIU\Documents\jetson_ws\asv_vla`（WSL 挂载 `/mnt/c/.../asv_vla`，旧路径 `day11_kinematic_work` 是软链接） | `jetson@192.168.137.100`，`~/jetson_asv_ws`（与 PC 同步的独立 git） |
-| 关键 | Windows venv：`pc_datasets/.venv-day13/Scripts/python.exe`；UE5 项目 `D:\Unreal Projects\VLA` | SSH 密钥：`/tmp/asv_key`（或 `C:\Users\LIU\.ssh\asv_day12_ed25519`）；micro-ROS agent 已装 |
-| 数据 | `pc_datasets/`（canonical 数据、image-only cache、checkpoints/registry） | `~/jetson_asv_ws/models/policy_image_seed17.onnx` + embeddings |
-| git | 分支 `cleanup/ultimate-restructure`（当前状态以工作树和 TODO 为准） | 分支 `fix/day19-closed-loop`（源码已同步，运行时以 `install/` 和模型哈希为准） |
-
-SSH 命令模板：
-```bash
-ssh -i /tmp/asv_key -o BatchMode=yes jetson@192.168.137.100 'cd ~/jetson_asv_ws && source /opt/ros/humble/setup.bash && source ~/microros_ws/install/setup.bash && source install/setup.bash && ...'
-```
-
-## 3. 架构与数据流（在线闭环）
-
-```
-UE5（Windows）                          Jetson（ROS2）
-Connection 蓝图（场景/相机/实体上报）     ue_object_deliverer_bridge_node（TCP :8080 服务）
-  - S2 正弦编队、L6/L6B 布局              ├─ /ue/camera_frame（1280x720 JPEG, FOV 90°）
-  - 实体投影（base_link 相对坐标）        ├─ /ue/entities（4 船：位置/速度/颜色/可见性）
-  - 蓝图"counterbalanced"巡航            └─ /ue/asv_state
-C++ 执行器（SceneAutomationSubsystem）      │
-  - 8081 端口收 setpoint → teleport 移动   ├─ visual_encoder → /vla/visual_features
-  - 世界 Tick 结束后强制应用位移            │    (17-token: 全局帧+16 槽位实体 crop, MobileNet)
-  - 第一条 setpoint 时锚定"当前巡航位置"    ├─ task_entity_tensor → /vla/task_features
-                                          │    (16×16 张量；颜色列[14/15]置零=特权列)
-                                          ├─ language_stub → /vla/language_embedding
-                                          │    (预计算 Qwen embedding；红/蓝可运行时切换)
-                                          ▼
-                                   vla_policy（ONNX/CPU, 481K MLP）
-                                          ├─ 输出 20×2 轨迹（dt=0.2s, 4s 视界）+ STOP logit
-                                          └─ 5 帧平滑 → /vla/policy_trajectory
-                                          ▼
-                                   safety_gate（唯一发布者）
-                                          ├─ 速度≤1.5m/s、曲率≤15、方向≤170°、碰撞 0.5m
-                                          ├─ 只查可执行前缀（2-5 步）；STALE 1s/E-STOP 2s
-                                          └─ /vla/selected_trajectory
-                                          ▼
-                                   trajectory_controller → /decision/output
-                                          ▼
-                                   decision_setpoint_adapter → /ue/kinematic_setpoint
-                                          ▼ bridge → TCP → UE5 执行器 → ASV 移动 → 新一帧…
-```
-
-**训练侧**（PC）：UE5 采集（expert 驱动）→ episode 包 → 特征缓存（冻结 MobileNet+Qwen）
-→ 训练（3 seeds，验证门）→ ONNX 导出（parity 校验）→ 部署 Jetson。
-
-**ESP32 硬件链**（保护项，未改动）：`/decision/output → control_input_mux →
-/control/control_input → [ESP32 固件] → /control/asv_wrench → safety_supervisor →
-/control/safe_wrench → thruster_allocator → /ue/thruster_command → bridge(thruster) → UE5`。
-`hardware_loop.launch.py` 已备（use_fake_esp32 默认 true）；接口规范见
-`docs/esp32_interface.md`。**不要动**：asv_control_manager 5 节点、full_system.launch.py、
-fake_esp32_wrench_node、上述话题名。
-
-## 4. 已完成的工作（按时间）
-
-### A. 终极整理（完成，PC 25c037f / Jetson 5877b30）
-- 目录改名 `asv_vla`（旧路径软链接兼容）；31 个文件去 dayX 改名、70 文件内容清理
-- pc_datasets 4.3GB→1.5GB；TODO.md 拆为 ARCHITECTURE.md + HISTORY.md（审计史保留）
-
-### B. UE5 场景（完成，PC 003256e）
-- S2 正弦运动（波长/幅度/速度命令行可调）+ L6（红左蓝右）/L6B（红右蓝左）布局
-- `-YawFixWholeRun`：抑制蓝图中途 180° 翻转（headless 实测 70s yaw=0）
-- `-SineDelay`：编队延迟前进（让闭环在训练分布内启动）
-- 蓝图行为（headless 实测）：无 setpoint 时巡航（0.6m/s 追 target）；有 setpoint 流
-  时停止巡航；位移由 `SceneAutomationSubsystem` 的 C++ 8081 执行器接管，
-  不再依赖蓝图执行 setpoint。
-
-### C. 数据采集与训练（完成，验证门 PASS）
-- 采集 14 runs（L6/L6B × 7 seeds，100 帧/run，全过质量门）；`-YawFixWholeRun` 全程
-- 特征缓存 14 个/117500 样本；**ego 置零**（训练/在线一致）
-- 训练增强：几何噪声 + 槽位 dropout + 镜像（mirror_prob 0.3）+ 指令互换
-  （instruction_swap_prob 0.4，重算专家标签）
-- **checkpoints/sine_formation_v4**（历史旧数据，已隔离）：不要当作当前策略验收证据；
-  当前 image-only 三 seed gate 结果见 TODO，状态为 FAIL。
-- 离线选择指标 96.2%（v2 时代；v4 待重测）
-- ONNX 导出 parity 精确；Jetson 仅保留当前 v4 部署模型，旧备份已归档/清理
-- 语言 stub 支持红/蓝指令运行时切换（`ros2 param set /language_stub active_embedding <path>`）
-
-### D. 历史在线模型闭环（旧配置审计；当前结论以 TODO 为准）
-- **C++ setpoint 执行器**（SceneExecPort 8081）：headless 下蓝图不执行 setpoint，
-  改为 C++ 执行（世界 Tick 结束后强制应用，赢过蓝图位置控制）
-- **bridge 双连接**（execution_address/execution_port 参数）：setpoint 走执行器
-- **stamp 单调化**（task_entity_tensor + vla_policy）：UE5 模拟时钟 headless 下回退
-  → 消除每 run 2500+ 次 STALE 误判（修复后 0 次）
-- 设备历史日志证明桥接器、策略、门、控制器和执行器可以组成闭环；门在异常输入下
-  按设计输出 hold/E-STOP。日志还暴露出旧 adapter 使用 `decision-adapter`、零
-  `Scene_Seed/Frame_Index` 的硬编码元数据，当前修复会让身份沿轨迹链传播。
-- **当前核心验收已完成**：图形 `-game` 的 L6/S0 红 seed=23 与蓝 seed=42 各有一轮
-  真实执行器证据（`SCENE_EXEC_APPLY`，`SCENE_EXEC_BAD_PAYLOAD=0`），末端约 2.8 m
-  与 3.7 m。8-run 统计鲁棒性和 S2 持续跟随仍未宣称通过。
-
-### E/F. ESP32 扩展 + 演示
-- `hardware_loop.launch.py`；烟测验证 fail-closed 传播；`docs/esp32_interface.md`
-- `docs/demo_runbook.md`（Play 模式演示流程）；`docs/scene_verification.md`（验证记录）
-
-## 5. 当前边界：动态 S2 持续跟随（可选增强）
-
-静态 L6/S0 红蓝目标已经完成核心在线验收。动态 L6/S2 运行中，目标开始运动后安全门
-会对高曲率/碰撞风险轨迹进入 hold；这是当前 fail-closed 边界，不是底层推力控制器
-问题。若要把动态跟随也做成统计结论，需要新增动态观测并重训/校准，不应先放宽安全门。
-
-**已排除**：crop 槽位错位（交换实验无影响）、语言条件（red vs blue embedding 有
-差异但不够强）、时序错配（offset 实验）、stamp（已修复）。
-
-**关键发现链**：
-1. 训练缓存 follow-red 帧中 red 近占 78.5%（blue 近仅 21.5%）→ 模型倾向"追最近"
-2. 镜像增强（v3）+ 指令互换增强（v4）→ 验证门过但 R16 回放仍 0%——几何层面
-   增强无效
-3. **在线视觉特征统计与训练缓存匹配**（均值/方差几乎一致）——不是全局分布问题
-4. **最可能根因（正在验证）**：在线 ASV 被锚定在**起点**（静止视角），而采集时
-   ASV 巡航（视角动态、target 近、crop 大）——**在线静止视角 OOD** →
-   模型困惑 → fallback 追最近
-5. **当前修复**：C++ 执行器第一条 setpoint 时锚定**巡航当前位置**（不是起点），
-   同时保留 `-YawFixWholeRun` 和 `-SineDelay`，让接管视角与采集分布一致。
-
-**在线验收方法**（每次运行前清理残留进程）：
-```bash
-# Windows（图形 -game，项目文件必须是第一个参数）：
-cd tools/ue5 && powershell.exe -File verify_demo_seed.ps1 -SceneSeed 200101 -LayoutId L6 \
-  -MotionState S2 -RunSeconds 180 -SlotId ACCEPT-01 -YawFixWholeRun -SceneExecPort 8081 -SineDelay 45
-# Jetson：
-ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy_image_seed17.onnx \
-  embedding_path:=/home/jetson/jetson_asv_ws/models/demo_instruction_embedding.npy \
-  execution_address:=192.168.137.1 execution_port:=8081 visual_device:=cuda
-# 抓实体: python3 /tmp/r12_capture.py（Jetson 上已有，写 /tmp/r12_ents.json）
-```
-分析：记录实体数据的 red/blue 距离、稳态距离、门统计和 Run 元数据。当前两轮核心
-验收已记录在 `docs/demo_runbook.md`；至少 8 个独立组合后，才能追加“统计鲁棒性通过”。
-**注意**：每次运行前必须清理残留进程：
-```bash
-ssh ... 'ps aux | grep -E "install/asv_vla|install/asv_ue" | grep -v grep | awk "{print \$2}" | xargs -r kill; ss -tlnp | grep 8080'
-```
-
-**如果 PIE 验收失败**：先保存完整 ros/UE 日志，使用 `eval_online_replay.py` 区分
-输入分布、语言 grounding、执行器和安全门问题；只有确认是静止视角分布外，才增加
-observation-only 数据并重训，不要先改底层推力参数。
-
-## 6. 关键文件索引
-
-| 文件 | 作用 |
+| 端 | 路径 |
 |---|---|
-| `tools/ue5/Source/EDGE/SceneAutomationSubsystem.{h,cpp}` | UE5 场景+S2+L6+执行器（核心） |
-| `tools/ue5/install_ue_automation.ps1` | 复制 C++ 到 UE 项目+编译（含 EDGE.Build.cs） |
-| `tools/ue5/verify_demo_seed.ps1` | headless UE5 运行（参数：SceneSeed/Layout/Motion/YawFixWholeRun/SceneExecPort/SineDelay） |
-| `tools/ue5/collect.ps1` | 自动化采集（Jetson 查 slot→UE5 headless→打包） |
-| `src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp` | bridge（execution 双连接） |
-| `src/asv_vla/asv_vla/vla_policy_node.py` | 策略节点（stamp 单调化） |
-| `src/asv_vla/asv_vla/task_entity_tensor_node.py` | 实体张量（stamp 单调化） |
-| `src/asv_vla/asv_vla/language_stub_node.py` | 语言 stub（红/蓝切换） |
-| `src/asv_bringup/launch/vla_closed_loop.launch.py` | 在线闭环 launch（execution_address 参数） |
-| `src/asv_jetson_interfaces/msg/{SelectedTrajectory,DecisionOutput}.msg` | 轨迹到执行器的 Run/Scene/Frame/Model 身份链 |
-| `src/asv_vla/test/test_runtime_identity_contract.py` | 不依赖 ROS 生成消息的契约守卫 |
-| `training/dataset.py` | 数据集+增强（mirror/swap/dropout/噪声） |
-| `training/config/train_sine_v1.yaml` | 训练配置（augment 参数） |
-| `run_train_wrapper.py` / `build_feature_wrapper.py` | PC 训练/特征构建入口（Windows 路径注入） |
-| `training/evaluate_selection.py` | 离线选择指标（缓存） |
-| `eval_online_replay.py` | **在线输入回放评估**（R16 特征喂模型） |
-| `pc_datasets/checkpoints/sine_formation_v4/` | 历史模型（已移入可恢复清理目录，不是当前部署） |
-| `pc_datasets/r16_feats.json` | 历史 R16 在线特征抓取（已隔离，不是当前数据源） |
-| `docs/scene_verification.md` / `docs/esp32_interface.md` / `docs/demo_runbook.md` | 验证/接口/演示文档 |
+| PC 工程 | `C:\Users\LIU\Documents\jetson_ws\asv_vla` |
+| PC 数据/模型 | `C:\Users\LIU\Documents\jetson_ws\pc_datasets` |
+| UE5 项目 | `D:\Unreal Projects\VLA\VLA.uproject` |
+| Jetson | `jetson@192.168.137.100:~/jetson_asv_ws` |
 
-## 7. 常用命令速查
+Jetson 当前部署模型哈希：
 
-```bash
-# UE5 重建（C++ 改动后）
-cd tools/ue5 && powershell.exe -File install_ue_automation.ps1
+```text
+policy_sine_near_image_color_seed42.onnx
+ddb4bb99bea7a0b2bd66663f51a70294fc1e2980d94012c86c23d156a2fdc405
 
-# Jetson 同步 + 构建（注意 Python 包需 rm -rf build/asv_vla 强制重建）
-rsync -avz -e "ssh -i /tmp/asv_key -o BatchMode=yes" --exclude '.git' --exclude 'build' \
-  --exclude 'install' --exclude '.venv*' --exclude 'artifacts' --exclude '*.onnx' \
-  --exclude '*.npy' --exclude 'models/Qwen*' ./ jetson@192.168.137.100:~/jetson_asv_ws/
-ssh ... 'cd ~/jetson_asv_ws && rm -rf build/asv_vla && colcon build --symlink-install --packages-select asv_vla asv_ue_bridge asv_bringup'
-
-# 训练（PC，Windows venv）
-cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
-/mnt/c/Users/LIU/Documents/jetson_ws/pc_datasets/.venv-day13/Scripts/python.exe run_train_wrapper.py
-
-# 导出 ONNX（改输出路径）
-# 部署：将 `pc_datasets/checkpoints/policy_sine_v4.onnx` 校验后复制为
-# Jetson `models/policy_image_seed17.onnx`；该候选仍是 provisional_demo_only，历史模型已隔离
-
-# 指令切换（在线）
-ros2 param set /language_stub active_embedding /home/jetson/jetson_asv_ws/models/follow_blue_embedding.npy
+image_entity_color_calibrated_v1.npz
+985111c7cfeaea9a927bc59b6b3d6efb2bf40df7e68996d44aa82de4b2014a3c
 ```
 
-## 8. 诚实边界（审计要求）
+## 在线数据流
 
-- 验证门通过 + 指标达标才宣称"训练达标"；未达标如实记录
-- L6/S0 红蓝核心在线验收已完成；8-run 统计鲁棒性和动态 S2 持续跟随仍单独记录
-- 演示视频可以使用已验证的 L6/S0 红/蓝画面，但不得把单次运行扩大成 8-run 统计率
-- HISTORY.md 保留全部根因与失败记录（v1/v2/v3 迭代、旧模型门未过等）
+```text
+UE5 SceneCapture JPEG + /task/text + ego
+  → image_entity_perception（image-only）
+  → temporal_entity_tracker（跨帧速度）
+  → MobileNet CUDA + TaskFeatures + Qwen CUDA
+  → policy_sine_near_image_color_seed42.onnx（ONNX/CPU）
+  → visual_standoff_guard（图像/跟踪几何，约 3 m 首步）
+  → smoothing → safety_gate（唯一发布者）
+  → trajectory_controller → decision_setpoint_adapter
+  → /ue/kinematic_setpoint → UE5 C++ executor:8081
+```
 
-## 9. 下一步优先级（按序）
+guard 是透明的图像执行适配器：只修改策略第一 waypoint 的距离和步长，不读取
+`/ue/entities`，不接收专家轨迹。ONNX 仍决定 STOP/valid 和多模态路径，安全门可以
+拒绝任何异常轨迹。
 
-1. （可选）按 `docs/demo_runbook.md` 追加 ≥8 runs，形成统计鲁棒性表
-2. （可选）为 S2 动态跟随补充运动中观测并重训/校准，不放宽安全门
-3. 重新运行 v4 离线 selection 评估，单独记录指标版本
-4. ESP32 实机接入（可选，需硬件；不改变任务级轨迹接口）
+## 启动顺序
+
+### Jetson
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source ~/microros_ws/install/setup.bash
+source install/setup.bash
+ros2 launch asv_bringup vla_closed_loop.launch.py \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.onnx \
+  perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
+  language_backend:=qwen \
+  language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
+  language_device:=cuda language_release_after_encode:=true \
+  language_staging_delay_sec:=30.0 \
+  execution_address:=192.168.137.1 execution_port:=8081
+```
+
+等待 `LANGUAGE_READY_VALID ... device=cuda` 和 `visual_encoder ... device=cuda` 后再
+启动 UE5。只允许一个 `vla_closed_loop`；不要并行启动专家、采集或另一套 bridge。
+
+### UE5（项目文件必须是第一个参数）
+
+```powershell
+& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
+  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
+  -Slot=DEMO-S2-230906 -Layout=L7 -Motion=S2 -Seed=230906 `
+  -MaxRuntimeSeconds=35 -SceneExecPort=8081 -YawFixWholeRun `
+  -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+```
+
+视频录制保留 `-windowed`；无界面验收可使用 `-RenderOffscreen -unattended`。目标初始
+距离应控制在约 5 m 内。
+
+## 运行时证据
+
+- `seed=230906`：Run_Id `FEB0142041FF570A8149F9B6FD69B28C`，图像第 2 帧约
+  `(4.542, 2.436) m`，UE setpoint 约 350 次，距离中位数 3.291 m、末端 3.461 m。
+- `seed=230902`：Run_Id `B6AFBD864B4CE41482A7ECA28BB9E39E`，图像第 2 帧约
+  `(4.406, 2.181) m`，UE `SCENE_EXEC_APPLY` 至少到 count=275，距离中位数
+  3.304 m、末端 3.140 m。
+- `seed=230907`：初始约 7.117 m，前五帧目标不可见，没有有效 setpoint；这是正确
+  的 OOD fail-closed 边界，不是允许放宽门限的理由。
+
+## 验证命令
+
+```bash
+cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
+PYTHONPATH=src/asv_vla pytest -q                 # 231 passed, 5 skipped
+python3 -m py_compile src/asv_bringup/launch/vla_closed_loop.launch.py
+git diff --check
+```
+
+如需论文级结论，另行完成 L7/L7B、红/蓝任务的至少 8 个新 seed，并报告稳态距离、
+颜色选择和 safety-gate hold 比例；两次成功运行不应扩大成统计泛化声明。

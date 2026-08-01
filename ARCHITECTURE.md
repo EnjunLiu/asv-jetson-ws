@@ -22,12 +22,12 @@ UE5 (Main_Map, 无限海洋)                    Jetson (ROS 2 Humble)
                                                          │
               ┌──────────────────────────────────────────┼──────────────────────┐
               ▼                                          ▼                      ▼
-   /ue/camera_frame + /ue/entities ──► visual_encoder ──► /vla/visual_features  │
-              │                          (MobileNetV3, 17-token 槽位布局)        │
-              ├─────────────────────► task_entity_tensor ─► /vla/task_features  │
-              │                          (16×16 实体几何张量)                    │
-              │                      language_stub ───────► /vla/language_embedding
-              │                          (预计算 Qwen embedding, 可切换指令)     │
+   /ue/camera_frame ──► image_perception ─► tracker ─► visual_encoder ──────────┤
+              │                                      (MobileNetV3, 17-token)     │
+              ├──────────────────────────────────► task_entity_tensor ──────────┤
+              │                                      (16×16 实体几何张量)        │
+              │                      language_backend ────► /vla/language_embedding
+              │                          (Qwen CUDA staged；stub 可选)           │
               ▼                                          ▼
    vla_policy (ONNX, CPU) ──► /vla/policy_trajectory    expert_policy_bridge ──┘
               │                  (学习策略, 5 帧平滑)         (专家对照, 规格允许)
@@ -52,7 +52,7 @@ UE5 (Main_Map, 无限海洋)                    Jetson (ROS 2 Humble)
 | /ue/asv_state | UEASVState | bridge | 本船位姿/速度（在线 ego 来源） |
 | /vla/visual_features | VisualFeatures | visual_encoder | token_count=17, dim=576 |
 | /vla/task_features | TaskFeatures | task_entity_tensor | 16×16, 排序 targets→risks→normal |
-| /vla/language_embedding | (float array) | language_stub | 预计算 Qwen embedding |
+| /vla/language_embedding | TaskEmbedding | language_qwen / language_stub | Qwen CUDA staged；stub 可选 |
 | /vla/policy_trajectory | SelectedTrajectory | vla_policy / expert_policy_bridge | 20×2 位移, dt=0.2s |
 | /vla/selected_trajectory | SelectedTrajectory | safety_gate（唯一） | 门后轨迹 |
 | /decision/output | DecisionOutput | trajectory_controller | desired_x/y + valid + source Run/Scene/Frame/Model |
@@ -87,12 +87,13 @@ UE5 采集 (collect.ps1, 自动化) → episode 包 (tar.gz, SHA-256 校验)
   → 训练：SmallTrajectoryPolicy (481K 参数, MLP 融合)，3 seeds
   → 验证门：stop_drift + ADE/FDE vs expert 基线 + finite/speed
   → export_onnx.py：ONNX CPU 导出 + parity 校验（max_diff<1e-4）
-  → 部署 Jetson ~/jetson_asv_ws/models/policy.onnx
+  → 部署 Jetson `~/jetson_asv_ws/models/policy_sine_near_image_color_seed42.onnx`
 ```
 
 指令集：`dataset/language/instructions.jsonl`（90 条，含 follow red/blue 3m/10m 等），
-语言 embedding 由 Qwen 在 PC 端冻结编码，行序=文件行序。在线语言使用预计算 embedding
-（无在线 Qwen）。
+训练缓存仍由 PC 端冻结 Qwen 编码；最终在线演示使用 Jetson 上
+`Qwen3-Embedding-0.6B` 的 CUDA staged 路径（首次文本编码并释放权重后再初始化
+MobileNet），stub 仅保留为确定性 smoke/无模型环境的可选后端。
 
 ## 5. ESP32 硬件链（扩展路径）
 
@@ -134,33 +135,30 @@ UE5 采集 (collect.ps1, 自动化) → episode 包 (tar.gz, SHA-256 校验)
 
 ## 8. 已知边界（诚实声明）
 
-- 学习策略离线验证指标完好，但动态 FluidSim 水景下逐帧输出不稳定（见 HISTORY.md §3）；
-  线上对照使用 deterministic expert（规格允许）。在线鲁棒性（输入增强重训）为 P2。
-- 旧的 `day21_label_fix_v1` checkpoint 验证门未通过，但当前部署候选
-  `sine_formation_v4` 的 17/23/42 三个 seed 验证门已通过；两者不能混写。
-- 当前离线选择率 96.2% 的公开数字来自 v2 快照；v4 需要重新运行选择评估后再
-  发布新的数字，不能把 v2 指标自动归因给 v4。
+- 当前唯一可录制演示是 L7/S2 近距离 image/color 在线链；seed=230906 与
+  seed=230902 两次运行已实际驱动 UE5 ASV，详见 [TODO.md](TODO.md) 和
+  [docs/demo_runbook.md](docs/demo_runbook.md)。这不是所有距离、布局和随机种子都
+  已泛化的结论。
+- L7/L7B 的白色干扰船约 7 m，超出当前图像校准域；目标不可见或证据非有限时必须
+  `valid=false`/hold，不能用 UE `/ue/entities` 真值补齐，不能放宽安全门。
+- 在线 Qwen 必须按 CUDA staged 顺序运行；Qwen 编码/释放未完成前不初始化
+  MobileNet，不能静默降级到 CPU。策略 ONNX 保持 CPU 推理以避免 Orin 统一内存竞争。
 - UE5 仿真结果不等同真实感知或实船海试；仿真/硬件通道刻意分离
-  （kinematic_setpoint 消息头注明"永不发 ESP32"）。
-- 在线核心闭环已经完成图形 `-game` 的 L6/S0 红/蓝真实执行器验收；动态 S2
-  目标运动后的安全 hold 和 ≥8-run 统计鲁棒性仍是明确的可选边界，不把单次运行
-  夸大成统计结论。
+  （kinematic_setpoint 消息头注明“永不发 ESP32”）。专家路径仍可选，但不与最终在线
+  策略并行发布。
 
-## 9. 阶段状态（2026-08-01 快照）
+## 9. 阶段状态（2026-08-02 快照）
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
 | 终极整理 | 完成 | PC 25c037f / Jetson 5877b30（去 dayX、清理 2.9 GB、HISTORY.md 保留审计） |
-| 正弦编队场景 | 完成 | S2 运动 + L6/L6B 布局 + YawFixWholeRun；headless 验证（docs/scene_verification.md） |
-| 新数据采集 | 完成 | 14 runs（L6/L6B × 7 seeds），100 帧/run，质量门全过 |
-| 特征构建 | 完成 | 14 caches / 117500 样本，ego 置零（分布一致），frozen sha 2ea3f77c8cf7 |
-| 重训 | **验证门 PASS** | ADE 改善 67-70%、FDE 69-72%、STOP recall 1.0 / drift 0 |
-| 选择指标 | **历史 v2：96.2%** | L6 97.9% / L6B 95.3%；v4 需重新评估 |
-| ONNX 导出 | 完成 | parity max_diff=0、cos=1.0；已部署 Jetson（旧模型备份） |
-| 语言 stub | 完成 | 红/蓝指令运行时切换（参数驱动） |
-| 在线闭环（图形 `-game`） | **核心验收通过** | L6/S0 红 seed=23 末端约 2.8m、蓝 seed=42 末端约 3.7m；`SCENE_EXEC_APPLY` 有效且 `SCENE_EXEC_BAD_PAYLOAD=0`，S2 动态安全 hold 单独记录 |
+| 正弦编队场景 | 完成 | S2 运动 + L7/L7B 近距离布局 + YawFixWholeRun；headless 验证（docs/scene_verification.md） |
+| 近距离 image-only 数据 | 完成 | 12 runs / 1200 frames / 104720 samples；cache 不含 `/ue/entities` 真值 |
+| 感知校准 | **在线可用** | `image_entity_color_calibrated_v1.npz`；7m OOD 按设计 fail-closed |
+| near image/color 策略 | **验证门 PASS** | seed42 候选；ONNX CPU，默认模型见 `models/manifest.yaml` |
+| 在线语言 | **CUDA staged 已验证** | Qwen 首次编码并释放权重后初始化 MobileNet；无静默 CPU 降级 |
+| 在线闭环（图形 `-game`） | **S2 近距离通过** | L7/S2 seed=230906、230902；JPEG 感知、Qwen、guard、`SCENE_EXEC_APPLY` 连续链路 |
 | ESP32 扩展 | 完成 | hardware_loop.launch.py + 链烟测（fail-closed 验证）+ docs/esp32_interface.md |
 
-**诚实记录**：上述 L6/S0 是可录制的核心在线闭环结果；若需要发布统计鲁棒性，
-继续执行 `docs/demo_runbook.md` 的 8-run 表，并把动态 S2 的安全 hold 单独计入，
-不要把它改写成持续跟随通过。
+**诚实记录**：上述两次 S2 近距离运行是当前可录制证据；不要将其扩大成统计鲁棒性
+结论，后续 run 继续填写 [docs/demo_runbook.md](docs/demo_runbook.md) 的记录表。

@@ -19,8 +19,9 @@ UE5 (相机/实体/本船状态)
   → 硬件: control_input_mux → [ESP32] → safety_supervisor → thruster_allocator → UE5
 ```
 
-详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、任务级动作边界、接口契约、安全设计、ESP32 扩展路径）
-与 [HISTORY.md](HISTORY.md)（根因分析、诚实验收记录）。
+详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、任务级动作边界、接口契约、安全设计、ESP32 扩展路径）、
+[TODO.md](TODO.md)（当前 S2 近距离证据）和 [docs/demo_runbook.md](docs/demo_runbook.md)（可复现实验步骤）；
+[HISTORY.md](HISTORY.md) 保留历史根因与审计记录。
 
 ## 目录结构
 
@@ -46,27 +47,30 @@ source install/setup.bash
 ```
 
 - 单元测试：`PYTHONPATH=src/asv_vla python -m pytest -q src/asv_vla/test`
-- VLA 闭环（仿真）：`ros2 launch asv_bringup vla_closed_loop.launch.py`
-  （可用 `model_path:=...`、`embedding_path:=...`、`active_embedding:=...`、
-  `execution_address:=192.168.137.1`、`execution_port:=8081`、`visual_device:=cuda`
-  显式指定部署资源）
+- VLA 闭环（仿真，默认 near image/color 模型）：`ros2 launch asv_bringup vla_closed_loop.launch.py`
+  （可用 `model_path:=...`、`perception_model_path:=...`、`language_backend:=qwen`、
+  `language_device:=cuda`、`execution_address:=192.168.137.1`、`execution_port:=8081`
+  显式指定部署资源；Qwen 在线启动必须使用 CUDA 分阶段参数）
 - 专家对照闭环：`ros2 launch asv_bringup expert_closed_loop.launch.py`
 - 完整硬件链：`ros2 launch asv_bringup full_system.launch.py`
   （micro_ros_agent + control manager；ESP32 通过 `/control/control_input` 接入）
 
-可录制的 UE5 图形闭环顺序是“先启动上述 Jetson launch，再启动 UE5 游戏窗口”；
+可录制的 UE5 图形闭环顺序是“先启动 Jetson launch，再启动 UE5 游戏窗口”；
 项目文件必须是 UnrealEditor 的第一个参数：
 
 ```powershell
 & "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
-  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map.Main_Map -game -log `
-  -SceneAuto -Slot=DEMO-L6-S0-RED -Layout=L6 -Motion=S0 -Seed=23 `
-  -SceneExecPort=8081 -MaxRuntimeSeconds=120 -YawFixWholeRun `
+  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
+  -Slot=DEMO-S2-230906 -Layout=L7 -Motion=S2 -Seed=230906 `
+  -MaxRuntimeSeconds=35 -SceneExecPort=8081 -YawFixWholeRun `
   -ResX=1280 -ResY=720 -windowed
 ```
 
-红/蓝指令可在运行中通过 `ros2 param set /language_stub active_embedding <npy>` 热切换。
-详见 [`docs/demo_runbook.md`](docs/demo_runbook.md)。
+默认策略与感知模型分别为 `policy_sine_near_image_color_seed42.onnx` 和
+`image_entity_color_calibrated_v1.npz`；在线语言使用 Qwen3-Embedding-0.6B 的 staged
+CUDA 路径（先编码并释放 Qwen，再初始化 MobileNet）。两次已验证的 S2 seed 是
+230906 与 230902；约 7 m 的 OOD 目标必须保持 `valid=false`/hold。详见
+[`docs/demo_runbook.md`](docs/demo_runbook.md) 与 [`models/manifest.yaml`](models/manifest.yaml)。
 
 ## 数据采集与训练（PC）
 
@@ -75,8 +79,9 @@ source install/setup.bash
 2. 特征：`training/build_feature_caches.py`（冻结 MobileNet + Qwen）
 3. 训练：`training/train.py`（配置在 `training/config/`）
 4. 导出：`training/export_onnx.py`（parity 校验）
-5. 部署候选（provisional demo only）：`policy_image_seed17.onnx` +
-   `demo_instruction_embedding.npy` → Jetson `models/`
+5. 部署：校验并复制 `policy_sine_near_image_color_seed42.onnx`、
+   `image_entity_color_calibrated_v1.npz` 与 Qwen 模型目录到 Jetson `models/`；
+   SHA/验证门状态以 [`models/manifest.yaml`](models/manifest.yaml) 为准。
 
 ## 平台
 

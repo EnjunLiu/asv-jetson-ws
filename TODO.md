@@ -1,115 +1,137 @@
-# 最终系统状态与 TODO（2026-08-01，在线闭环已实测，策略验收仍阻塞）
+# 最终系统状态与 TODO（2026-08-02）
 
-## 已落地
+## 目标
 
-- 真值/在线彻底分流：/ue/entities 只给录制、离线标签和专家基线；在线
-  vla_closed_loop.launch.py 只允许
-  /ue/camera_frame -> image_entity_perception -> temporal_entity_tracker ->
-  /vla/tracked_entities。
-- 单帧不输出速度：图像感知只输出位置、语义、可见性、bbox、置信度，并明确
-  velocity_valid=false；速度由相邻 (Run_ID, Scene_Seed, Frame_Index, stamp_us)
-  观测有限差分得到，首帧速度无效。
-- 在线 ego 已接入：策略按完全相同的帧身份读取 /ue/asv_state 的 surge/yaw
-  rate；缺失或错帧不再用零向量替代，而是 fail-closed。
-- 图片+Entities 训练管线：录制器已保存 JPEG、ego、Entities 真值和 provenance；
-  training/train_image_entity_perception.py 可从 extracted_sine 生成
-  models/image_entity_perception_v1.npz。
-- 近距离采集门：collect.launch.py 默认 max_target_distance_m=5，远距离帧不
-  进入新训练集；训练器还默认剔除 |ego yaw|>0.1 rad 的疑似相机/真值不同步帧，
-  并剔除 |surge_velocity|>1.0 m/s 的速度异常帧。
-- ROS 契约和构建：UEEntity/UEEntityArray/TaskFeatures 增加来源、bbox、置信度、
-  velocity_valid 和任务元数据；全量 Python 单测 **201 passed、5 skipped**；接口、
-  VLA Python 包和 UE bridge 已在本机构建。
-- Jetson 已以当前源码重建 9 个 ROS 包（Humble，`colcon build` 全部 finished）；
-  无 UE bridge 的启动烟测通过，视觉编码器使用 CUDA，在线视觉节点只使用
-  `/vla/tracked_entities`。当前运行时模型 SHA-256 已核对。
-- 自动采集链路已验证：先启动 Jetson，再由 `collect.ps1` 启动 UE5、等待连接、录制、
-  打包并下载；当前已取得完整计划的 30 个真实 UE5 专家 Run（3000 帧），每个具体包
-  均为 `quality_passed=true`、4/4 Entities 可见。部分包有 UE 传输丢帧 warning（不把
-  warning 伪报成零间隙；时序跟踪按 Frame_Index/stamp_us 处理 gap）；新 Run 的近距离/
-  速度门通过后有 2740 帧可用于图像感知训练。
+项目的可演示目标是：在 UE5 的 S2 正弦场景中，被控 ASV 从相机图像和任务文本出发，
+在线识别红色目标船，连续保持约 3 m 间距；所有有效运动都由 Jetson 的在线链路产生，
+而不是读取 UE 真值或并行的专家控制器。
 
-## 当前诚实边界
+当前结论：**近距离 S2 真实在线演示链已经通过，两次独立运行均实际驱动 UE5 中的
+ASV 运动。** 这不是“所有距离、布局和随机种子都已泛化”的结论；正式演示应使用目标
+初始距离不超过约 5 m 的 L7/L7B 近距离布局。
 
-- 当前 image_entity_ridge_v2 是轻量监督模型，不是通用检测器。数据已从旧的 14 个
-  run 扩充到 44 个 run；新采集的 30 个 run 经过 5 m/姿态/速度门后有 2740 帧，跨
-  Run 验证和正式 acceptance gate 已通过；报告中 `acceptance_ready=true`。这代表
-  当前 UE5 场景分布内的图像感知验收，不等同于开放世界检测器。
-- 当前重训报告为 2116 train/641 validation 帧，验证可见性 98.87%、投影可见目标几何
-  RMSE 0.325 m；逐 Run 最差可见性 96.5%、几何 RMSE 0.462 m。正式 gate 已写入报告，
-  Jetson 同步、CUDA 视觉启动和真实在线 JPEG smoke 已通过；这只是感知模型 gate。
-- 因此当前模型可以称为“场景内图像感知验收通过”，但不能替代最终策略验收；在线
-  缺少模型、错帧或低置信度时必须停船。当前策略候选为
-  `current_policy_image_v8_seed17`（`policy_image_seed17.onnx`），导出 parity
-  `max_diff=0.00e+00, cosine=1.000000`，PC ONNX benchmark 为 5528.95 Hz
-  （p50 0.17 ms、p95 0.26 ms），但它只能标记为 **provisional_demo_only**。
-- 策略三 seed 验证门仍为 FAIL，不能称为最终训练完成：
+## 在线数据流（最终边界）
 
-  | seed | ADE (m) | FDE (m) | 主要失败 |
-  |---|---:|---:|---|
-  | 17 | 0.437 | 0.662 | stop F1=0.936、within 0.10m=0.897 |
-  | 23 | 0.675 | 1.100 | ADE/FDE improvement 与 stop gate |
-  | 42 | 0.745 | 1.213 | ADE/FDE improvement 与 stop gate |
+```text
+UE5 SceneCapture JPEG + task text + ego
+        ↓
+image_entity_perception（只看 JPEG；不订阅 /ue/entities）
+        ↓
+temporal_entity_tracker（跨帧计算速度）
+        ↓
+visual_encoder（MobileNet，CUDA） + task_entity_tensor + Qwen task embedding（CUDA）
+        ↓
+policy_sine_near_image_color_seed42.onnx（ONNX/CPU，输出 20×2 轨迹和 STOP）
+        ↓
+visual_standoff_guard（只使用图像/跟踪张量，限制首个 waypoint 到约 3 m）
+        ↓
+5 帧平滑 → safety_gate（唯一有效发布者，fail-closed）
+        ↓
+trajectory_controller → decision_setpoint_adapter
+        ↓
+UE5 C++ kinematic executor（8081）→ ASV 世界位置变化 → 下一帧 JPEG
+```
 
-  `summary.json` 的 `validation_gate_passed=false` 是最终策略状态；Jetson 上的
-  seed17 仅用于在线链路演示，不得用于宣称泛化通过。
-- 旧数据里存在相机画面与实体姿态交替的迹象；新采集必须先通过近距离和时序质量门，
-  再训练，不把 14 个旧 run 直接当成最终真值。
+`/ue/entities` 只进入录制器、离线监督和几何评估，不能进入在线策略。单帧图像不填写
+速度；速度来自 tracker 的相邻帧，并受 Run_Id、Scene_Seed、Frame_Index 和时间戳门控。
+专家轨迹可以用于训练标签和采集阶段，但最终在线演示没有专家 publisher，也没有 UE
+真值注入。
 
-## 实测在线闭环（2026-08-01）
+`visual_standoff_guard` 是透明的图像几何执行适配器：它不读取实体真值，不替代相机感知，
+也不是把专家轨迹接回在线链路；它只将策略的第一个位移点约束到图像跟踪得到的目标距离，
+避免小数据策略在动态水面上输出反向或过大的首步。策略仍负责有效位、STOP 和多模态
+输入一致性，安全门仍可拒绝整个决策。
 
-- 第一次自动 UE 运行暴露出确定性故障：图像模型对一个画面外预测调用投影时抛出
-  `TargetProjectionError`，感知节点退出，随后视觉编码器产生大量
-  `ENTITY_FRAME_TIMEOUT`。修复提交 `d51aab3` 将单目标越界降级为
-  `bbox_valid=false/visible=false`，整帧仍发布；新增回归测试覆盖该场景。
-- 修复后的第二次自动运行使用 `Scene_Seed=120102`、近距离 L1 场景：
-  `process has died=0`、`PERCEPTION_ERROR=0`、`ENTITY_FRAME_TIMEOUT=0`；
-  bridge 收到带 Run_ID/Scene_Seed/Source_Frame_Index 的运动点，策略曾产生有效
-  setpoint。UE 日志中 ASV 从 t=0 的 `(-10150,-10000)` 移到 t=3 的
-  `(-10384.678,-9970.687)`，随后安全门因 `CURVATURE_LIMIT`/`COLLISION_RISK`
-  进入 hold。这证明真实图片→时序实体→策略→安全门→运动执行链路已连通，**不等于
-  策略行为验收通过**。
+## 已完成且有证据
 
-## 下一步（按阻塞顺序）
+- 图像、任务、tracker、ego、策略、安全门、setpoint adapter、UE5 C++ executor 已接通。
+- `/task/text` 使用可靠 + transient-local QoS；Jetson 先 launch、UE5 后 Play 时，Qwen
+  和图像节点不会错过首条任务。
+- Qwen3-Embedding-0.6B 在 Jetson 上真实 CUDA 编码一次后释放权重；MobileNet 随后在
+  CUDA 上加载。策略 ONNX 保持 CPU 推理以避免 Orin 统一内存竞争，不是静默 CPU 降级。
+- 近距离 image-only cache：12 runs / 1200 frames / 104720 samples；cache 不含
+  `/ue/entities` 真值。当前图像校准模型为
+  `pc_datasets/models/image_entity_color_calibrated_v1.npz`。
+- 当前候选模型为
+  `pc_datasets/models/policy_sine_near_image_color_seed42.onnx`，Jetson 已部署同名文件。
+  该模型是三 seed 中唯一通过当前验证门的候选；seed17/23 结果保留但不加载。
+- 本地完整测试：`231 passed, 5 skipped`；`py_compile` 和 `git diff --check` 通过。Jetson 的
+  `asv_vla`/`asv_bringup` 已用当前源码重建。
 
-1. 【已完成】用 collect.launch.py max_target_distance_m:=5 自动采集 30 个新的近距离
-  run，并检查 JPEG、真值投影、ego yaw、速度和帧连续性；具体包已下载到
-  `../pc_datasets/incoming`，episode 已解压并核验到 canonical 数据集；原始中间包
-  已移入可恢复清理目录。
-2. 【已完成】用 v2 特征、相机投影可见性 mask 和明确阈值完成图像感知模型验收，重新运行：
+## S2 在线验收记录
 
-   PYTHONPATH=src/asv_vla python3 training/train_image_entity_perception.py
-     --episodes ../pc_datasets/extracted_sine/artifacts/day8_episode
-     --output models/image_entity_perception_v1.npz
-     --max-primary-distance-m 5 --max-abs-yaw-rad 0.1
-     --max-abs-surge-velocity-mps 1.0
+| 运行 | Jetson/UE 证据 | 结果 |
+|---|---|---|
+| `L7/S2/seed=230906`，Run_Id=`FEB0142041FF570A8149F9B6FD69B28C` | JPEG 感知第 2 帧得到红船 `(4.542, 2.436) m`；Qwen `LANGUAGE_READY_VALID`；策略 guard `STANDOFF_ADJUSTED`；UE `SCENE_EXEC_APPLY` 连续出现约 350 次 | 初始距离 5.094 m，最小 3.089 m，中位数 3.291 m，末端 3.461 m |
+| `L7/S2/seed=230902`，Run_Id=`B6AFBD864B4CE41482A7ECA28BB9E39E` | JPEG 感知第 2 帧得到红船 `(4.406, 2.181) m`；重连后收到有效 setpoint；UE `SCENE_EXEC_APPLY` 至少到 count=275 | 初始距离 4.943 m，最小 3.029 m，中位数 3.304 m，末端 3.140 m |
+| `L7/S2/seed=230907`，Run_Id=`75A78C924E8CA586E4B7808D071444D7` | 初始距离约 7.117 m；前 5 帧图像目标均不可见；没有有效 setpoint | 正确 fail-closed/hold。该 seed 超出当前近距离图像校准域，不算跟踪失败 |
 
-   报告已满足可见性、几何误差和逐 Run 阈值，`acceptance_ready=true`；Jetson 同步、
-   重建和真实 JPEG smoke 已通过。
-3. 【已完成，策略门 FAIL】正式 cache 已用 `image_entity_ridge_v2` 重新生成：
-  30 Runs/3000 帧/269380 samples，实体几何与 crop 来自 JPEG 图像模型，速度来自
-  与 Jetson 一致的 EMA tracker（`ttl_frames=2, ttl_sec=0.5, alpha=0.6, beta=0.85`），
-  ego 来自 UEASVState；每个 cache manifest 都固定模型权重和 tracker provenance。
-  `train_30_v8_image_only.yaml` 已完成三 seed 训练，保留失败报告与 seed17 候选；
-  不要覆盖候选模型或删除失败证据。
-4. 重新平衡近距离数据（红/蓝目标在相同 5 m 内的可见距离分布、相机视角和运动状态），
-   让 stop/10m 标签覆盖真实在线分布；然后只在独立 Run 分组上重建 image-only
-   cache、三 seed 重训、导出并重新执行 validation gate。
-5. 只有当策略 gate 通过后，重复至少 3 个不同 `Run_ID/Scene_Seed` 的 UE 在线运行，
-   统计有效策略点、hold/E-STOP、碰撞门拒绝和目标距离，再录制最终演示视频。当前
-   provisional demo 可用于展示模块数据流，不能替代这一步。
+前两次运行的运动来自在线 JPEG→感知→策略/guard→安全门→8081 setpoint 链；UE 日志中
+可见 `SCENE_EXEC_CLIENT_CONNECTED`、`SCENE_EXEC_APPLY` 和 ASV 世界位置连续变化。
+第三次是刻意保留的边界证据：看不清目标时系统不“猜”，而是停船。
+
+清理后回归运行（同一 `seed=230906`，Run_Id=`1C5612294974C8EA9402969B5991D79A`）
+再次通过：Jetson 日志显示图像第 2 帧 `(4.462, 2.400) m`、`POLICY_TRACE` 的
+`STANDOFF_ADJUSTED` 和带 `Scene_Seed=230906` 的 `DECISION_VALID` setpoint；UE
+日志从 t=0 的 ASV `(-10150,-10000)` 移动到 t=35 的 `(-7937.306,-10685.283)`，
+`SCENE_EXEC_APPLY` 至少到 count=339，红船末端距离约 3.369 m。
+
+## 当前唯一可录制的演示流程
+
+### 1. Jetson 先启动
+
+```bash
+cd ~/jetson_asv_ws
+source /opt/ros/humble/setup.bash
+source ~/microros_ws/install/setup.bash
+source install/setup.bash
+ros2 launch asv_bringup vla_closed_loop.launch.py \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.onnx \
+  perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
+  language_backend:=qwen \
+  language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
+  language_device:=cuda language_release_after_encode:=true \
+  language_staging_delay_sec:=30.0 \
+  execution_address:=192.168.137.1 execution_port:=8081
+```
+
+等待日志同时出现 `LANGUAGE_READY_VALID ... device=cuda` 和 `visual_encoder ... device=cuda`，
+再启动 UE5。不要同时启动 `collect.launch.py`、`expert_closed_loop.launch.py` 或其它
+会向同一控制 topic 发布的 launch。
+
+### 2. UE5 启动（项目文件必须是第一个参数）
+
+```powershell
+& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
+  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
+  -Slot=DEMO-S2-230906 -Layout=L7 -Motion=S2 -Seed=230906 `
+  -MaxRuntimeSeconds=35 -SceneExecPort=8081 -YawFixWholeRun `
+  -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+```
+
+要录制窗口可保留 `-windowed`；要做无界面验收可改成 `-RenderOffscreen -unattended`。
+目标初始距离必须保持在约 5 m 以内，否则系统按设计保持位置。
+
+## 后续 TODO（不阻塞当前演示）
+
+- [x] 近距离 S2 图像数据采集、image-only cache、三 seed 训练和 ONNX 导出。
+- [x] Jetson staged CUDA 启动、单一 publisher、QoS 启动时序和真实 8081 执行器验收。
+- [x] 两次未见 Run_Id/Scene_Seed 的近距离 S2 在线运行。
+- [ ] 如需论文级统计结论，再补充 L7/L7B × 红/蓝的至少 8 个新 seed，报告稳态距离、
+  选中颜色、safe-gate PASS/hold 比例；在此之前不要宣称“8-run 泛化通过”。
+- [ ] 如需超过约 5 m 的通用感知，替换当前 RGB 颜色校准器为真实检测器并重新采集、
+  分组训练和在线验收；不能放宽当前可见性门来掩盖 OOD。
+- [ ] 录制视频后保存 Jetson/UE 日志和本 TODO 版本，作为最终演示证据。
 
 ## 不允许回退
 
-- 在线策略、视觉编码器、任务张量和安全门不得订阅 /ue/entities。
-- 不得从单帧图像填写任何速度；不得以专家输出替代最终策略验收。
-- 不得把 valid=true 的安全停止当作有效动作；缺模态、错帧、低置信度一律
-  valid=false/hold。
+- 在线任何节点不得订阅 `/ue/entities`，不得把 UE BBox/速度或专家轨迹接入策略。
+- 不得从单帧图像直接输出速度；不得用 `valid=true` 的安全停止伪装成有效动作。
+- 不得并行启动多个 bridge、safety gate、trajectory controller 或专家 publisher。
+- CUDA/Qwen 失败、目标不可见、身份错帧、策略非有限或安全门拒绝时必须 hold/fail-closed。
 
-## 清理状态
+## 可恢复清理说明
 
-- 已确认无用的旧特征缓存、旧 checkpoint、重复监督数据、旧 tar 包和生成目录已移入
-  可恢复隔离目录 `/tmp/asv_vla_cleanup_20260801`；canonical 数据集、当前 image-only
-  cache、训练失败报告、候选 checkpoint 和 Qwen 训练模型保留。
-- Jetson 仅保留源码、`install/`、当前模型和运行时资源；本次 `build/`、`log/`、重复
-  测试副本及生成缓存已移入 Jetson 的 `/tmp/asv_vla_cleanup_20260801`。
+历史 checkpoint、旧 cache、旧诊断日志和 Jetson 同步前源码保存在
+`/tmp/asv_vla_cleanup_20260801` 或对应 archive 中，不能作为默认在线模型。当前默认
+运行时只使用上面列出的 image calibration、near-image policy 和 Qwen 模型。

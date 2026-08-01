@@ -1,0 +1,63 @@
+# Sine-formation (S2) image-only-cache training: moving red/blue pair,
+# selection task.  This variant keeps augmentation disabled because the
+# image-only cache may not retain entity colour metadata needed to regenerate
+# instruction swaps or mirrored labels safely.
+# Data: 14 runs (L6/L6B mirrored geometry, seeds 2101xx/2102xx), collected
+# with -YawFixWholeRun (no flip frames) and expert setpoint execution.
+schema_version: "train_v1"
+experiment_name: "sine_formation_image_v2"
+frozen_feature_git_sha: "2ea3f77c8cf7"
+seeds: [17, 23, 42]
+
+data:
+  expected_run_count: 14
+  frame_stride: 3
+  train_run_split: "train"
+  train_language_splits: ["train"]
+  validation_run_split: "validation"
+  validation_language_splits: ["validation"]
+  test_run_split: "test"
+  test_language_splits: ["test"]
+  one_synonym_per_frame_label_each_epoch: true
+  # Image-only feature caches do not carry the entity colour provenance
+  # required to safely regenerate paired expert labels.
+  augment: false
+  geometry_noise_std: 0.02
+  slot_dropout_prob: 0.1
+  mirror_prob: 0.0
+  instruction_swap_prob: 0.0
+
+training:
+  epochs: 80
+  minimum_epochs: 20
+  minimum_checkpoint_epoch: 10
+  early_stopping_patience: 15
+  batch_size: 63
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+  num_workers: 0
+  selection_metric: "ade_plus_half_fde"
+  selection_constraints:
+    minimum_stop_f1: 0.90
+    minimum_stop_within_0_10m_rate: 0.90
+
+loss:
+  waypoint: 1.0
+  endpoint: 0.5
+  stop: 1.0
+  smoothness: 0.05
+  pairwise: 0.15
+
+baselines:
+  entity_only_seed: 42
+
+acceptance:
+  minimum_ade_improvement_over_label_mean: 0.30
+  minimum_fde_improvement_over_label_mean: 0.30
+  minimum_stop_within_0_10m_rate: 0.95
+  # S2 has no flip frames; retain the conservative stop-quality gate while
+  # disabling augmentation-specific assumptions for this image-only cache.
+  minimum_stop_f1: 0.90
+  maximum_speed_violation_rate: 0.0
+  maximum_invalid_count: 0

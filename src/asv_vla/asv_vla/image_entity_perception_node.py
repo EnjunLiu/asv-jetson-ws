@@ -14,7 +14,12 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from std_msgs.msg import String
 
 from asv_jetson_interfaces.msg import CameraFrame, ModuleStatus, UEEntity, UEEntityArray
@@ -36,11 +41,42 @@ RELIABLE_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.RELIABLE,
 )
+TASK_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 SENSOR_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=2,
     reliability=ReliabilityPolicy.BEST_EFFORT,
 )
+
+PERCEPTION_TRACE_LIMIT = 5
+
+
+def _format_perception_trace(
+    *,
+    run_id: str,
+    frame_index: int,
+    sample_index: int,
+    model_version: str,
+    entity: object,
+) -> str:
+    """Format one bounded red-target diagnostic line without changing data."""
+
+    return (
+        "PERCEPTION_TRACE "
+        f"run_id={run_id} frame_index={int(frame_index)} "
+        f"sample={int(sample_index)}/{PERCEPTION_TRACE_LIMIT} "
+        f"model={model_version} target_red "
+        f"relative_x={float(getattr(entity, 'relative_x', float('nan'))):.6f} "
+        f"relative_y={float(getattr(entity, 'relative_y', float('nan'))):.6f} "
+        f"visible={bool(getattr(entity, 'visible', False))} "
+        f"confidence={float(getattr(entity, 'confidence', 0.0)):.6f} "
+        f"bbox_valid={bool(getattr(entity, 'bbox_valid', False))}"
+    )
 
 
 def _apply_prediction_projection(
@@ -94,7 +130,10 @@ class ImageEntityPerceptionNode(Node):
     def __init__(self) -> None:
         super().__init__("image_entity_perception")
         default_model = str(
-            Path.home() / "jetson_asv_ws" / "models" / "image_entity_perception_v1.npz"
+            Path.home()
+            / "jetson_asv_ws"
+            / "models"
+            / "image_entity_color_calibrated_v1.npz"
         )
         model_path = str(
             self.declare_parameter("model_path", default_model)
@@ -124,8 +163,10 @@ class ImageEntityPerceptionNode(Node):
             ModuleStatus, "/system/module_status", RELIABLE_QOS
         )
         self.create_subscription(CameraFrame, "/ue/camera_frame", self.on_frame, SENSOR_QOS)
-        self.create_subscription(String, "/task/text", self.on_task, RELIABLE_QOS)
+        self.create_subscription(String, "/task/text", self.on_task, TASK_QOS)
         self.task_text = ""
+        self._trace_run_id = ""
+        self._trace_count = 0
         self.model: ImageEntityModel | None = None
         self.detail = "loading image-only perception model"
         self.module_state = ModuleStatus.STARTING
@@ -163,6 +204,10 @@ class ImageEntityPerceptionNode(Node):
 
     def on_frame(self, frame: CameraFrame) -> None:
         message = self._new_array(frame)
+        run_id = str(frame.run_id)
+        if run_id != self._trace_run_id:
+            self._trace_run_id = run_id
+            self._trace_count = 0
         if self.model is None:
             message.detail = self.detail
             self.publisher.publish(message)
@@ -225,6 +270,30 @@ class ImageEntityPerceptionNode(Node):
             f"OK:image_only;entities={len(message.entities)};"
             f"model={self.model.model_version}"
         )
+        red_entity = next(
+            (
+                entity
+                for entity in message.entities
+                if str(entity.entity_id) == "target_red"
+            ),
+            None,
+        )
+        if (
+            message.valid
+            and red_entity is not None
+            and bool(red_entity.valid)
+            and self._trace_count < PERCEPTION_TRACE_LIMIT
+        ):
+            self._trace_count += 1
+            self.get_logger().info(
+                _format_perception_trace(
+                    run_id=run_id,
+                    frame_index=int(frame.frame_index),
+                    sample_index=self._trace_count,
+                    model_version=str(self.model.model_version),
+                    entity=red_entity,
+                )
+            )
         self.publisher.publish(message)
         self.input_ready = True
         self.output_valid = True

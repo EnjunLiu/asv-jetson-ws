@@ -1,11 +1,12 @@
 schema_version: 2
 
-# Runtime deployment manifest.  The 0.6B Qwen encoder is a PC-only training
-# dependency; Jetson receives its frozen 256-D outputs as small .npy files.
+# Runtime deployment manifest for the final S2 near-range image/color demo.
+# Artifact hashes are intentionally explicit: the binary files are deployed on
+# Jetson and are not checked into this source checkout.
 deployment:
   perception:
-    path: models/image_entity_perception_v1.npz
-    model_id: image_entity_ridge_v2
+    path: models/image_entity_color_calibrated_v1.npz
+    model_id: image_entity_color_calibrated_v1
     input: jpeg_image_only
     output: geometry_semantics_only
     velocity_output: false
@@ -15,28 +16,38 @@ deployment:
     max_abs_yaw_rad: 0.1
     max_abs_surge_velocity_mps: 1.0
     geometry_metric_mask: camera_projected_visibility_only
+    artifact_sha256: not_available_in_source_checkout
     acceptance_ready: true
+    validation_status: near_s2_color_calibration_ready;7m_ood_fail_closed
     acceptance_thresholds:
       min_visibility_accuracy: 0.95
       max_geometry_rmse_m: 0.5
       min_run_visibility_accuracy: 0.95
       max_run_geometry_rmse_m: 0.5
-    validation_report: models/image_entity_perception_v1.json
+    validation_report: models/image_entity_color_calibrated_v1.json
   policy:
-    path: models/policy_image_seed17.onnx
-    model_id: current_policy_image_v8_seed17
-    source_sha256: b62d667946d709d380f50485a625e9d3c489a7bdc52188892f5dd6d6cdca1e3f
+    path: models/policy_sine_near_image_color_seed42.onnx
+    model_id: policy_sine_near_image_color_seed42
+    source_sha256: not_available_in_source_checkout
     provider: CPUExecutionProvider
     input_contract: frozen_multimodal_481k_v1
-    validation_gate_passed: false
-    deployment_status: provisional_demo_only
-    validation_report: pc_datasets/checkpoints/current_policy_image_v8/summary.json
+    validation_gate_passed: true
+    validation_status: seed42_gate_passed;two_s2_online_runs_verified
+    validation_metrics: seed=230906_and_230902;standoff_target=3m
+    deployment_status: final_near_s2_demo
+    validation_report: pc_datasets/checkpoints/policy_sine_near_image_color_seed42/summary.json
   language:
-    mode: precomputed_embedding
+    mode: online_qwen_cuda_staged
     feature_dim: 256
     default_embedding: models/demo_instruction_embedding.npy
     follow_blue_embedding: models/follow_blue_embedding.npy
-    online_qwen_runtime: false
+    model_id: Qwen3-Embedding-0.6B
+    model_path: models/Qwen3-Embedding-0.6B
+    device: cuda
+    release_model_after_encode: true
+    staging_delay_sec: 30.0
+    online_qwen_runtime: true
+    validation_status: cuda_encode_release_and_online_ready_verified
   visual:
     model_id: torchvision:mobilenet_v3_small:IMAGENET1K_V1
     feature_dim: 576

@@ -175,6 +175,66 @@ def test_repository_extended_plan_inherits_twelve_and_reaches_thirty() -> None:
     assert counts == {"L1": 8, "L2": 8, "L3": 7, "L4": 7}
 
 
+def test_near_range_sine_plan_has_mirrored_l7_slots() -> None:
+    plan_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "sine_near_collection_plan_v1.json"
+    )
+    plan = load_plan(plan_path)
+
+    assert plan["minimum_complete_runs"] == 12
+    assert len(plan["slots"]) == 12
+    assert {slot["layout_id"] for slot in plan["slots"]} == {"L7", "L7B"}
+    assert {slot["motion_state"] for slot in plan["slots"]} == {"S2"}
+    assert {slot["scene_seed"] for slot in plan["slots"]} == set(
+        range(220701, 220707)
+    ) | set(range(220801, 220807))
+    for slot in plan["slots"]:
+        expected = (
+            ["left_of", "target_red", "target_blue"]
+            if slot["layout_id"] == "L7"
+            else ["left_of", "target_blue", "target_red"]
+        )
+        assert expected in slot["relations"]
+        assert ["left_of", "target_left", "target_right"] in slot["relations"]
+
+
+def test_remote_collection_forwards_execution_endpoint() -> None:
+    repository = Path(__file__).parents[2]
+    remote_collect = (
+        repository / "scripts" / "remote_collect.sh"
+    ).read_text(encoding="utf-8")
+    ue_collect = (
+        repository / "tools" / "ue5" / "collect.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'execution_address:="$execution_address"' in remote_collect
+    assert 'execution_port:="$execution_port"' in remote_collect
+    assert 'max_speed_mps:="$max_speed_mps"' in remote_collect
+    assert "execution_address=${EXECUTION_ADDRESS:-}" in remote_collect
+    assert "execution_port=${EXECUTION_PORT:-8081}" in remote_collect
+    assert "max_speed_mps=${MAX_SPEED_MPS:-0.8}" in remote_collect
+    assert '[string]$ExecutionAddress = "192.168.137.1"' in ue_collect
+    assert "[int]$ExecutionPort = 8081" in ue_collect
+    assert "EXECUTION_ADDRESS='$ExecutionAddress'" in ue_collect
+    assert "EXECUTION_PORT='$ExecutionPort'" in ue_collect
+    assert "[double]$MaxSpeedMps = 0.8" in ue_collect
+    assert "MAX_SPEED_MPS='$MaxSpeedMps'" in ue_collect
+    assert '"-SceneExecPort=$ExecutionPort"' in ue_collect
+
+    completion = remote_collect.split(
+        'if [[ $completion_seen == true ]] && kill -0 "$launch_pid"',
+        1,
+    )[1]
+    assert "recorder_wait_deadline=$((SECONDS + 8))" in completion
+    assert 'while kill -0 "$recorder_pid"' in completion
+    wait_index = completion.index("recorder_wait_deadline")
+    term_index = completion.index('kill -TERM "$recorder_pid"')
+    assert wait_index < term_index
+    assert 'if kill -0 "$recorder_pid" 2>/dev/null; then' in completion
+
+
 def test_color_swap_plan_holds_ego_with_stop_rollout() -> None:
     plan_path = (
         Path(__file__).parents[1]

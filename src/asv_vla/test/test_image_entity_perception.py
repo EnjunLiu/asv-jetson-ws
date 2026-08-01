@@ -1,15 +1,19 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
+from PIL import ImageDraw
 
 from asv_vla.image_entity_perception import (
     BASE_FEATURE_DIM,
+    COLOR_CALIBRATION_WIDTH,
     ENTITY_COUNT,
     FEATURE_DIM,
     LEGACY_MODEL_VERSION,
     OUTPUT_DIM,
     ImageEntityModel,
+    calibrated_red_geometry,
     extract_image_features,
     save_model,
 )
@@ -66,3 +70,33 @@ def test_model_round_trip_and_no_velocity_output(tmp_path: Path) -> None:
         ).all()
         for prediction in predictions
     )
+
+
+def test_calibrated_red_geometry_uses_image_centroid_sign_only() -> None:
+    left = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(left).rectangle((180, 300, 300, 390), fill=(220, 20, 20))
+    right = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(right).rectangle((980, 300, 1100, 390), fill=(220, 20, 20))
+
+    left_valid, left_x, left_y, left_area, left_centroid = calibrated_red_geometry(left)
+    right_valid, right_x, right_y, right_area, right_centroid = calibrated_red_geometry(right)
+
+    assert left_valid and right_valid
+    assert left_area == pytest.approx(right_area, rel=0.05)
+    assert left_x == pytest.approx(right_x, rel=0.05)
+    assert left_y > 0.0
+    assert right_y < 0.0
+    assert left_centroid[0] < COLOR_CALIBRATION_WIDTH / 2.0
+    assert right_centroid[0] > COLOR_CALIBRATION_WIDTH / 2.0
+
+
+def test_calibrated_red_geometry_fails_closed_without_red_component() -> None:
+    valid, relative_x, relative_y, area, centroid = calibrated_red_geometry(
+        Image.new("RGB", (1280, 720), (20, 30, 40))
+    )
+    assert not valid
+    assert np.isnan(relative_x)
+    assert np.isnan(relative_y)
+    assert area == 0.0
+    assert np.isnan(centroid[0])
+    assert np.isnan(centroid[1])

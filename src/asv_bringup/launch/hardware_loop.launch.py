@@ -40,7 +40,10 @@ def generate_launch_description():
             DeclareLaunchArgument("start_ue_bridge", default_value="true"),
             DeclareLaunchArgument(
                 "model_path",
-                default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
+                default_value=(
+                    "/home/jetson/jetson_asv_ws/models/"
+                    "policy_sine_near_image_color_seed42.onnx"
+                ),
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("use_fake_esp32", default_value="true"),

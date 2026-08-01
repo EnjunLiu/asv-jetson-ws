@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import importlib
+from pathlib import Path
 import sys
 import types
 
@@ -59,6 +60,9 @@ def _load_node_module():
 
     rclpy_node.Node = FakeNode
     rclpy_qos.HistoryPolicy = types.SimpleNamespace(KEEP_LAST="keep_last")
+    rclpy_qos.DurabilityPolicy = types.SimpleNamespace(
+        TRANSIENT_LOCAL="transient_local"
+    )
     rclpy_qos.QoSProfile = FakeQoS
     rclpy_qos.ReliabilityPolicy = types.SimpleNamespace(
         RELIABLE="reliable", BEST_EFFORT="best_effort"
@@ -132,6 +136,12 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     node.output_valid = False
     node.module_state = module.ModuleStatus.STARTING
     node.detail = ""
+    node._trace_run_id = ""
+    node._trace_count = 0
+    node.trace_logs = []
+    node.get_logger = lambda: types.SimpleNamespace(
+        info=node.trace_logs.append
+    )
 
     frame = types.SimpleNamespace(
         stamp_us=100,
@@ -154,3 +164,49 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     assert hidden.bbox_valid is True
     assert hidden.visible is False
     assert node.output_valid is True
+    assert len(node.trace_logs) == 1
+    assert "PERCEPTION_TRACE" in node.trace_logs[0]
+    assert "relative_x=5.000000" in node.trace_logs[0]
+    assert "relative_y=100.000000" in node.trace_logs[0]
+    assert "visible=False" in node.trace_logs[0]
+    assert "bbox_valid=False" in node.trace_logs[0]
+
+
+def test_perception_trace_formatter_keeps_required_red_diagnostics():
+    module = _load_node_module()
+    entity = types.SimpleNamespace(
+        relative_x=3.25,
+        relative_y=-0.75,
+        visible=True,
+        confidence=0.91,
+        bbox_valid=True,
+    )
+    trace = module._format_perception_trace(
+        run_id="RUN-TRACE",
+        frame_index=7,
+        sample_index=2,
+        model_version="image_entity_ridge_v2",
+        entity=entity,
+    )
+    assert trace.startswith("PERCEPTION_TRACE ")
+    for token in (
+        "run_id=RUN-TRACE",
+        "frame_index=7",
+        "model=image_entity_ridge_v2",
+        "relative_x=3.250000",
+        "relative_y=-0.750000",
+        "visible=True",
+        "confidence=0.910000",
+        "bbox_valid=True",
+    ):
+        assert token in trace
+
+
+def test_task_text_subscription_uses_transient_local_qos():
+    node_source = (
+        Path(__file__).resolve().parents[1]
+        / "asv_vla"
+        / "image_entity_perception_node.py"
+    ).read_text(encoding="utf-8")
+    assert "DurabilityPolicy.TRANSIENT_LOCAL" in node_source
+    assert 'String, "/task/text", self.on_task, TASK_QOS' in node_source

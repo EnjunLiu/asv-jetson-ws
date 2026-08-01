@@ -111,6 +111,28 @@ bool MakeLayout(const FString& LayoutId, TMap<FName, FVector>& OutLocations)
         OutLocations.Add(TEXT("target_right"), FVector(3500.0, 800.0, 0.0));
         return true;
     }
+    if (LayoutId == TEXT("L7"))
+    {
+        // Final S2 near-range layout: red and blue start 4.5 m ahead with
+        // +/-100 cm lateral offsets. White distractors sit 7 m ahead with
+        // +/-350 cm lateral offsets, outside the direct target center while
+        // remaining inside the camera FOV.
+        OutLocations.Add(TEXT("target_red"), FVector(450.0, -100.0, 0.0));
+        OutLocations.Add(TEXT("target_blue"), FVector(450.0, 100.0, 0.0));
+        OutLocations.Add(TEXT("target_left"), FVector(700.0, -350.0, 0.0));
+        OutLocations.Add(TEXT("target_right"), FVector(700.0, 350.0, 0.0));
+        return true;
+    }
+    if (LayoutId == TEXT("L7B"))
+    {
+        // Mirror of the final S2 near-range layout: swap red and blue while
+        // retaining the same white distractor positions.
+        OutLocations.Add(TEXT("target_red"), FVector(450.0, 100.0, 0.0));
+        OutLocations.Add(TEXT("target_blue"), FVector(450.0, -100.0, 0.0));
+        OutLocations.Add(TEXT("target_left"), FVector(700.0, -350.0, 0.0));
+        OutLocations.Add(TEXT("target_right"), FVector(700.0, 350.0, 0.0));
+        return true;
+    }
     return false;
 }
 
@@ -153,13 +175,13 @@ TMap<FName, FSceneSineParams> MakeSineParams(
     const double Direction = (Seed % 2 == 0) ? 1.0 : -1.0;
     const double PhaseRad =
         Direction * (double)(Seed % 360) * PI / 180.0;
-    // The red/blue pair rides the sine on opposite sides of the center line
-    // (6 m separation).  Each boat swings with half the peak amplitude so
-    // the formation's total lateral extent stays within the configured
-    // peak.  The white boats advance straight ahead as distractors (zero
-    // lateral amplitude).  Layout L6 puts red left of blue; the mirrored
-    // L6B swaps the lateral offsets so the sine swings match the layout.
-    const bool RedOnLeft = (LayoutId == TEXT("L6"));
+    // The red/blue pair rides the sine on opposite sides of the center line.
+    // Each boat swings with half the peak amplitude so the formation's total
+    // lateral extent stays within the configured peak. The white boats
+    // advance straight ahead as distractors (zero lateral amplitude). L6/L7
+    // put red left of blue; mirrored L6B/L7B swap the sine offsets.
+    const bool RedOnLeft =
+        LayoutId == TEXT("L6") || LayoutId == TEXT("L7");
     FSceneSineParams Red;
     Red.ForwardSpeedCmPerSec = ForwardSpeedCmPerSec;
     Red.LateralOffsetCm = RedOnLeft ? -300.0 : 300.0;

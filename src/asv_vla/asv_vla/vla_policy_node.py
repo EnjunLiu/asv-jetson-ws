@@ -16,7 +16,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 import math
 import time
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import rclpy
@@ -32,6 +32,7 @@ from asv_jetson_interfaces.msg import (
 
 from .ego_features import normalize_ego_message
 from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
+from .visual_standoff_guard import apply_standoff_guard
 
 POLICY_MODEL_VERSION = "vla_onnx_cpu_v1"
 
@@ -55,6 +56,15 @@ SYNC_CACHE_TTL_SEC = 5.0
 # synchronized stream has actually been quiet for this interval.
 SYNC_FAIL_PUBLISH_PERIOD_SEC = 1.0
 
+# Online policy output shaping.  The first trajectory point remains the only
+# command consumed by trajectory_controller; this only makes the full
+# cumulative horizon deterministic and curvature-safe before the gate.
+POLICY_SMOOTHING_WINDOW = 5
+POLICY_MAX_STEP_M = 0.3
+# Keep startup diagnostics useful without turning a high-rate policy stream
+# into an unbounded log.  The trace is intentionally independent of control.
+POLICY_TRACE_LIMIT = 5
+
 LANG_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.RELIABLE,
@@ -69,6 +79,62 @@ FrameKey = tuple[str, int, int]
 class _SyncEntry:
     message: Any
     received_at: float
+
+
+def smooth_policy_trajectory(
+    trajectory: Sequence[float] | np.ndarray,
+    *,
+    safe_stop: bool = False,
+    valid: bool = True,
+    max_step_m: float = POLICY_MAX_STEP_M,
+    horizon: int = HORIZON,
+) -> tuple[float, ...] | None:
+    """Shape a finite cumulative policy trajectory into a straight horizon.
+
+    The first cumulative waypoint is the policy's immediate intent and is
+    retained as the per-step increment.  It is clipped to ``max_step_m`` and
+    repeated for the horizon, so the first command is not diluted by dividing
+    a distant endpoint by 20.  STOP, invalid, malformed, or non-finite inputs
+    return ``None`` so the caller can preserve its fail-closed path.
+    """
+
+    if safe_stop or not valid:
+        return None
+    if int(horizon) <= 0 or not math.isfinite(float(max_step_m)):
+        return None
+    if float(max_step_m) < 0.0:
+        return None
+    try:
+        values = np.asarray(trajectory, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    expected = int(horizon) * ACTION_DIM
+    if values.size != expected or not np.all(np.isfinite(values)):
+        return None
+    points = values.reshape(int(horizon), ACTION_DIM)
+    first_step = np.asarray(points[0], dtype=np.float64)
+    first_step_norm = float(np.linalg.norm(first_step))
+    if not math.isfinite(first_step_norm):
+        return None
+    # Keep the total displacement below 10 m even if a caller supplies an
+    # unusually large parameter; the normal default remains 0.3 m per step.
+    step_limit = min(float(max_step_m), (10.0 - 1.0e-6) / int(horizon))
+    if first_step_norm > step_limit and first_step_norm > 0.0:
+        first_step *= step_limit / first_step_norm
+    fractions = np.arange(1, int(horizon) + 1, dtype=np.float64)
+    shaped = fractions[:, None] * first_step[None, :]
+    if not np.all(np.isfinite(shaped)):
+        return None
+    step_norms = np.linalg.norm(
+        np.diff(
+            np.vstack((np.zeros((1, ACTION_DIM)), shaped)),
+            axis=0,
+        ),
+        axis=1,
+    )
+    if np.any(step_norms > step_limit + 1.0e-9):
+        return None
+    return tuple(float(value) for value in shaped.reshape(-1))
 
 
 class FrameSyncCache:
@@ -333,13 +399,25 @@ class VLAPolicyNode(Node):
             self.get_logger().warn("no ONNX model — publishing safe stop only")
 
         self._frame_seq = 0
-        # Temporal smoothing: the raw policy output oscillates frame to
-        # frame (the model is sharply sensitive to small camera changes);
-        # the executed trajectory is the mean of the last 5 valid raw
-        # outputs.  A STOP prediction clears the window and is published
-        # as-is (fail-closed priority).
-        self._smooth_window = 5
-        self._recent_trajectories: deque[np.ndarray] = deque(maxlen=5)
+        self._policy_trace_count = 0
+        # Average a bounded number of valid raw intents before deterministic
+        # line shaping.  STOP and invalid inputs always clear this window.
+        self._smooth_window = max(
+            1,
+            int(
+                self.declare_parameter(
+                    "smoothing_window", POLICY_SMOOTHING_WINDOW
+                ).get_parameter_value().integer_value
+            ),
+        )
+        self._smooth_max_step_m = float(
+            self.declare_parameter(
+                "smoothing_max_step_m", POLICY_MAX_STEP_M
+            ).get_parameter_value().double_value
+        )
+        self._recent_trajectories: deque[np.ndarray] = deque(
+            maxlen=self._smooth_window
+        )
 
     def _load_session(self, path: str) -> Any:
         import onnxruntime as ort
@@ -348,6 +426,35 @@ class VLAPolicyNode(Node):
         options.intra_op_num_threads = 2
         providers = ["CPUExecutionProvider"]
         return ort.InferenceSession(path, sess_options=options, providers=providers)
+
+    def _trace_policy_decision(
+        self,
+        ent: TaskFeatures,
+        *,
+        policy_valid: bool,
+        stop: bool,
+        lang_valid: bool,
+        vis_valid: bool,
+        ent_valid: bool,
+        ego_valid: bool,
+        guard_result: str,
+        guard_reason: str,
+    ) -> None:
+        """Emit a bounded startup trace of policy and modality validity."""
+
+        if self._policy_trace_count >= POLICY_TRACE_LIMIT:
+            return
+        self._policy_trace_count += 1
+        self.get_logger().info(
+            "POLICY_TRACE "
+            f"sample={self._policy_trace_count}/{POLICY_TRACE_LIMIT} "
+            f"run_id={ent.run_id} scene_seed={int(ent.scene_seed)} "
+            f"frame_index={int(ent.frame_index)} "
+            f"policy_valid={bool(policy_valid)} stop={bool(stop)} "
+            f"lang_valid={bool(lang_valid)} vis_valid={bool(vis_valid)} "
+            f"ent_valid={bool(ent_valid)} ego_valid={bool(ego_valid)} "
+            f"guard_result={guard_result} guard_reason={guard_reason}"
+        )
 
     def _on_language(self, msg: TaskEmbedding) -> None:
         self._language = msg
@@ -490,20 +597,47 @@ class VLAPolicyNode(Node):
         msg = self._new_output(ent)
 
         if self._session is None:
+            _, ego_valid = normalize_ego_message(ego_msg)
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
             msg.safe_stop = True
             msg.valid = True
             msg.reason = "NO_MODEL_LOADED"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=False,
+                stop=True,
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="skipped",
+                guard_reason="NO_MODEL_LOADED",
+            )
             self._pub.publish(msg)
             return
 
+        ego_valid = False
         try:
             inputs = self._build_inputs(lang, vis, ent, ego_msg)
+            ego_valid = bool(
+                np.asarray(inputs.get("ego_valid", [False])).reshape(-1)[0]
+            )
         except (ValueError, IndexError) as exc:
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
             msg.safe_stop = True
             msg.valid = False
             msg.reason = f"INPUT_ERROR:{exc}"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=False,
+                stop=True,
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="skipped",
+                guard_reason="INPUT_ERROR",
+            )
             self._pub.publish(msg)
             return
 
@@ -515,12 +649,47 @@ class VLAPolicyNode(Node):
             msg.safe_stop = True
             msg.valid = False
             msg.reason = f"INFERENCE_ERROR:{exc}"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=False,
+                stop=True,
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="skipped",
+                guard_reason="INFERENCE_ERROR",
+            )
             self._pub.publish(msg)
             return
 
         traj = np.asarray(traj, dtype=np.float32).reshape(-1)
         stop = float(np.asarray(stop_logit).reshape(-1)[0])
         valid = bool(np.asarray(valid_mask).reshape(-1)[0])
+
+        if (
+            traj.size != HORIZON * ACTION_DIM
+            or not np.all(np.isfinite(traj))
+        ):
+            self._recent_trajectories.clear()
+            msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
+            msg.safe_stop = True
+            msg.valid = False
+            msg.reason = "POLICY_NONFINITE"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=bool(valid),
+                stop=bool(stop > 0.0),
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="skipped",
+                guard_reason="POLICY_NONFINITE",
+            )
+            self._pub.publish(msg)
+            self._frame_seq += 1
+            return
 
         safe_stop = stop > 0.0
         if safe_stop or not valid:
@@ -529,9 +698,43 @@ class VLAPolicyNode(Node):
             msg.safe_stop = True
             msg.valid = bool(valid and lang.valid and vis.valid and ent.valid)
             msg.reason = "POLICY_STOP" if safe_stop else "POLICY_INFERRED"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=bool(valid),
+                stop=bool(safe_stop),
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="skipped",
+                guard_reason="POLICY_STOP" if safe_stop else "POLICY_INVALID",
+            )
             self._pub.publish(msg)
             self._frame_seq += 1
             return
+
+        guarded_traj, guard_applied = apply_standoff_guard(traj, ent)
+        if guarded_traj is None:
+            self._recent_trajectories.clear()
+            msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
+            msg.safe_stop = True
+            msg.valid = False
+            msg.reason = "VISUAL_TARGET_MISSING"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=bool(valid),
+                stop=False,
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="blocked",
+                guard_reason="VISUAL_TARGET_MISSING",
+            )
+            self._pub.publish(msg)
+            self._frame_seq += 1
+            return
+        traj = np.asarray(guarded_traj, dtype=np.float32)
 
         self._recent_trajectories.append(traj)
         if len(self._recent_trajectories) > 1:
@@ -539,10 +742,48 @@ class VLAPolicyNode(Node):
                 np.stack(list(self._recent_trajectories)), axis=0
             )
 
-        msg.delta_p_xy = [float(v) for v in traj[: HORIZON * ACTION_DIM]]
+        shaped = smooth_policy_trajectory(
+            traj,
+            valid=valid,
+            max_step_m=self._smooth_max_step_m,
+            horizon=HORIZON,
+        )
+        if shaped is None:
+            self._recent_trajectories.clear()
+            msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
+            msg.safe_stop = True
+            msg.valid = False
+            msg.reason = "POLICY_NONFINITE"
+            self._trace_policy_decision(
+                ent,
+                policy_valid=bool(valid),
+                stop=False,
+                lang_valid=bool(lang.valid),
+                vis_valid=bool(vis.valid),
+                ent_valid=bool(ent.valid),
+                ego_valid=bool(ego_valid),
+                guard_result="applied" if guard_applied else "not_applied",
+                guard_reason="POLICY_NONFINITE_AFTER_GUARD",
+            )
+            self._pub.publish(msg)
+            self._frame_seq += 1
+            return
+
+        msg.delta_p_xy = list(shaped)
         msg.safe_stop = False
         msg.valid = bool(valid and lang.valid and vis.valid and ent.valid)
-        msg.reason = "POLICY_INFERRED"
+        msg.reason = "POLICY_INFERRED_SMOOTHED"
+        self._trace_policy_decision(
+            ent,
+            policy_valid=bool(valid),
+            stop=False,
+            lang_valid=bool(lang.valid),
+            vis_valid=bool(vis.valid),
+            ent_valid=bool(ent.valid),
+            ego_valid=bool(ego_valid),
+            guard_result="applied" if guard_applied else "not_applied",
+            guard_reason="STANDOFF_ADJUSTED" if guard_applied else "NOT_FOLLOW",
+        )
 
         self._pub.publish(msg)
         self._frame_seq += 1

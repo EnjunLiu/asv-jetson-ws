@@ -12,6 +12,9 @@ motion_state=$3
 scene_seed=$4
 collection_plan=${5:-training/config/collection_plan_v1.json}
 rollout_action=${6:-follow}
+execution_address=${EXECUTION_ADDRESS:-}
+execution_port=${EXECUTION_PORT:-8081}
+max_speed_mps=${MAX_SPEED_MPS:-0.8}
 
 [[ $slot_id =~ ^L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid slot_id=$slot_id" >&2
@@ -87,6 +90,9 @@ setsid env PYTHONUNBUFFERED=1 ros2 launch asv_bringup collect.launch.py \
   action:="$rollout_action" \
   target_attribute:="$rollout_target_attribute" \
   distance_bucket:="$rollout_distance_bucket" \
+  execution_address:="$execution_address" \
+  execution_port:="$execution_port" \
+  max_speed_mps:="$max_speed_mps" \
   >"$launch_log" 2>&1 &
 launch_pid=$!
 
@@ -128,7 +134,14 @@ if [[ $completion_seen == true ]] && kill -0 "$launch_pid" 2>/dev/null; then
     pgrep -P "$launch_pid" -f "record_episode" | head -n 1 || true
   )
   if [[ -n $recorder_pid ]]; then
-    kill -TERM "$recorder_pid" 2>/dev/null || true
+    recorder_wait_deadline=$((SECONDS + 8))
+    while kill -0 "$recorder_pid" 2>/dev/null \
+      && (( SECONDS < recorder_wait_deadline )); do
+      sleep 0.2
+    done
+    if kill -0 "$recorder_pid" 2>/dev/null; then
+      kill -TERM "$recorder_pid" 2>/dev/null || true
+    fi
   fi
 
   shutdown_deadline=$((SECONDS + 10))
