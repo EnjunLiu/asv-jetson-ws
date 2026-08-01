@@ -137,6 +137,29 @@
         "visible": {"type": "boolean"},
         "relative_position_m": {"$ref": "#/$defs/vector3"},
         "relative_velocity_mps": {"$ref": "#/$defs/vector3"},
+        "source": {
+          "type": "string",
+          "enum": ["ue_truth", "image_perception", "temporal_tracker", ""]
+        },
+        "bbox_px": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "prefixItems": [
+                {"type": "number"},
+                {"type": "number"},
+                {"type": "number"},
+                {"type": "number"}
+              ],
+              "items": false,
+              "minItems": 4,
+              "maxItems": 4
+            }
+          ]
+        },
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "velocity_valid": {"type": "boolean"},
         "valid": {"const": true}
       }
     },

@@ -72,6 +72,8 @@ def generate_launch_description():
                 name="visual_encoder",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/ue/entities",
+                    "allow_truth_entities": True,
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,
@@ -85,6 +87,8 @@ def generate_launch_description():
                 name="task_entity_tensor",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/ue/entities",
+                    "allow_truth_entities": True,
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,
@@ -117,6 +121,8 @@ def generate_launch_description():
                 name="safety_gate",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/ue/entities",
+                    "allow_truth_entities": True,
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,

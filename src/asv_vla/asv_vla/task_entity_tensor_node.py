@@ -60,6 +60,16 @@ class TaskEntityTensorNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.entities_topic = str(
+            self.declare_parameter("entities_topic", "/vla/tracked_entities")
+            .get_parameter_value()
+            .string_value
+        )
+        self.allow_truth_entities = bool(
+            self.declare_parameter("allow_truth_entities", False)
+            .get_parameter_value()
+            .bool_value
+        )
         if self.max_entities != MAX_ENTITIES:
             raise ValueError(
                 f"max_entities must remain fixed at {MAX_ENTITIES}"
@@ -76,7 +86,7 @@ class TaskEntityTensorNode(Node):
             ModuleStatus, "/system/module_status", RELIABLE_QOS
         )
         self.subscription = self.create_subscription(
-            UEEntityArray, "/ue/entities", self.on_entities, RELIABLE_QOS
+            UEEntityArray, self.entities_topic, self.on_entities, RELIABLE_QOS
         )
         self.create_timer(1.0, self.publish_status)
 
@@ -84,7 +94,7 @@ class TaskEntityTensorNode(Node):
         self.input_ready = False
         self.output_valid = False
         self.detail = (
-            f"waiting for /ue/entities; backend={BACKEND_ID} "
+            f"waiting for {self.entities_topic}; backend={BACKEND_ID} "
             f"shape={self.max_entities}x{FEATURE_DIM}"
         )
 
@@ -110,6 +120,8 @@ class TaskEntityTensorNode(Node):
         message.features = [0.0] * (self.max_entities * FEATURE_DIM)
         message.mask = [False] * self.max_entities
         message.valid = False
+        message.instruction_id = str(source.instruction_id)
+        message.instruction = str(source.instruction)
         message.detail = "UNINITIALIZED"
         return message
 
@@ -130,6 +142,16 @@ class TaskEntityTensorNode(Node):
         self.get_logger().warning(detail)
 
     def on_entities(self, source: UEEntityArray) -> None:
+        if (
+            not self.allow_truth_entities
+            and str(source.source) not in {"image_perception", "temporal_tracker"}
+        ):
+            self._publish_invalid(
+                source,
+                f"UNTRUSTED_ENTITY_SOURCE:{source.source!r}",
+                input_ready=False,
+            )
+            return
         if not source.valid:
             self._publish_invalid(
                 source,

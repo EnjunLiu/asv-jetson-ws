@@ -22,6 +22,10 @@ def generate_launch_description():
     motion_state = LaunchConfiguration("motion_state")
     scene_seed = LaunchConfiguration("scene_seed")
     max_frames = LaunchConfiguration("max_frames")
+    max_target_distance_m = LaunchConfiguration("max_target_distance_m")
+    max_abs_surge_velocity_mps = LaunchConfiguration(
+        "max_abs_surge_velocity_mps"
+    )
     task_text = LaunchConfiguration("task_text")
     action = LaunchConfiguration("action")
     target_attribute = LaunchConfiguration("target_attribute")
@@ -43,6 +47,12 @@ def generate_launch_description():
             "output_root": ParameterValue(output_root, value_type=str),
             "task_text": ParameterValue(task_text, value_type=str),
             "max_frames": ParameterValue(max_frames, value_type=int),
+            "max_target_distance_m": ParameterValue(
+                max_target_distance_m, value_type=float
+            ),
+            "max_abs_surge_velocity_mps": ParameterValue(
+                max_abs_surge_velocity_mps, value_type=float
+            ),
             "exit_on_complete": True,
             "execution_mode": "ue5_kinematic_expert_v1",
             "collection_slot": ParameterValue(slot_id, value_type=str),
@@ -84,6 +94,10 @@ def generate_launch_description():
         DeclareLaunchArgument("motion_state", default_value="S0"),
         DeclareLaunchArgument("scene_seed"),
         DeclareLaunchArgument("max_frames", default_value="100"),
+        DeclareLaunchArgument("max_target_distance_m", default_value="5.0"),
+        DeclareLaunchArgument(
+            "max_abs_surge_velocity_mps", default_value="1.0"
+        ),
         DeclareLaunchArgument(
             "task_text",
             default_value="counterbalanced multimodal scene",

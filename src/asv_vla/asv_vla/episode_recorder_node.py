@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import math
 import os
 from pathlib import Path
 import threading
@@ -102,6 +103,16 @@ class EpisodeRecorderNode(Node):
             .get_parameter_value()
             .integer_value
         )
+        self.max_target_distance_m = float(
+            self.declare_parameter("max_target_distance_m", 0.0)
+            .get_parameter_value()
+            .double_value
+        )
+        self.max_abs_surge_velocity_mps = float(
+            self.declare_parameter("max_abs_surge_velocity_mps", 0.0)
+            .get_parameter_value()
+            .double_value
+        )
         self.exit_on_complete = bool(
             self.declare_parameter("exit_on_complete", False)
             .get_parameter_value()
@@ -125,6 +136,12 @@ class EpisodeRecorderNode(Node):
             )
         if self.max_frames < 1:
             raise ValueError("max_frames must be positive")
+        if self.max_target_distance_m < 0.0:
+            raise ValueError("max_target_distance_m must be non-negative")
+        if self.max_abs_surge_velocity_mps < 0.0:
+            raise ValueError(
+                "max_abs_surge_velocity_mps must be non-negative"
+            )
         if self.cache_size < 4:
             raise ValueError("sync_cache_size must be at least 4")
         collection_values = (
@@ -266,6 +283,38 @@ class EpisodeRecorderNode(Node):
             )
             return
 
+        if self.max_target_distance_m > 0.0:
+            target_distances = [
+                math.hypot(float(entity.relative_x), float(entity.relative_y))
+                for entity in entities.entities
+                if bool(entity.valid)
+                and bool(entity.visible)
+                and bool(entity.is_target)
+            ]
+            if (
+                not target_distances
+                or min(target_distances) > self.max_target_distance_m
+            ):
+                self.get_logger().debug(
+                    f"EPISODE_SKIP_FAR_TARGET frame={camera.frame_index} "
+                    f"nearest={min(target_distances) if target_distances else 'none'} "
+                    f"limit={self.max_target_distance_m}"
+                )
+                return
+
+        if self.max_abs_surge_velocity_mps > 0.0:
+            surge_velocity = float(state.surge_velocity)
+            if (
+                not math.isfinite(surge_velocity)
+                or abs(surge_velocity) > self.max_abs_surge_velocity_mps
+            ):
+                self.get_logger().debug(
+                    f"EPISODE_SKIP_MOTION frame={camera.frame_index} "
+                    f"surge={surge_velocity} "
+                    f"limit={self.max_abs_surge_velocity_mps}"
+                )
+                return
+
         try:
             if self.episode_dir is None:
                 self._create_episode(key)
@@ -325,6 +374,10 @@ class EpisodeRecorderNode(Node):
         )
         manifest["cache_evictions"] = self.cache_evictions
         manifest["invalid_drops"] = self.invalid_drops
+        manifest["collection_gates"] = {
+            "max_target_distance_m": self.max_target_distance_m,
+            "max_abs_surge_velocity_mps": self.max_abs_surge_velocity_mps,
+        }
         manifest["recording_wall_time_s"] = round(
             time.monotonic() - self.started_monotonic, 3
         )

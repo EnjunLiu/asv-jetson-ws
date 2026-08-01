@@ -12,3 +12,7 @@ float32[] features
 bool[] mask
 bool valid
 string detail
+# Optional task metadata propagated alongside the entity tensor.  Empty
+# strings are the backward-compatible default for legacy tensor publishers.
+string instruction_id
+string instruction

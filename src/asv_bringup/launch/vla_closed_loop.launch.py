@@ -2,9 +2,11 @@
 
 Pipeline (no duplicate publishers, no stub stack):
 
-    UE5 -> bridge -> /ue/camera_frame + /ue/entities
+    UE5 -> bridge -> /ue/camera_frame + /ue/asv_state
                         |
                         v
+              image_perception (image only) -> /vla/perceived_entities
+              temporal_tracker -> /vla/tracked_entities
               visual_encoder -> /vla/visual_features
               task_entity_tensor -> /vla/task_features
               language_stub   -> /vla/language_embedding
@@ -52,6 +54,13 @@ def generate_launch_description():
                 "model_path",
                 default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
             ),
+            DeclareLaunchArgument(
+                "perception_model_path",
+                default_value=(
+                    "/home/jetson/jetson_asv_ws/models/"
+                    "image_entity_perception_v1.npz"
+                ),
+            ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument(
                 "execution_address", default_value=""
@@ -96,6 +105,30 @@ def generate_launch_description():
                 respawn=True,
                 respawn_delay=2.0,
             ),
+            # ── Image-only perception (UE truth is not an input) ──
+            Node(
+                package="asv_vla",
+                executable="image_entity_perception",
+                name="image_entity_perception",
+                output="screen",
+                parameters=[{
+                    "model_path": LaunchConfiguration("perception_model_path"),
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"), value_type=bool
+                    ),
+                }],
+            ),
+            Node(
+                package="asv_vla",
+                executable="temporal_entity_tracker",
+                name="temporal_entity_tracker",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"), value_type=bool
+                    ),
+                }],
+            ),
             # ── Language embedding (pre-computed, switchable at runtime) ──
             Node(
                 package="asv_vla",
@@ -124,6 +157,7 @@ def generate_launch_description():
                 name="visual_encoder",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/vla/tracked_entities",
                     "device": ParameterValue(
                         LaunchConfiguration("visual_device"),
                         value_type=str,
@@ -141,6 +175,7 @@ def generate_launch_description():
                 name="task_entity_tensor",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/vla/tracked_entities",
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,
@@ -172,6 +207,7 @@ def generate_launch_description():
                 name="safety_gate",
                 output="screen",
                 parameters=[{
+                    "entities_topic": "/vla/tracked_entities",
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,

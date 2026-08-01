@@ -26,9 +26,11 @@ from asv_jetson_interfaces.msg import (
     SelectedTrajectory,
     TaskEmbedding,
     TaskFeatures,
+    UEASVState,
     VisualFeatures,
 )
 
+from .ego_features import normalize_ego_message
 from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
 
 POLICY_MODEL_VERSION = "vla_onnx_cpu_v1"
@@ -93,6 +95,7 @@ class FrameSyncCache:
         self.ttl_sec = float(ttl_sec)
         self._visual: OrderedDict[FrameKey, _SyncEntry] = OrderedDict()
         self._entities: OrderedDict[FrameKey, _SyncEntry] = OrderedDict()
+        self._ego: OrderedDict[FrameKey, _SyncEntry] = OrderedDict()
         self._active_run: tuple[str, int] | None = None
 
     @staticmethod
@@ -118,11 +121,16 @@ class FrameSyncCache:
     def keys(self) -> tuple[FrameKey, ...]:
         """Return a snapshot of keys currently retained by either cache."""
 
-        return tuple(dict.fromkeys((*self._visual.keys(), *self._entities.keys())))
+        return tuple(
+            dict.fromkeys(
+                (*self._visual.keys(), *self._entities.keys(), *self._ego.keys())
+            )
+        )
 
     def clear(self) -> None:
         self._visual.clear()
         self._entities.clear()
+        self._ego.clear()
 
     def _select_run(self, key: FrameKey) -> bool:
         run = (key[0], key[1])
@@ -175,10 +183,23 @@ class FrameSyncCache:
         )
         return key, switched
 
+    def put_ego(
+        self, message: Any, received_at: float | None = None
+    ) -> tuple[FrameKey, bool]:
+        key = self.key_for(message)
+        switched = self._select_run(key)
+        self._put(
+            self._ego,
+            key,
+            message,
+            time.monotonic() if received_at is None else received_at,
+        )
+        return key, switched
+
     def expire(self, now: float | None = None) -> int:
         current = time.monotonic() if now is None else float(now)
         removed = 0
-        for cache in (self._visual, self._entities):
+        for cache in (self._visual, self._entities, self._ego):
             for key, entry in tuple(cache.items()):
                 if current - entry.received_at > self.ttl_sec:
                     del cache[key]
@@ -219,9 +240,20 @@ class FrameSyncCache:
         entry = self._entities.get(key)
         return entry.message if entry is not None else None
 
+    def ego_for(self, key: FrameKey, now: float | None = None) -> Any | None:
+        entry = self._ego.get(key)
+        if entry is None:
+            return None
+        current = time.monotonic() if now is None else float(now)
+        if current - entry.received_at > self.ttl_sec:
+            self._ego.pop(key, None)
+            return None
+        return entry.message
+
     def consume(self, key: FrameKey) -> None:
         self._visual.pop(key, None)
         self._entities.pop(key, None)
+        self._ego.pop(key, None)
 
 
 class VLAPolicyNode(Node):
@@ -253,6 +285,7 @@ class VLAPolicyNode(Node):
         self._language: TaskEmbedding | None = None
         self._visual: VisualFeatures | None = None
         self._entities: TaskFeatures | None = None
+        self._ego: UEASVState | None = None
         self._language_stamp = 0.0
         self._visual_stamp = 0.0
         self._entities_stamp = 0.0
@@ -272,6 +305,9 @@ class VLAPolicyNode(Node):
         )
         self._ent_sub = self.create_subscription(
             TaskFeatures, "/vla/task_features", self._on_entities, 10
+        )
+        self._ego_sub = self.create_subscription(
+            UEASVState, "/ue/asv_state", self._on_ego, 10
         )
 
         # Publisher.
@@ -350,6 +386,13 @@ class VLAPolicyNode(Node):
         # per entity frame on the normal high-rate/slow-encoder path.
         self._maybe_infer(key, trigger="entities", now=now)
 
+    def _on_ego(self, msg: UEASVState) -> None:
+        """Cache onboard ego motion under the same exact frame identity."""
+        self._ego = msg
+        key = self._frame_sync.put_ego(msg, received_at=time.monotonic())[0]
+        for candidate in self._frame_sync.keys():
+            self._maybe_infer(candidate, trigger="ego")
+
     def _new_output(self, ent: TaskFeatures) -> SelectedTrajectory:
         """Create an output carrying the task frame identity and monotonic stamp."""
 
@@ -427,6 +470,11 @@ class VLAPolicyNode(Node):
             return
 
         vis, ent = pair
+        ego_msg = self._frame_sync.ego_for(key, now=current)
+        if ego_msg is None:
+            # State may arrive after image/entity features.  Keep the pair in
+            # the bounded cache and retry from _on_ego; no zero placeholder.
+            return
         lang = self._language
         if lang is None or current - self._language_stamp > STALE_SEC:
             # Retain the synchronized pair.  The language callback retries it
@@ -450,7 +498,7 @@ class VLAPolicyNode(Node):
             return
 
         try:
-            inputs = self._build_inputs(lang, vis, ent)
+            inputs = self._build_inputs(lang, vis, ent, ego_msg)
         except (ValueError, IndexError) as exc:
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
             msg.safe_stop = True
@@ -504,6 +552,7 @@ class VLAPolicyNode(Node):
         lang: TaskEmbedding,
         vis: VisualFeatures,
         ent: TaskFeatures,
+        ego_msg: UEASVState,
     ) -> dict[str, np.ndarray]:
         """Build ONNX inputs, padding entities to the frozen 16-entity layout."""
 
@@ -552,9 +601,10 @@ class VLAPolicyNode(Node):
         ent_mask = np.array(ent.mask, dtype=bool).reshape(-1)
         entity_geometry_mask[0, :n] = ent_mask[:n]
 
-        # Ego: stationary placeholder (no live ego topic in this launch).
-        ego = np.zeros((1, EGO_DIM), dtype=np.float32)
-        ego_valid = bool(ent.valid)
+        # Ego is onboard state, synchronized by run/scene/frame.  It is never
+        # substituted with zeros: a missing state invalidates this frame.
+        ego_vector, ego_valid = normalize_ego_message(ego_msg)
+        ego = ego_vector.reshape(1, EGO_DIM)
 
         # Global validity.
         language_valid = bool(lang.valid)

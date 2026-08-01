@@ -1,0 +1,46 @@
+{
+  "model_version": "image_entity_ridge_v1",
+  "entity_ids": [
+    "target_red",
+    "target_blue",
+    "target_left",
+    "target_right"
+  ],
+  "input_shape": [
+    18,
+    32,
+    7
+  ],
+  "label_source": "frame_record_v1.entities",
+  "velocity_output": false,
+  "train_runs": [
+    "744CD8C24AEACB0B593331B758CF2E77",
+    "8B07C85647AF26428F1910AD47BB6E99",
+    "B379D49F424147FC945CFCB9397CEBF9",
+    "E8EC86F34ECBE10379D8CDA578CF60A2"
+  ],
+  "validation_runs": [
+    "5D2BF2EA4AF7711D1EB961BA1D6D40B6"
+  ],
+  "train": {
+    "visibility_accuracy": 1.0,
+    "geometry_rmse_normalized": 0.00011445854033809155,
+    "geometry_rmse_m": 0.003752774093300104,
+    "frames": 14.0
+  },
+  "validation": {
+    "visibility_accuracy": 1.0,
+    "geometry_rmse_normalized": 0.028464606031775475,
+    "geometry_rmse_m": 0.933274507522583,
+    "frames": 3.0
+  },
+  "ridge": 0.01,
+  "max_primary_distance_m": 5.0,
+  "skipped_far_frames": 434,
+  "max_abs_yaw_rad": 0.1,
+  "skipped_yaw_frames": 644,
+  "max_abs_surge_velocity_mps": 1.0,
+  "skipped_speed_frames": 305,
+  "acceptance_ready": false,
+  "acceptance_note": "Collect additional close-range runs and retrain before claiming closed-loop perception acceptance."
+}

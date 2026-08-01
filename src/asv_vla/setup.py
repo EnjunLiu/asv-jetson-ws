@@ -32,6 +32,8 @@ setup(
     entry_points={
         "console_scripts": [
             "visual_encoder = asv_vla.visual_encoder_node:main",
+            "image_entity_perception = asv_vla.image_entity_perception_node:main",
+            "temporal_entity_tracker = asv_vla.temporal_entity_tracker_node:main",
             "task_entity_tensor = asv_vla.task_entity_tensor_node:main",
             "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",
             (

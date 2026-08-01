@@ -13,6 +13,7 @@ def generate_launch_description():
     episode_dir = LaunchConfiguration("episode_dir")
     python_executable = LaunchConfiguration("python_executable")
     device = LaunchConfiguration("device")
+    perception_model = LaunchConfiguration("perception_model")
     replay_rate_hz = LaunchConfiguration("replay_rate_hz")
 
     return LaunchDescription([
@@ -37,6 +38,15 @@ def generate_launch_description():
             ]),
         ),
         DeclareLaunchArgument("device", default_value="cuda"),
+        DeclareLaunchArgument(
+            "perception_model",
+            default_value=PathJoinSubstitution([
+                EnvironmentVariable("HOME"),
+                "jetson_asv_ws",
+                "models",
+                "image_entity_perception_v1.npz",
+            ]),
+        ),
         DeclareLaunchArgument("replay_rate_hz", default_value="2.0"),
 
         Node(
@@ -57,12 +67,30 @@ def generate_launch_description():
         ),
         Node(
             package="asv_vla",
+            executable="image_entity_perception",
+            name="image_entity_perception",
+            output="screen",
+            parameters=[{
+                "model_path": ParameterValue(perception_model, value_type=str),
+                "use_sim_time": False,
+            }],
+        ),
+        Node(
+            package="asv_vla",
+            executable="temporal_entity_tracker",
+            name="temporal_entity_tracker",
+            output="screen",
+            parameters=[{"use_sim_time": False}],
+        ),
+        Node(
+            package="asv_vla",
             executable="visual_encoder",
             name="visual_encoder",
             output="screen",
             prefix=[python_executable],
             parameters=[{
                 "run_id": "replay",
+                "entities_topic": "/vla/tracked_entities",
                 "device": ParameterValue(device, value_type=str),
                 "image_width": 1280,
                 "image_height": 720,
@@ -87,6 +115,7 @@ def generate_launch_description():
                 "max_entities": 16,
                 "risk_horizon_sec": 4.0,
                 "risk_radius_m": 3.0,
+                "entities_topic": "/vla/tracked_entities",
                 "use_sim_time": False,
             }],
         ),

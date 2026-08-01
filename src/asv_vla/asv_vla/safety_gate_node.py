@@ -50,6 +50,16 @@ class SafetyGateNode(Node):
         self.declare_parameter("stale_timeout_sec", self._config.stale_timeout_sec)
         self.declare_parameter("estop_timeout_sec", self._config.estop_timeout_sec)
         self.declare_parameter("collision_margin_m", self._config.collision_margin_m)
+        self.entities_topic = str(
+            self.declare_parameter("entities_topic", "/vla/tracked_entities")
+            .get_parameter_value()
+            .string_value
+        )
+        self.allow_truth_entities = bool(
+            self.declare_parameter("allow_truth_entities", False)
+            .get_parameter_value()
+            .bool_value
+        )
 
         # Subscribers.
         self._policy_sub = self.create_subscription(
@@ -63,7 +73,7 @@ class SafetyGateNode(Node):
 
         self._entity_sub = self.create_subscription(
             UEEntityArray,
-            "/ue/entities",
+            self.entities_topic,
             self._on_entities,
             10,
         )
@@ -115,6 +125,11 @@ class SafetyGateNode(Node):
         )
 
     def _on_entities(self, message: Any) -> None:
+        if (
+            not self.allow_truth_entities
+            and str(message.source) not in {"image_perception", "temporal_tracker"}
+        ):
+            return
         if not message.valid:
             return
         entities: list[_Entity] = []

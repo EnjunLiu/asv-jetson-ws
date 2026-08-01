@@ -64,6 +64,16 @@ class VisualEncoderNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.entities_topic = str(
+            self.declare_parameter("entities_topic", "/vla/tracked_entities")
+            .get_parameter_value()
+            .string_value
+        )
+        self.allow_truth_entities = bool(
+            self.declare_parameter("allow_truth_entities", False)
+            .get_parameter_value()
+            .bool_value
+        )
         cache_size = (
             self.declare_parameter("sync_cache_size", 16)
             .get_parameter_value()
@@ -109,7 +119,7 @@ class VisualEncoderNode(Node):
             ModuleStatus, "/system/module_status", RELIABLE_QOS
         )
         self.entity_subscription = self.create_subscription(
-            UEEntityArray, "/ue/entities", self.on_entities, RELIABLE_QOS
+            UEEntityArray, self.entities_topic, self.on_entities, RELIABLE_QOS
         )
         self.frame_subscription = self.create_subscription(
             CameraFrame, "/ue/camera_frame", self.on_frame, SENSOR_QOS
@@ -141,7 +151,9 @@ class VisualEncoderNode(Node):
                 f"tokens={1 + MAX_ENTITIES} (1 global + "
                 f"{MAX_ENTITIES} entity slots)x{FEATURE_DIM}"
             )
-            self.get_logger().info(self.detail)
+            self.get_logger().info(
+                f"{self.detail}; entities_topic={self.entities_topic}"
+            )
 
     @staticmethod
     def _key(run_id: str, frame_index: int) -> tuple[str, int]:
@@ -197,6 +209,14 @@ class VisualEncoderNode(Node):
             )
 
     def on_entities(self, entities: UEEntityArray) -> None:
+        if (
+            not self.allow_truth_entities
+            and str(entities.source) not in {"image_perception", "temporal_tracker"}
+        ):
+            self.get_logger().warning(
+                "IGNORE_UNTRUSTED_ENTITY_SOURCE:" + str(entities.source)
+            )
+            return
         key = self._key(entities.run_id, entities.frame_index)
         self.entities[key] = entities
         self.entities.move_to_end(key)

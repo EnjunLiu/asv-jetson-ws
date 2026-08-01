@@ -137,6 +137,7 @@ class EpisodeReplayNode(Node):
         message.scene_seed = record["scene_seed"]
         message.frame_index = record["frame_index"]
         message.frame_id = source["frame_id"]
+        message.source = "ue_truth"
         message.valid = source["valid"]
         message.detail = "ok; Day 8 episode replay"
         for item in source["items"]:
@@ -157,6 +158,9 @@ class EpisodeReplayNode(Node):
                 entity.relative_velocity_z,
             ) = item["relative_velocity_mps"]
             entity.valid = item["valid"]
+            entity.source = "ue_truth"
+            entity.velocity_valid = bool(item.get("valid", False))
+            entity.confidence = 1.0
             message.entities.append(entity)
         return message
 

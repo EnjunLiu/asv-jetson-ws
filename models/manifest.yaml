@@ -3,6 +3,18 @@ schema_version: 2
 # Runtime deployment manifest.  The 0.6B Qwen encoder is a PC-only training
 # dependency; Jetson receives its frozen 256-D outputs as small .npy files.
 deployment:
+  perception:
+    path: models/image_entity_perception_v1.npz
+    model_id: image_entity_ridge_v1
+    input: jpeg_image_only
+    output: geometry_semantics_only
+    velocity_output: false
+    velocity_source: temporal_entity_tracker
+    label_source: frame_record_v1.entities
+    max_primary_distance_m: 5.0
+    max_abs_yaw_rad: 0.1
+    max_abs_surge_velocity_mps: 1.0
+    validation_report: models/image_entity_perception_v1.json
   policy:
     path: models/policy.onnx
     model_id: sine_formation_v4
@@ -20,6 +32,9 @@ deployment:
     feature_dim: 576
     token_layout: global_plus_16_entity_slots
     device_default: cuda
+  online_entities_topic: /vla/tracked_entities
+  privileged_truth_topic: /ue/entities
+  privileged_truth_allowed: collection_and_offline_validation_only
 
 training_only:
   language_model: Qwen/Qwen3-Embedding-0.6B

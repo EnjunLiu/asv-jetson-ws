@@ -773,6 +773,7 @@ private:
     output.scene_seed = metadata.scene_seed;
     output.frame_index = metadata.frame_index;
     output.frame_id = entity_frame_id_;
+    output.source = "ue_truth";
     output.valid = false;
     output.detail = detail;
     entities_pub_->publish(output);
@@ -790,6 +791,7 @@ private:
     output.scene_seed = metadata.scene_seed;
     output.frame_index = metadata.frame_index;
     output.frame_id = entity_frame_id_;
+    output.source = "ue_truth";
 
     const json * entities = find_member(body, {"Entities", "entities"});
     if (entities == nullptr) {
@@ -874,6 +876,9 @@ private:
       entity.relative_velocity_z =
         entity_vertical_sign_ * velocity_z * velocity_scale_;
       entity.valid = true;
+      entity.source = "ue_truth";
+      entity.confidence = 1.0F;
+      entity.velocity_valid = true;
       output.entities.push_back(std::move(entity));
     }
 

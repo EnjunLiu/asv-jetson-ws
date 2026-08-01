@@ -87,6 +87,7 @@ def validate_run_id_path(run_id: str) -> None:
 
 
 def _entity_record(entity: Any) -> dict[str, Any]:
+    bbox_valid = bool(getattr(entity, "bbox_valid", False))
     return {
         "entity_id": str(entity.entity_id),
         "class_name": str(entity.class_name),
@@ -103,6 +104,17 @@ def _entity_record(entity: Any) -> dict[str, Any]:
             float(entity.relative_velocity_y),
             float(entity.relative_velocity_z),
         ],
+        "source": str(getattr(entity, "source", "ue_truth")),
+        "bbox_px": [
+            float(getattr(entity, "bbox_x_min", 0.0)),
+            float(getattr(entity, "bbox_y_min", 0.0)),
+            float(getattr(entity, "bbox_x_max", 0.0)),
+            float(getattr(entity, "bbox_y_max", 0.0)),
+        ] if bbox_valid else None,
+        "confidence": float(getattr(entity, "confidence", 1.0)),
+        "velocity_valid": bool(
+            getattr(entity, "velocity_valid", True)
+        ),
         "valid": bool(entity.valid),
     }
 

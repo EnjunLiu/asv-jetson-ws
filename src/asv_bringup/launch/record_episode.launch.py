@@ -17,6 +17,7 @@ def generate_launch_description():
     output_root = LaunchConfiguration("output_root")
     task_text = LaunchConfiguration("task_text")
     max_frames = LaunchConfiguration("max_frames")
+    max_target_distance_m = LaunchConfiguration("max_target_distance_m")
     start_ue_bridge = LaunchConfiguration("start_ue_bridge")
     execution_mode = LaunchConfiguration("execution_mode")
     collection_slot = LaunchConfiguration("collection_slot")
@@ -44,6 +45,7 @@ def generate_launch_description():
             default_value="follow the red boat",
         ),
         DeclareLaunchArgument("max_frames", default_value="50"),
+        DeclareLaunchArgument("max_target_distance_m", default_value="0.0"),
         DeclareLaunchArgument(
             "execution_mode",
             default_value="observation_only",
@@ -84,6 +86,9 @@ def generate_launch_description():
                 ),
                 "task_text": ParameterValue(task_text, value_type=str),
                 "max_frames": ParameterValue(max_frames, value_type=int),
+                "max_target_distance_m": ParameterValue(
+                    max_target_distance_m, value_type=float
+                ),
                 "execution_mode": ParameterValue(
                     execution_mode,
                     value_type=str,

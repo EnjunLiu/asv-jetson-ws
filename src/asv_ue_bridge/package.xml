@@ -6,6 +6,7 @@
   <maintainer email="liuenjun1010@gmail.com">ASV Developer</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_target_dependencies</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>rosgraph_msgs</depend>
   <depend>std_msgs</depend>

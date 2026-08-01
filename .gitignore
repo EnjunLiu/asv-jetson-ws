@@ -30,6 +30,8 @@ Thumbs.db
 models/*
 !models/manifest.yaml
 !models/.gitkeep
+!models/image_entity_perception_v1.npz
+!models/image_entity_perception_v1.json
 
 # Generated
 *.egg-info/
