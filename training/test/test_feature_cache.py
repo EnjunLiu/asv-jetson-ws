@@ -11,10 +11,17 @@ import pytest
 
 from asv_vla.episode import make_manifest, write_json_atomic
 from asv_vla.frame_record import write_frame_record
+from asv_vla.image_entity_perception import (
+    ImageEntityPerceptionError,
+    ImageEntityPrediction,
+)
 from asv_vla.language_intervention_dataset import write_jsonl
 from asv_vla.supervised_dataset import build_supervised_dataset
+from asv_vla.temporal_entity_tracker import TemporalEntityTracker
 from training.feature_cache import (
+    FeatureCacheError,
     FeatureCacheMiss,
+    IMAGE_PERCEPTION_TRACKER_CONFIG,
     ModelFingerprint,
     build_feature_cache,
     build_policy_entity_tensor,
@@ -22,6 +29,7 @@ from training.feature_cache import (
     encode_frame_visual,
     hash_weight_tree,
     make_cache_key,
+    _predict_image_entities,
     validate_feature_cache,
 )
 
@@ -61,6 +69,41 @@ class FakeVisualEncoder:
             row = np.linspace(base, base + 1.0, 576, dtype=np.float32)
             rows.append(row / np.linalg.norm(row))
         return np.stack(rows)
+
+
+class FakeImageModel:
+    model_version = "fake_image_entity_v1"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def predict(self, image: Image.Image) -> tuple[ImageEntityPrediction, ...]:
+        del image
+        step = self.calls
+        self.calls += 1
+        displacement = 0.1 * (step >= 1) + 0.2 * (step >= 2)
+        positions = {
+            "target_red": (5.0 + displacement, 0.0, 0.0),
+            "target_blue": (6.0 + displacement, 0.5, 0.0),
+            "target_left": (7.0 + displacement, 1.5, 0.0),
+            "target_right": (7.0 + displacement, -1.5, 0.0),
+        }
+        return tuple(
+            ImageEntityPrediction(
+                entity_id=entity_id,
+                visible=True,
+                confidence=0.9,
+                relative_x=position[0],
+                relative_y=position[1],
+                relative_z=position[2],
+            )
+            for entity_id, position in positions.items()
+        )
+
+
+class FailingImageModel(FakeImageModel):
+    def predict(self, image: Image.Image) -> tuple[ImageEntityPrediction, ...]:
+        raise ImageEntityPerceptionError("synthetic perception failure")
 
 
 def _instruction(index: int) -> dict:
@@ -122,15 +165,23 @@ def _entity_object(item: dict):
     )()
 
 
-def _make_sources(tmp_path: Path, frame_count: int = 2):
+def _make_sources(
+    tmp_path: Path,
+    frame_count: int = 2,
+    *,
+    truth_offset: float = 0.0,
+    truth_velocity_mps: float = 0.1,
+):
     episode = tmp_path / "episode" / "RUN_02"
     template = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
     entities = [
-        _entity("target_red", "red", 5.0, 0.0),
-        _entity("target_blue", "blue", 6.0, 0.5),
-        _entity("target_left", "white", 7.0, 1.5),
-        _entity("target_right", "white", 7.0, -1.5),
+        _entity("target_red", "red", 5.0 + truth_offset, 0.0),
+        _entity("target_blue", "blue", 6.0 + truth_offset, 0.5),
+        _entity("target_left", "white", 7.0 + truth_offset, 1.5),
+        _entity("target_right", "white", 7.0 + truth_offset, -1.5),
     ]
+    for entity in entities:
+        entity["relative_velocity_mps"] = [truth_velocity_mps, 0.0, 0.0]
     frame_indices = []
     stamps = []
     for frame_index in range(frame_count):
@@ -208,6 +259,40 @@ def _build(
     return result, language, visual, episode, supervision, instructions
 
 
+def _build_image_only(
+    tmp_path: Path,
+    *,
+    output_name: str,
+    truth_offset: float,
+    truth_velocity_mps: float,
+    frame_count: int = 2,
+):
+    episode, supervision, instructions = _make_sources(
+        tmp_path / output_name,
+        frame_count=frame_count,
+        truth_offset=truth_offset,
+        truth_velocity_mps=truth_velocity_mps,
+    )
+    image_model = FakeImageModel()
+    model_path = tmp_path / output_name / "image_model.npz"
+    model_path.write_bytes(b"fake-image-model")
+    visual = FakeVisualEncoder()
+    result = build_feature_cache(
+        episode,
+        supervision,
+        instructions,
+        tmp_path / output_name / "features",
+        language_encoder=FakeLanguageEncoder(),
+        visual_encoder=visual,
+        language_model=ModelFingerprint("fake-language", SHA_A),
+        visual_model=ModelFingerprint("fake-visual", SHA_B),
+        git_sha="deadbeef",
+        image_model=image_model,
+        image_model_path=model_path,
+    )
+    return result, image_model, visual
+
+
 def test_policy_entity_tensor_removes_color_privilege_and_preserves_ids(
     tmp_path: Path,
 ) -> None:
@@ -276,6 +361,34 @@ def test_cache_key_changes_for_weights_preprocess_or_source() -> None:
     assert base != changed
     assert base["source_frame_sha256"]["RUN:1:0:100"] == "1" * 64
     assert base["image_sha256"]["RUN:1:0:100"] == "2" * 64
+
+    image_provenance = {
+        "enabled": True,
+        "model_id": "image",
+        "model_version": "v1",
+        "weights_sha256": SHA_A,
+        "tracker": dict(IMAGE_PERCEPTION_TRACKER_CONFIG),
+    }
+    tracker_changed = dict(image_provenance)
+    tracker_changed["tracker"] = {
+        **IMAGE_PERCEPTION_TRACKER_CONFIG,
+        "alpha": 0.7,
+    }
+    image_key = make_cache_key(
+        source_frames=source,
+        language_model=ModelFingerprint("language", SHA_A),
+        visual_model=ModelFingerprint("visual", SHA_B),
+        git_sha="abc",
+        image_perception=image_provenance,
+    )
+    changed_tracker_key = make_cache_key(
+        source_frames=source,
+        language_model=ModelFingerprint("language", SHA_A),
+        visual_model=ModelFingerprint("visual", SHA_B),
+        git_sha="abc",
+        image_perception=tracker_changed,
+    )
+    assert image_key != changed_tracker_key
 
 
 def test_single_weight_file_uses_its_real_sha256(tmp_path: Path) -> None:
@@ -394,3 +507,98 @@ def test_twenty_frame_consistency_passes_and_detects_drift(
     )
     assert failed["passed"] is False
     assert failed["minimum_cosine"] < 0.999
+
+
+def test_image_only_cache_uses_predictions_tracker_and_not_truth_geometry(
+    tmp_path: Path,
+) -> None:
+    first, first_model, first_visual = _build_image_only(
+        tmp_path,
+        output_name="image_first",
+        truth_offset=0.0,
+        truth_velocity_mps=0.1,
+        frame_count=3,
+    )
+    changed, changed_model, changed_visual = _build_image_only(
+        tmp_path,
+        output_name="image_changed_truth",
+        truth_offset=100.0,
+        truth_velocity_mps=99.0,
+        frame_count=3,
+    )
+    assert first["passed"] and changed["passed"]
+    assert first_model.calls == changed_model.calls == 3
+    assert first_visual.calls == changed_visual.calls == 3
+
+    first_cache = Path(first["output"])
+    changed_cache = Path(changed["output"])
+    with np.load(first_cache / "frames_000.npz", allow_pickle=False) as left:
+        with np.load(changed_cache / "frames_000.npz", allow_pickle=False) as right:
+            np.testing.assert_allclose(left["entity_features"], right["entity_features"])
+            np.testing.assert_allclose(left["entity_visual"], right["entity_visual"])
+            assert np.all(left["entity_features"][0, :, 3:6] == 0.0)
+            np.testing.assert_allclose(
+                left["entity_features"][1, :4, 3], 0.2, atol=1.0e-6
+            )
+            assert np.all(left["entity_features"][1, :4, 4:6] == 0.0)
+            np.testing.assert_allclose(
+                left["entity_features"][2, :4, 3], 0.32, atol=1.0e-6
+            )
+
+    quality = json.loads(
+        (first_cache / "quality_report.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (first_cache / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert quality["perception_model_enabled"] is True
+    assert quality["perception_model_id"] == "asv_vla.image_entity_perception"
+    assert quality["perception_model_version"] == "fake_image_entity_v1"
+    assert manifest["models"]["image_perception"]["model_version"] == (
+        "fake_image_entity_v1"
+    )
+    assert manifest["models"]["image_perception"]["weights_sha256"] == hashlib.sha256(
+        b"fake-image-model"
+    ).hexdigest()
+    assert manifest["cache_key"]["image_perception"]["model_version"] == (
+        "fake_image_entity_v1"
+    )
+    assert manifest["models"]["image_perception"]["tracker"] == {
+        "ttl_frames": 2,
+        "ttl_sec": 0.5,
+        "velocity_filter": "ema",
+        "alpha": 0.6,
+        "beta": 0.85,
+    }
+
+
+def test_image_prediction_failure_is_fail_closed_without_truth_fallback(
+    tmp_path: Path,
+) -> None:
+    episode, _, _ = _make_sources(tmp_path, frame_count=1)
+    record = json.loads(
+        (episode / "frames" / "000000000000.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    with pytest.raises(FeatureCacheError, match="image perception failed"):
+        _predict_image_entities(
+            record,
+            episode,
+            FailingImageModel(),
+            TemporalEntityTracker(),
+        )
+
+
+def test_bad_image_produces_no_predicted_entities(tmp_path: Path) -> None:
+    episode, _, _ = _make_sources(tmp_path, frame_count=1)
+    frame_path = episode / "frames" / "000000000000.json"
+    record = json.loads(frame_path.read_text(encoding="utf-8"))
+    (episode / record["camera"]["image_path"]).unlink()
+    tracked = _predict_image_entities(
+        record,
+        episode,
+        FakeImageModel(),
+        TemporalEntityTracker(),
+    )
+    assert tracked == ()

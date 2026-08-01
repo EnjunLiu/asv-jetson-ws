@@ -13,10 +13,12 @@ from typing import Any
 import torch
 
 from asv_vla.language_encoder import USVLanguageEncoder
+from asv_vla.image_entity_perception import ImageEntityModel
 from asv_vla.language_intervention_dataset import read_jsonl
 from asv_vla.visual_encoder import BACKBONE_ID, FrozenMobileNetEncoder
 from training.dataset import load_split_assignments
 from training.feature_cache import (
+    IMAGE_PERCEPTION_TRACKER_CONFIG,
     ModelFingerprint,
     build_feature_cache,
     encode_language_instructions,
@@ -94,6 +96,7 @@ def build_complete_feature_set(
     instructions_path: str | Path,
     output_root: str | Path,
     language_model_path: str | Path,
+    image_model_path: str | Path | None = None,
     device: str = "cuda",
     frozen_git_sha: str = FROZEN_FEATURE_GIT_SHA,
     required_run_count: int = 12,
@@ -104,6 +107,11 @@ def build_complete_feature_set(
     instructions_source = Path(instructions_path).expanduser().resolve()
     output = Path(output_root).expanduser().resolve()
     language_model_source = Path(language_model_path).expanduser().resolve()
+    image_model_source = (
+        None
+        if image_model_path is None
+        else Path(image_model_path).expanduser().resolve()
+    )
     if str(frozen_git_sha).strip() != FROZEN_FEATURE_GIT_SHA:
         raise ValueError(
             f"Day 15 feature provenance is frozen to {FROZEN_FEATURE_GIT_SHA}"
@@ -157,6 +165,16 @@ def build_complete_feature_set(
         BACKBONE_ID,
         visual_weights_sha256,
     )
+    image_model = (
+        None
+        if image_model_source is None
+        else ImageEntityModel.load(image_model_source)
+    )
+    image_model_weights_sha256 = (
+        ""
+        if image_model_source is None
+        else _sha256_file(image_model_source)
+    )
 
     run_reports: list[dict[str, Any]] = []
     for entry in entries:
@@ -174,6 +192,8 @@ def build_complete_feature_set(
             visual_model=visual_fingerprint,
             git_sha=FROZEN_FEATURE_GIT_SHA,
             precomputed_language_embeddings=language_embeddings,
+            image_model=image_model,
+            image_model_path=image_model_source,
         )
         validation = validate_feature_cache(output / run_id)
         run_reports.append(
@@ -211,6 +231,21 @@ def build_complete_feature_set(
         "sample_count": total_samples,
         "language_weights_sha256": language_weights_sha256,
         "visual_weights_sha256": visual_weights_sha256,
+        "image_perception": {
+            "enabled": image_model is not None,
+            "model_id": "asv_vla.image_entity_perception",
+            "model_version": (
+                str(image_model.model_version)
+                if image_model is not None
+                else "disabled"
+            ),
+            "weights_sha256": image_model_weights_sha256,
+            "tracker": (
+                dict(IMAGE_PERCEPTION_TRACKER_CONFIG)
+                if image_model is not None
+                else None
+            ),
+        },
         "registry_sha256": _sha256_file(registry_source),
         "split_sha256": _sha256_file(split_source),
         "instructions_sha256": _sha256_file(instructions_source),
@@ -241,6 +276,12 @@ def main() -> int:
     parser.add_argument("--instructions", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--language-model-path", type=Path, required=True)
+    parser.add_argument(
+        "--image-model-path",
+        type=Path,
+        default=None,
+        help="Optional image-only entity model; enables prediction-only policy entities",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--frozen-git-sha", default=FROZEN_FEATURE_GIT_SHA)
     parser.add_argument(
@@ -257,6 +298,7 @@ def main() -> int:
         instructions_path=args.instructions,
         output_root=args.output_root,
         language_model_path=args.language_model_path,
+        image_model_path=args.image_model_path,
         device=args.device,
         frozen_git_sha=args.frozen_git_sha,
         required_run_count=args.required_run_count,

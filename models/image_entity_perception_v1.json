@@ -1,5 +1,5 @@
 {
-  "model_version": "image_entity_ridge_v1",
+  "model_version": "image_entity_ridge_v2",
   "entity_ids": [
     "target_red",
     "target_blue",
@@ -11,36 +11,201 @@
     32,
     7
   ],
+  "feature_dim": 4064,
+  "feature_contract": "rgb_color_evidence_spatial_plus_area_centroid_moments_v2",
   "label_source": "frame_record_v1.entities",
   "velocity_output": false,
+  "geometry_metric_mask": "camera_projected_visibility_only",
   "train_runs": [
+    "1ADC3DBC4028BD5F072DE19194A414E5",
+    "1B5EC30A43D6D09071A8ABBE6887509B",
+    "261F557648651F08C2EE419C5B0A3319",
+    "28FE0CFF4D8A9857C078A6B72C5E9022",
+    "41A6312B4CC31417DCDEAA8D9B043BDD",
+    "425308AD467DFEA5B51E2AA009000A53",
+    "4871C28A4CBA941A97B8B0854FECD904",
+    "51F3AE124C06D579C4887B902896B39D",
+    "5D2BF2EA4AF7711D1EB961BA1D6D40B6",
+    "5E96F4BE4E6B8D4D1E9A86A23B8DD360",
+    "625841AB431E015803E368BC2AF6B18A",
+    "68E9C70042A8C967076671A5CAC3A052",
+    "69F9FDB44EA2274A08A1BBA63A98CFA9",
+    "6B034B3C46177F9E1CB95A9FCAB21570",
+    "6DF5FB0A46D922FD9FA66E9A212F4C9A",
     "744CD8C24AEACB0B593331B758CF2E77",
+    "869225044EFADA10908F12A959804C26",
+    "888EF3ED4CF13F5556D214846C36A3AF",
+    "89EB04D643A0A897E3AE478B61FC2EC5",
     "8B07C85647AF26428F1910AD47BB6E99",
+    "98795FE34C0469AC1558B7A8D7A84240",
+    "9923C89B43FB2DA0BF0B97948E6DB28E",
+    "9C7BC4C245648D73A81D7490CEAD2408",
     "B379D49F424147FC945CFCB9397CEBF9",
-    "E8EC86F34ECBE10379D8CDA578CF60A2"
+    "CD08E7084C256C1B18E54599735681D9",
+    "DA1018DA4D43193FC496C48BEC067414",
+    "E8EC86F34ECBE10379D8CDA578CF60A2",
+    "F8DA4BB049714929A6CF959F25897344"
   ],
   "validation_runs": [
-    "5D2BF2EA4AF7711D1EB961BA1D6D40B6"
+    "11DC8BAB47D3A0C26BB2DE97A7674F2D",
+    "2C254EDB4E6A5482DA38FFB56EA05E5A",
+    "5D0038984339D000DA138C9EC59A485C",
+    "69310B3D4E1B81BB0389BCAC94FB5BBD",
+    "7481B515433F7DE31E227AB5954069C4",
+    "8F01873C4F79479B69B9CF82ABA75791",
+    "BD4409CE46E3895C51D57FB1E649A168"
   ],
   "train": {
-    "visibility_accuracy": 1.0,
-    "geometry_rmse_normalized": 0.00011445854033809155,
-    "geometry_rmse_m": 0.003752774093300104,
-    "frames": 14.0
+    "visibility_accuracy": 0.9974007561436673,
+    "geometry_rmse_normalized": 0.006572673097252846,
+    "geometry_rmse_m": 0.21549949049949646,
+    "visible_geometry_rmse_normalized": 0.006572673097252846,
+    "visible_geometry_rmse_m": 0.21549949049949646,
+    "visible_geometry_slots": 6553,
+    "frames": 2116.0
   },
   "validation": {
-    "visibility_accuracy": 1.0,
-    "geometry_rmse_normalized": 0.028464606031775475,
-    "geometry_rmse_m": 0.933274507522583,
-    "frames": 3.0
+    "visibility_accuracy": 0.9886895475819033,
+    "geometry_rmse_normalized": 0.009922108612954617,
+    "geometry_rmse_m": 0.3253180980682373,
+    "visible_geometry_rmse_normalized": 0.009922108612954617,
+    "visible_geometry_rmse_m": 0.3253180980682373,
+    "visible_geometry_slots": 2101,
+    "frames": 641.0
   },
-  "ridge": 0.01,
+  "validation_by_run": {
+    "11DC8BAB47D3A0C26BB2DE97A7674F2D": {
+      "visibility_accuracy": 1.0,
+      "geometry_rmse_normalized": 0.007656900677829981,
+      "geometry_rmse_m": 0.2510482668876648,
+      "visible_geometry_rmse_normalized": 0.007656900677829981,
+      "visible_geometry_rmse_m": 0.2510482668876648,
+      "visible_geometry_slots": 368,
+      "frames": 92.0
+    },
+    "2C254EDB4E6A5482DA38FFB56EA05E5A": {
+      "visibility_accuracy": 0.97,
+      "geometry_rmse_normalized": 0.007347888313233852,
+      "geometry_rmse_m": 0.24091662466526031,
+      "visible_geometry_rmse_normalized": 0.007347888313233852,
+      "visible_geometry_rmse_m": 0.24091662466526031,
+      "visible_geometry_slots": 254,
+      "frames": 75.0
+    },
+    "5D0038984339D000DA138C9EC59A485C": {
+      "visibility_accuracy": 0.9971590909090909,
+      "geometry_rmse_normalized": 0.014078689739108086,
+      "geometry_rmse_m": 0.4616006910800934,
+      "visible_geometry_rmse_normalized": 0.014078689739108086,
+      "visible_geometry_rmse_m": 0.4616006910800934,
+      "visible_geometry_slots": 352,
+      "frames": 88.0
+    },
+    "69310B3D4E1B81BB0389BCAC94FB5BBD": {
+      "visibility_accuracy": 1.0,
+      "geometry_rmse_normalized": 0.006983049213886261,
+      "geometry_rmse_m": 0.22895456850528717,
+      "visible_geometry_rmse_normalized": 0.006983049213886261,
+      "visible_geometry_rmse_m": 0.22895456850528717,
+      "visible_geometry_slots": 288,
+      "frames": 96.0
+    },
+    "7481B515433F7DE31E227AB5954069C4": {
+      "visibility_accuracy": 1.0,
+      "geometry_rmse_normalized": 0.01122086402028799,
+      "geometry_rmse_m": 0.36790063977241516,
+      "visible_geometry_rmse_normalized": 0.01122086402028799,
+      "visible_geometry_rmse_m": 0.36790063977241516,
+      "visible_geometry_slots": 384,
+      "frames": 96.0
+    },
+    "8F01873C4F79479B69B9CF82ABA75791": {
+      "visibility_accuracy": 0.965,
+      "geometry_rmse_normalized": 0.009715079329907894,
+      "geometry_rmse_m": 0.3185301721096039,
+      "visible_geometry_rmse_normalized": 0.009715079329907894,
+      "visible_geometry_rmse_m": 0.3185301721096039,
+      "visible_geometry_slots": 252,
+      "frames": 100.0
+    },
+    "BD4409CE46E3895C51D57FB1E649A168": {
+      "visibility_accuracy": 0.9867021276595744,
+      "geometry_rmse_normalized": 0.008767446503043175,
+      "geometry_rmse_m": 0.28745996952056885,
+      "visible_geometry_rmse_normalized": 0.008767446503043175,
+      "visible_geometry_rmse_m": 0.28745996952056885,
+      "visible_geometry_slots": 203,
+      "frames": 94.0
+    }
+  },
+  "ridge": 300.0,
   "max_primary_distance_m": 5.0,
   "skipped_far_frames": 434,
   "max_abs_yaw_rad": 0.1,
-  "skipped_yaw_frames": 644,
+  "skipped_yaw_frames": 904,
   "max_abs_surge_velocity_mps": 1.0,
   "skipped_speed_frames": 305,
-  "acceptance_ready": false,
-  "acceptance_note": "Collect additional close-range runs and retrain before claiming closed-loop perception acceptance."
+  "acceptance_gate": {
+    "passed": true,
+    "thresholds": {
+      "min_visibility_accuracy": 0.95,
+      "max_geometry_rmse_m": 0.5,
+      "min_run_visibility_accuracy": 0.95,
+      "max_run_geometry_rmse_m": 0.5
+    },
+    "checks": {
+      "velocity_output_false": true,
+      "geometry_metric_mask": true,
+      "validation_visibility": true,
+      "validation_geometry": true,
+      "validation_runs": true
+    },
+    "validation_by_run": {
+      "11DC8BAB47D3A0C26BB2DE97A7674F2D": {
+        "visibility_accuracy": 1.0,
+        "visible_geometry_rmse_m": 0.2510482668876648,
+        "visible_geometry_slots": 368,
+        "passed": true
+      },
+      "2C254EDB4E6A5482DA38FFB56EA05E5A": {
+        "visibility_accuracy": 0.97,
+        "visible_geometry_rmse_m": 0.24091662466526031,
+        "visible_geometry_slots": 254,
+        "passed": true
+      },
+      "5D0038984339D000DA138C9EC59A485C": {
+        "visibility_accuracy": 0.9971590909090909,
+        "visible_geometry_rmse_m": 0.4616006910800934,
+        "visible_geometry_slots": 352,
+        "passed": true
+      },
+      "69310B3D4E1B81BB0389BCAC94FB5BBD": {
+        "visibility_accuracy": 1.0,
+        "visible_geometry_rmse_m": 0.22895456850528717,
+        "visible_geometry_slots": 288,
+        "passed": true
+      },
+      "7481B515433F7DE31E227AB5954069C4": {
+        "visibility_accuracy": 1.0,
+        "visible_geometry_rmse_m": 0.36790063977241516,
+        "visible_geometry_slots": 384,
+        "passed": true
+      },
+      "8F01873C4F79479B69B9CF82ABA75791": {
+        "visibility_accuracy": 0.965,
+        "visible_geometry_rmse_m": 0.3185301721096039,
+        "visible_geometry_slots": 252,
+        "passed": true
+      },
+      "BD4409CE46E3895C51D57FB1E649A168": {
+        "visibility_accuracy": 0.9867021276595744,
+        "visible_geometry_rmse_m": 0.28745996952056885,
+        "visible_geometry_slots": 203,
+        "passed": true
+      }
+    },
+    "failed_checks": []
+  },
+  "acceptance_ready": true,
+  "acceptance_note": "Validation metrics satisfy the configured image-perception gate."
 }

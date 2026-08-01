@@ -5,7 +5,7 @@ schema_version: 2
 deployment:
   perception:
     path: models/image_entity_perception_v1.npz
-    model_id: image_entity_ridge_v1
+    model_id: image_entity_ridge_v2
     input: jpeg_image_only
     output: geometry_semantics_only
     velocity_output: false
@@ -14,6 +14,13 @@ deployment:
     max_primary_distance_m: 5.0
     max_abs_yaw_rad: 0.1
     max_abs_surge_velocity_mps: 1.0
+    geometry_metric_mask: camera_projected_visibility_only
+    acceptance_ready: true
+    acceptance_thresholds:
+      min_visibility_accuracy: 0.95
+      max_geometry_rmse_m: 0.5
+      min_run_visibility_accuracy: 0.95
+      max_run_geometry_rmse_m: 0.5
     validation_report: models/image_entity_perception_v1.json
   policy:
     path: models/policy.onnx

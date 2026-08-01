@@ -27,6 +27,7 @@ import numpy as np
 
 from asv_vla.episode import load_episode_records, write_json_atomic
 from asv_vla.frame_record import read_frame_record
+from asv_vla.image_entity_perception import ImageEntityPerceptionError
 from asv_vla.language_encoder import USVLanguageEncoder
 from asv_vla.language_intervention_dataset import read_jsonl
 from asv_vla.task_entity_tensor import (
@@ -48,6 +49,11 @@ from asv_vla.visual_encoder import (
     decode_camera_image,
     make_target_crop,
 )
+from asv_vla.temporal_entity_tracker import (
+    FrameMetadata,
+    GeometryObservation,
+    TemporalEntityTracker,
+)
 
 
 FEATURE_CACHE_SCHEMA_VERSION = "feature_cache_v1"
@@ -62,6 +68,21 @@ FRAME_SHARD_NAME = "frames_000.npz"
 LANGUAGE_FILE_NAME = "language.npz"
 QUALITY_FILE_NAME = "quality_report.json"
 _SHA256_LENGTH = 64
+IMAGE_PERCEPTION_MODEL_ID = "asv_vla.image_entity_perception"
+IMAGE_PERCEPTION_DISABLED_VERSION = "disabled"
+IMAGE_PERCEPTION_TRACKER_CONFIG = {
+    "ttl_frames": 2,
+    "ttl_sec": 0.5,
+    "velocity_filter": "ema",
+    "alpha": 0.6,
+    "beta": 0.85,
+}
+_IMAGE_ENTITY_COLORS = {
+    "target_red": "red",
+    "target_blue": "blue",
+    "target_left": "white",
+    "target_right": "white",
+}
 
 
 class FeatureCacheError(ValueError):
@@ -199,6 +220,88 @@ def _entity_objects(record: dict[str, Any]) -> list[SimpleNamespace]:
     return output
 
 
+def _image_perception_provenance(
+    image_model: Any | None,
+    image_model_path: str | Path | None,
+) -> dict[str, Any]:
+    if image_model is None:
+        if image_model_path is not None:
+            raise FeatureCacheError(
+                "image_model_path requires an image perception model"
+            )
+        return {
+            "enabled": False,
+            "model_id": IMAGE_PERCEPTION_MODEL_ID,
+            "model_version": IMAGE_PERCEPTION_DISABLED_VERSION,
+            "weights_sha256": "",
+            "tracker": None,
+        }
+    model_path = None if image_model_path is None else Path(image_model_path).resolve()
+    weights_sha256 = ""
+    if model_path is not None:
+        if not model_path.is_file():
+            raise FeatureCacheError(f"image perception model not found: {model_path}")
+        weights_sha256 = _sha256_file(model_path)
+    return {
+        "enabled": True,
+        "model_id": str(getattr(image_model, "model_id", IMAGE_PERCEPTION_MODEL_ID)),
+        "model_version": str(
+            getattr(image_model, "model_version", "unknown")
+        ),
+        "weights_sha256": weights_sha256,
+        "tracker": dict(IMAGE_PERCEPTION_TRACKER_CONFIG),
+    }
+
+
+def _predict_image_entities(
+    record: dict[str, Any],
+    episode_dir: Path,
+    image_model: Any,
+    tracker: TemporalEntityTracker,
+) -> tuple[Any, ...]:
+    camera = record.get("camera", {})
+    image_path = episode_dir / str(camera.get("image_path", ""))
+    observations: list[GeometryObservation] = []
+    if bool(record.get("valid")) and bool(camera.get("valid")):
+        try:
+            image = decode_camera_image(
+                image_path.read_bytes(), str(camera.get("encoding", ""))
+            )
+            predictions = image_model.predict(image)
+        except (OSError, InvalidImageError):
+            predictions = ()
+        except ImageEntityPerceptionError as exc:
+            raise FeatureCacheError(
+                f"image perception failed for frame {record['frame_index']}: {exc}"
+            ) from exc
+        for prediction in predictions:
+            entity_id = str(prediction.entity_id)
+            observations.append(
+                GeometryObservation(
+                    entity_id=entity_id,
+                    relative_x=float(prediction.relative_x),
+                    relative_y=float(prediction.relative_y),
+                    relative_z=float(prediction.relative_z),
+                    class_name="boat",
+                    color=_IMAGE_ENTITY_COLORS.get(entity_id, ""),
+                    is_target=True,
+                    visible=bool(prediction.visible),
+                    confidence=float(prediction.confidence),
+                    run_id=str(record["run_id"]),
+                    scene_seed=int(record["scene_seed"]),
+                    frame_index=int(record["frame_index"]),
+                    stamp_us=int(record["stamp_us"]),
+                )
+            )
+    metadata = FrameMetadata(
+        run_id=str(record["run_id"]),
+        scene_seed=int(record["scene_seed"]),
+        frame_index=int(record["frame_index"]),
+        stamp_us=int(record["stamp_us"]),
+    )
+    return tracker.update(observations, frame=metadata)
+
+
 def build_policy_entity_tensor(
     entities: Iterable[Any],
 ) -> PolicyEntityTensor:
@@ -223,6 +326,7 @@ def encode_frame_visual(
     visual_encoder: Any,
     *,
     profile: CameraProfile | None = None,
+    crop_entities: Iterable[Any] | None = None,
 ) -> FrameVisualFeatures:
     """Encode global and per-entity images with fail-closed image semantics."""
 
@@ -261,9 +365,10 @@ def encode_frame_visual(
             f"image_shape:{image.width}x{image.height}",
         )
 
-    entity_by_id = {
-        str(entity.entity_id): entity for entity in _entity_objects(record)
-    }
+    source_entities = (
+        _entity_objects(record) if crop_entities is None else tuple(crop_entities)
+    )
+    entity_by_id = {str(entity.entity_id): entity for entity in source_entities}
     batch = [image]
     batch_slots: list[int] = []
     for slot, entity_id in enumerate(policy_entities.entity_ids):
@@ -316,12 +421,13 @@ def make_cache_key(
     git_sha: str,
     preprocess_version: str = PREPROCESS_VERSION,
     feature_schema_version: str = FEATURE_CACHE_SCHEMA_VERSION,
+    image_perception: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not source_frames:
         raise FeatureCacheError("source_frames must not be empty")
     if not str(git_sha).strip():
         raise FeatureCacheError("git_sha must not be empty")
-    return {
+    key = {
         "source_frame_sha256": {
             str(item["frame_key"]): str(item["source_frame_sha256"])
             for item in source_frames
@@ -338,6 +444,9 @@ def make_cache_key(
         "feature_schema_version": feature_schema_version,
         "git_sha": str(git_sha).strip(),
     }
+    if image_perception is not None:
+        key["image_perception"] = image_perception
+    return key
 
 
 def _write_npz(path: Path, **arrays: np.ndarray) -> None:
@@ -493,6 +602,8 @@ def build_feature_cache(
     git_sha: str,
     preprocess_version: str = PREPROCESS_VERSION,
     precomputed_language_embeddings: np.ndarray | None = None,
+    image_model: Any | None = None,
+    image_model_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build or validate one Run's immutable feature cache."""
 
@@ -508,12 +619,16 @@ def build_feature_cache(
         raise FeatureCacheError("episode contains multiple run_ids")
     run_id = next(iter(run_ids))
     sources = _frame_sources(records, episode)
+    image_perception = _image_perception_provenance(
+        image_model, image_model_path
+    )
     cache_key = make_cache_key(
         source_frames=sources,
         language_model=language_model,
         visual_model=visual_model,
         git_sha=git_sha,
         preprocess_version=preprocess_version,
+        image_perception=(image_perception if image_model is not None else None),
     )
     cache_key_sha256 = _json_digest(cache_key)
     output = output_base / run_id
@@ -592,11 +707,31 @@ def build_feature_cache(
     ego_valid: list[bool] = []
     policy_input_valid: list[bool] = []
     visual_details: list[str] = []
+    tracker = (
+        TemporalEntityTracker(
+            **IMAGE_PERCEPTION_TRACKER_CONFIG,
+        )
+        if image_model is not None
+        else None
+    )
 
     for record, source in zip(records, sources):
-        entities = build_policy_entity_tensor(_entity_objects(record))
+        tracked_entities = (
+            _predict_image_entities(record, episode, image_model, tracker)
+            if image_model is not None and tracker is not None
+            else None
+        )
+        entities = build_policy_entity_tensor(
+            _entity_objects(record)
+            if tracked_entities is None
+            else tracked_entities
+        )
         visual = encode_frame_visual(
-            record, episode, entities, visual_encoder
+            record,
+            episode,
+            entities,
+            visual_encoder,
+            crop_entities=tracked_entities,
         )
         ego_block = record.get("ego", {})
         ego_array, finite_ego = normalize_ego(
@@ -711,6 +846,9 @@ def build_feature_cache(
             ),
             "privileged_color_columns_zero": True,
             "visual_details": visual_details,
+            "perception_model_id": image_perception["model_id"],
+            "perception_model_version": image_perception["model_version"],
+            "perception_model_enabled": bool(image_perception["enabled"]),
         }
         write_json_atomic(temporary / QUALITY_FILE_NAME, quality_report)
         manifest = {
@@ -731,6 +869,7 @@ def build_feature_cache(
                     "weights_sha256": visual_model.weights_sha256,
                     "feature_dim": VISUAL_FEATURE_DIM,
                 },
+                "image_perception": image_perception,
             },
             "preprocess_version": preprocess_version,
             "git_sha": git_sha,
