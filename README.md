@@ -75,7 +75,8 @@ source install/setup.bash
 2. 特征：`training/build_feature_caches.py`（冻结 MobileNet + Qwen）
 3. 训练：`training/train.py`（配置在 `training/config/`）
 4. 导出：`training/export_onnx.py`（parity 校验）
-5. 部署：`policy.onnx` + `demo_instruction_embedding.npy` → Jetson `models/`
+5. 部署候选（provisional demo only）：`policy_image_seed17.onnx` +
+   `demo_instruction_embedding.npy` → Jetson `models/`
 
 ## 平台
 

@@ -52,7 +52,10 @@ def generate_launch_description():
             DeclareLaunchArgument("start_ue_bridge", default_value="true"),
             DeclareLaunchArgument(
                 "model_path",
-                default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
+                default_value=(
+                    "/home/jetson/jetson_asv_ws/models/"
+                    "policy_image_seed17.onnx"
+                ),
             ),
             DeclareLaunchArgument(
                 "perception_model_path",

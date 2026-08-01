@@ -23,11 +23,14 @@ deployment:
       max_run_geometry_rmse_m: 0.5
     validation_report: models/image_entity_perception_v1.json
   policy:
-    path: models/policy.onnx
-    model_id: sine_formation_v4
-    source_sha256: 8081128f87f33dcff83294b857d2f29e6d887b6fecbfcc8b6b97928a9e6c9dba
+    path: models/policy_image_seed17.onnx
+    model_id: current_policy_image_v8_seed17
+    source_sha256: b62d667946d709d380f50485a625e9d3c489a7bdc52188892f5dd6d6cdca1e3f
     provider: CPUExecutionProvider
     input_contract: frozen_multimodal_481k_v1
+    validation_gate_passed: false
+    deployment_status: provisional_demo_only
+    validation_report: pc_datasets/checkpoints/current_policy_image_v8/summary.json
   language:
     mode: precomputed_embedding
     feature_dim: 256

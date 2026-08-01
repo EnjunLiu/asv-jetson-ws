@@ -12,6 +12,8 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 INTERFACES = REPOSITORY / "src/asv_jetson_interfaces/msg"
 VLA = REPOSITORY / "src/asv_vla/asv_vla"
 LAUNCH = REPOSITORY / "src/asv_bringup/launch/vla_closed_loop.launch.py"
+MANIFEST = REPOSITORY / "models/manifest.yaml"
+README = REPOSITORY / "README.md"
 
 
 def _fields(path: Path) -> list[str]:
@@ -54,6 +56,30 @@ def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
     assert "demo_instruction_embedding.npy" in source
     assert "zero embedding" not in source.lower()
     assert "day 19" not in source.lower()
+
+
+def test_closed_loop_uses_provisional_image_seed17_policy_candidate() -> None:
+    launch = LAUNCH.read_text(encoding="utf-8")
+    manifest = MANIFEST.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+
+    assert "policy_image_seed17.onnx" in launch
+    assert "default_value=\"/home/jetson/jetson_asv_ws/models/policy.onnx\"" not in launch
+    assert "path: models/policy_image_seed17.onnx" in manifest
+    assert "model_id: current_policy_image_v8_seed17" in manifest
+    assert (
+        "source_sha256: b62d667946d709d380f50485a625e9d3c489a7bdc52188892f5dd6d6cdca1e3f"
+        in manifest
+    )
+    assert "validation_gate_passed: false" in manifest
+    assert "deployment_status: provisional_demo_only" in manifest
+    assert (
+        "validation_report: pc_datasets/checkpoints/current_policy_image_v8/summary.json"
+        in manifest
+    )
+    assert "policy_image_seed17.onnx" in readme
+    assert "provisional demo only" in readme
+    assert "`policy.onnx` +" not in readme
 
 
 def test_adapter_removes_fabricated_identity_and_fails_closed() -> None:
