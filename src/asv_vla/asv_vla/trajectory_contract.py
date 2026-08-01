@@ -15,6 +15,8 @@ FLOAT_TOLERANCE = 1.0e-6
 class SelectedTrajectoryLike(Protocol):
     stamp_us: int
     run_id: str
+    scene_seed: int
+    frame_index: int
     frame_id: str
     model_version: str
     dt: float

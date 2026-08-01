@@ -1,4 +1,4 @@
-"""Day 18: safety gate + trajectory control bridge (no UE5, no learned policy)."""
+"""Safety gate + trajectory control bridge (no UE5, no learned policy)."""
 
 from launch import LaunchDescription
 from launch_ros.actions import Node

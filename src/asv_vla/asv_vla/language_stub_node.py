@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from asv_jetson_interfaces.msg import TaskEmbedding
@@ -25,6 +26,20 @@ LANG_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+
+
+def _read_embedding(path: Path) -> tuple[list[float], str] | None:
+    """Read and validate an embedding without mutating node state."""
+
+    if not path.is_file():
+        return None
+    try:
+        array = np.load(path, allow_pickle=False).reshape(-1)
+        if array.size != EMBEDDING_DIM or not np.all(np.isfinite(array)):
+            return None
+    except Exception:
+        return None
+    return [float(v) for v in array], f"stub:file:{path.stem}"
 
 
 class LanguageStubNode(Node):
@@ -56,38 +71,57 @@ class LanguageStubNode(Node):
         )
 
     def _load_embedding(self, path: Path) -> None:
-        if not path.is_file():
+        loaded = _read_embedding(path)
+        if loaded is None:
+            if not path.is_file():
+                detail = f"embedding file missing ({path})"
+            else:
+                detail = f"failed to load valid embedding from {path}"
             self.get_logger().warn(
-                f"embedding file missing ({path}); using zero embedding"
+                f"{detail}; using zero embedding"
             )
             self._embedding = [0.0] * EMBEDDING_DIM
             self._model_id = "stub:zero"
             return
-        try:
-            array = np.load(path, allow_pickle=False).reshape(-1)
-            if array.size != EMBEDDING_DIM or not np.all(np.isfinite(array)):
-                raise ValueError("expected a finite 256-D embedding")
-            self._embedding = [float(v) for v in array]
-            self._model_id = f"stub:file:{path.stem}"
-            self.get_logger().info(
-                f"language stub loaded instruction embedding from {path} "
-                f"(model_id={self._model_id})"
-            )
-        except Exception as exc:
-            self.get_logger().error(
-                f"failed to load embedding from {path}: {exc}; using zeros"
-            )
-            self._embedding = [0.0] * EMBEDDING_DIM
-            self._model_id = "stub:zero"
+        self._embedding, self._model_id = loaded
+        self.get_logger().info(
+            f"language stub loaded instruction embedding from {path} "
+            f"(model_id={self._model_id})"
+        )
 
-    def _on_set_parameters(self, changes) -> list:
+    def _on_set_parameters(self, changes) -> SetParametersResult:
+        pending: tuple[list[float], str] | None = None
+        pending_path: Path | None = None
         for change in changes:
             if change.name == "active_embedding":
-                path = Path(str(change.value)).expanduser().resolve()
-                self._load_embedding(path)
-                # Publish the new embedding immediately.
-                self._publish()
-        return []
+                requested = str(change.value).strip()
+                if requested:
+                    path = Path(requested).expanduser().resolve()
+                else:
+                    path = Path(
+                        str(
+                            self.get_parameter("embedding_path")
+                            .get_parameter_value()
+                            .string_value
+                        )
+                    ).expanduser().resolve()
+                loaded = _read_embedding(path)
+                if loaded is None:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"invalid embedding file: {path}",
+                    )
+                pending = loaded
+                pending_path = path
+        if pending is not None and pending_path is not None:
+            self._embedding, self._model_id = pending
+            self.get_logger().info(
+                f"language stub loaded instruction embedding from {pending_path} "
+                f"(model_id={self._model_id})"
+            )
+            # Publish the new embedding immediately.
+            self._publish()
+        return SetParametersResult(successful=True, reason="embedding updated")
 
     def _publish(self) -> None:
         msg = TaskEmbedding()

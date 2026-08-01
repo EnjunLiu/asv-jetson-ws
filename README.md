@@ -4,6 +4,10 @@ ROS 2 工作空间：UE5 仿真提供多模态观测，Jetson 上的 VLA 流水�
 轨迹，经确定性安全门后执行（仿真运动学执行或 ESP32 推力链）。**故障时 fail-closed
 （宁可停止，不可执行不安全轨迹）**。
 
+动作接口是任务级二维 body-frame 轨迹，而不是左右推力：策略输出 20 个累计位移
+waypoint（`dt=0.2 s`），安全门通过后控制器取短前缀，仿真 adapter 每个观测帧只发送
+一个 setpoint。底层推力控制器可以独立调参，不改变 VLA 的任务接口。
+
 ## 系统概览
 
 ```
@@ -15,7 +19,7 @@ UE5 (相机/实体/本船状态)
   → 硬件: control_input_mux → [ESP32] → safety_supervisor → thruster_allocator → UE5
 ```
 
-详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、接口契约、安全设计、ESP32 扩展路径）
+详见 [ARCHITECTURE.md](ARCHITECTURE.md)（架构、任务级动作边界、接口契约、安全设计、ESP32 扩展路径）
 与 [HISTORY.md](HISTORY.md)（根因分析、诚实验收记录）。
 
 ## 目录结构
@@ -43,9 +47,26 @@ source install/setup.bash
 
 - 单元测试：`PYTHONPATH=src/asv_vla python -m pytest -q src/asv_vla/test`
 - VLA 闭环（仿真）：`ros2 launch asv_bringup vla_closed_loop.launch.py`
+  （可用 `model_path:=...`、`embedding_path:=...`、`active_embedding:=...`、
+  `execution_address:=192.168.137.1`、`execution_port:=8081`、`visual_device:=cuda`
+  显式指定部署资源）
 - 专家对照闭环：`ros2 launch asv_bringup expert_closed_loop.launch.py`
 - 完整硬件链：`ros2 launch asv_bringup full_system.launch.py`
   （micro_ros_agent + control manager；ESP32 通过 `/control/control_input` 接入）
+
+可录制的 UE5 图形闭环顺序是“先启动上述 Jetson launch，再启动 UE5 游戏窗口”；
+项目文件必须是 UnrealEditor 的第一个参数：
+
+```powershell
+D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe `
+  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map.Main_Map -game -log `
+  -SceneAuto -Slot=DEMO-L6-S0-RED -Layout=L6 -Motion=S0 -Seed=23 `
+  -SceneExecPort=8081 -MaxRuntimeSeconds=120 -YawFixWholeRun `
+  -ResX=1280 -ResY=720 -windowed
+```
+
+红/蓝指令可在运行中通过 `ros2 param set /language_stub active_embedding <npy>` 热切换。
+详见 [`docs/demo_runbook.md`](docs/demo_runbook.md)。
 
 ## 数据采集与训练（PC）
 

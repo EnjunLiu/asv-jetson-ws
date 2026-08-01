@@ -1,4 +1,4 @@
-"""Day 19/20: VLA closed-loop launch (UE5 simulation).
+"""VLA closed-loop launch (UE5 simulation).
 
 Pipeline (no duplicate publishers, no stub stack):
 
@@ -56,6 +56,16 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "execution_address", default_value=""
             ),
+            DeclareLaunchArgument("execution_port", default_value="8081"),
+            DeclareLaunchArgument(
+                "embedding_path",
+                default_value=(
+                    "/home/jetson/jetson_asv_ws/models/"
+                    "demo_instruction_embedding.npy"
+                ),
+            ),
+            DeclareLaunchArgument("active_embedding", default_value=""),
+            DeclareLaunchArgument("visual_device", default_value="cuda"),
             # ── TCP bridge (kinematic outbound) ──
             Node(
                 package="asv_ue_bridge",
@@ -74,6 +84,10 @@ def generate_launch_description():
                             LaunchConfiguration("execution_address"),
                             value_type=str,
                         ),
+                        "execution_port": ParameterValue(
+                            LaunchConfiguration("execution_port"),
+                            value_type=int,
+                        ),
                     },
                 ],
                 condition=IfCondition(
@@ -82,13 +96,21 @@ def generate_launch_description():
                 respawn=True,
                 respawn_delay=2.0,
             ),
-            # ── Language stub (zero embedding; Qwen excluded to save memory) ──
+            # ── Language embedding (pre-computed, switchable at runtime) ──
             Node(
                 package="asv_vla",
                 executable="language_stub",
                 name="language_stub",
                 output="screen",
                 parameters=[{
+                    "embedding_path": ParameterValue(
+                        LaunchConfiguration("embedding_path"),
+                        value_type=str,
+                    ),
+                    "active_embedding": ParameterValue(
+                        LaunchConfiguration("active_embedding"),
+                        value_type=str,
+                    ),
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,
@@ -102,6 +124,10 @@ def generate_launch_description():
                 name="visual_encoder",
                 output="screen",
                 parameters=[{
+                    "device": ParameterValue(
+                        LaunchConfiguration("visual_device"),
+                        value_type=str,
+                    ),
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"),
                         value_type=bool,

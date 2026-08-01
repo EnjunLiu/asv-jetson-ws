@@ -61,19 +61,39 @@ headless 运行时 Connection 蓝图默认驱动 ASV：
 - 注意：巡航使 ASV 在采集/验证中持续移动（与 target 同向），相对几何
   覆盖逼近/跟踪分布——与历史采集一致（分布自洽）
 
-## 5. 在线闭环 headless 验证结论（2026-08-01 凌晨）
+## 5. 在线闭环验证结论
 
-用新训练模型（sine_formation_v2，验证门 PASS）跑 headless 在线闭环：
+早期 `sine_formation_v2` 的 headless 记录仍保留在历史中，不能与当前 v4 结果混用。
+当前运行时已经改为图形 `-game` + EDGE C++ 8081 执行器，并完成以下真实验收：
+
+### 5.1 当前 v4 核心在线验收（2026-08-01）
+
+| 场景 | 关键日志证据 | 结果 |
+|---|---|---|
+| L6/S0/红/seed=23 | `SCENE_EXEC_CLIENT_CONNECTED`、`SCENE_EXEC_APPLY count=1..75`、`SCENE_EXEC_BAD_PAYLOAD=0`；末端目标距离约 2.8 m | 通过 |
+| L6/S0/蓝/seed=42 | `SCENE_EXEC_APPLY count=1..425`、`SCENE_EXEC_BAD_PAYLOAD=0`；ASV 向蓝色侧运动，末端约 3.7 m | 通过（颜色方向） |
+| L6/S2/红/seed=17 | `SCENE_SINE_PARAMS wavelength_cm=6000 amplitude_cm=600 speed_cm_s=60`、执行器通过；目标运动后安全门进入 hold | 安全停止，未宣称持续跟随 |
+
+这三轮运行同时证明了：UE 元数据（`run_id/scene_seed/frame_index`）进入 ROS，视觉/实体
+同帧同步成功，ONNX 策略输出进入安全门，`DecisionOutput` 身份字段进入 kinematic
+JSON，最后由 UE 的 `SCENE_EXEC_APPLY` 实际改变 ASV 世界位置。红/蓝 embedding
+可通过 `ros2 param set /language_stub active_embedding <path>` 热切换，参数回调已返回
+标准 `SetParametersResult`。
+
+### 5.2 历史诊断记录（保留，不当作当前统计验收）
 
 - **策略输出正常**：持续输出前进轨迹（~0.44 m/步 + 横向偏移，Sequence 持续递增），
   ONNX 加载成功，无 STALE/无模态失效
-- **setpoint 不执行（headless）**：ASV 位置在策略接管后完全静止
-  （t=10 后恒定），蓝图收到 setpoint 流即停止巡航但不应用位移——
-  **headless 下 kinematic setpoint 不生效，闭环验证必须使用 PIE（Play）模式**
+- **蓝图执行限制**：蓝图收到 setpoint 流会停止自己的巡航，但在该历史 headless
+  路径中没有应用位移。随后已加入 `SceneAutomationSubsystem` 的 C++ 8081 执行器，
+  在世界 Tick 末端强制应用运动学位移；因此 headless 现在可用于执行器/时间戳/安全门
+  诊断，但仍不能替代 PIE 的视觉任务验收。
 - **门 fail-closed 正常**：蓝图巡航曾把 ASV 带到 target 旁边（相对 ~1.7 m），
   实体贴身（x≈0.16 m、y≈±11.6 m 记录）→ 门持续 COLLISION_RISK 拒绝，
   控制器输出 hold_position——**安全链按设计工作**
 - **实体速度字段实测为 0**：UE5 逐帧差分速度上报为零（采集/在线一致，
   训练标签外推 vx=0 等价，分布自洽，无影响）
-- **Phase D 结论**：模型与部署就绪（验证门 PASS、选择 96.2%、ONNX parity 精确），
-  在线闭环需用户 Play（PIE）验证——已备好 runbook（见演示文档）
+- **当前结论**：v4 训练验证门、ONNX parity、Jetson 基础链路和 C++ 执行器均通过；
+  L6/S0 静态红/蓝已完成核心在线验收。动态 S2 的安全 hold 是当前真实边界，不能
+  写成持续跟随通过；若需要统计鲁棒性结论，继续按 `docs/demo_runbook.md` 填写
+  8-run 表格。历史的 96.2% 选择率属于 v2 离线快照，不能代表 v4 在线统计率。

@@ -138,7 +138,8 @@ class VisualEncoderNode(Node):
             self.module_state = ModuleStatus.READY
             self.detail = (
                 f"ready backbone={BACKBONE_ID} device={device} "
-                f"tokens={TOKEN_COUNT}x{FEATURE_DIM}"
+                f"tokens={1 + MAX_ENTITIES} (1 global + "
+                f"{MAX_ENTITIES} entity slots)x{FEATURE_DIM}"
             )
             self.get_logger().info(self.detail)
 

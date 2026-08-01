@@ -62,8 +62,9 @@ fallback because a controller could interpret it as position hold.
 - `valid=false` and an all-zero vector for empty, oversized, unavailable-model
   or inference-failure cases.
 
-The real encoder and `LanguageEncoderStub` must never run together because both
-publish the same topic. Use `language_full_stack.launch.py` for the real model.
+The online Jetson runtime uses `LanguageEncoderStub` with a precomputed 256-D
+embedding; the Qwen encoder is a PC-only feature-cache tool and is not installed
+as an online ROS node. Never start two publishers for the same topic.
 
 ## Day 3 data boundary
 

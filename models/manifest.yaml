@@ -1,53 +1,26 @@
-schema_version: 1
+schema_version: 2
 
-language_encoder:
-  name: qwen3_embedding_0_6b
-  repo_id: Qwen/Qwen3-Embedding-0.6B
-  source_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+# Runtime deployment manifest.  The 0.6B Qwen encoder is a PC-only training
+# dependency; Jetson receives its frozen 256-D outputs as small .npy files.
+deployment:
+  policy:
+    path: models/policy.onnx
+    model_id: sine_formation_v4
+    source_sha256: 8081128f87f33dcff83294b857d2f29e6d887b6fecbfcc8b6b97928a9e6c9dba
+    provider: CPUExecutionProvider
+    input_contract: frozen_multimodal_481k_v1
+  language:
+    mode: precomputed_embedding
+    feature_dim: 256
+    default_embedding: models/demo_instruction_embedding.npy
+    follow_blue_embedding: models/follow_blue_embedding.npy
+    online_qwen_runtime: false
+  visual:
+    model_id: torchvision:mobilenet_v3_small:IMAGENET1K_V1
+    feature_dim: 576
+    token_layout: global_plus_16_entity_slots
+    device_default: cuda
 
-  revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
-
-  local_dir: models/Qwen3-Embedding-0.6B
-  license: Apache-2.0
-  model_type: text_embedding
-  framework: sentence-transformers
-
-  parameter_count: 0.6B
-  native_embedding_dim: 1024
-  output_embedding_dim: 256
-
-  frozen: true
-  normalize_embeddings: true
-  dimension_reduction: matryoshka_truncate_then_l2_normalize
-
-  instruction: >-
-    Encode an instruction for a twin-thruster unmanned surface vessel
-    performing follow or stop tasks.
-
-  runtime:
-    device: cuda
-    dtype: float16
-    event_triggered: true
-    cache_enabled: true
-
-  download:
-    provider: huggingface
-    endpoint: https://huggingface.co
-    client: hf_cli
-    transport: xet
-    downloaded_at: "2026-07-27"
-    command: >-
-      hf download Qwen/Qwen3-Embedding-0.6B
-      --local-dir models/Qwen3-Embedding-0.6B
-    weight_sha256: 0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd
-
-visual_encoder:
-  name: mobilenet_v3_small_imagenet1k_v1
-  repo_id: torchvision/mobilenet_v3_small
-  model_id: torchvision:mobilenet_v3_small:IMAGENET1K_V1
-  framework: torchvision
-  output_embedding_dim: 576
-  frozen: true
-  normalize_embeddings: true
-  checkpoint_filename: mobilenet_v3_small-047dcff4.pth
-  checkpoint_sha256: 047dcff4addef86ea5bc2eff13c9614dc11f47ab1160d0a71a25e7db994f4e1f
+training_only:
+  language_model: Qwen/Qwen3-Embedding-0.6B
+  location: pc_datasets/models/Qwen3-Embedding-0.6B

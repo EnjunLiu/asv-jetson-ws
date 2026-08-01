@@ -9,6 +9,7 @@ param(
     [double]$SineWavelength = 6000.0,
     [double]$SineAmplitude = 600.0,
     [double]$SineSpeed = 60.0,
+    [double]$SineDelay = 0.0,
     [switch]$YawFixWholeRun,
     [int]$SceneExecPort = 0
 )
@@ -28,7 +29,10 @@ if (-not (Test-Path $UnrealExe)) {
 }
 
 function Quote-NativeArgument([string]$Value) {
-    return '"' + $Value.Replace('"', '\"') + '"'
+    # Start-Process joins ArgumentList before invoking the native process.
+    # Keep the project path explicitly quoted so UE sees it as argv[0], even
+    # though the Windows path contains spaces.
+    return '"' + $Value + '"'
 }
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -46,6 +50,7 @@ $ueArguments = @(
     "-SineWavelength=$SineWavelength",
     "-SineAmplitude=$SineAmplitude",
     "-SineSpeed=$SineSpeed",
+    "-SineDelay=$SineDelay",
     $(if ($YawFixWholeRun) { "-YawFixWholeRun" } else { "" }),
     $(if ($SceneExecPort -gt 0) { "-SceneExecPort=$SceneExecPort" } else { "" }),
     "-RenderOffscreen",

@@ -28,7 +28,7 @@
 ### 验证
 - 重训后 3-seed 验证 PASS（full_seed17 ADE 0.124），ONNX parity 精确（7e-7），
   CPU 推理 2344 Hz。
-- **诚实记录：`checkpoints/day21_label_fix_v1/summary.json` 的 `validation_gate_passed`
+- **诚实记录：`checkpoints/archive/day21_label_fix_v1/summary.json` 的 `validation_gate_passed`
   为 false**（seed17 stop_drift 未过、seed23 ADE/FDE 提升不达标）。即当时部署的模型
   属"工程可用"而非"严格验收通过"状态。后续重训以验证门真实通过为准。
 
@@ -76,7 +76,7 @@
 | 安全门 | 完成 | 唯一发布者，fail-closed 全项 |
 | 控制桥 | 完成 | 首次输入 STALE 修复 |
 | 闭环（专家对照） | 通过 | 见 §4 |
-| 闭环（学习策略） | 未稳定 | 见 §4，线上鲁棒性 P2 |
+| 闭环（学习策略） | 核心通过 | L6/S0 红蓝真实执行器验收通过；S2 动态安全 hold 见 §9 |
 
 ## 6. 命名清理说明（2026-07-31）
 
@@ -89,3 +89,46 @@
 
 schema 版本常量已更名（`train_v1`、`policy_checkpoint_v1` 等）；旧缓存/旧 checkpoint
 的 manifest 仍写历史值，**不向后兼容加载**——新特征缓存与重训产物使用新名。
+
+## 7. 状态复核（2026-08-01）
+
+本节记录交接后的第二次事实复核，避免把旧实验结果误当成当前部署状态：
+
+- PC 当前分支 `cleanup/ultimate-restructure` 的最终提交包含本次清理，文件
+  `pc_datasets/checkpoints/sine_formation_v4/summary.json` 明确写有
+  `validation_gate_passed=true`，且 seed
+  17/23/42 的 ADE、FDE、finite、speed、STOP drift、STOP F1 均通过。
+- Jetson `~/jetson_asv_ws` 当前分支 `fix/day19-closed-loop` 工作树干净，
+  `models/policy.onnx` 与红/蓝预计算 embedding 已存在；设备上的历史运行日志仍显示
+  adapter 曾发送硬编码的 `decision-adapter` 元数据，这正是当前运行时契约修复的原因。
+- UE5 实际运行模块是 `EDGE`（不是 `VLA`），`SceneAutomationSubsystem` 已包含
+  8081 C++ 运动学执行器、世界 Tick 末端应用和首次 setpoint 的巡航位置锚定。
+- 在线模型闭环已不再停留在静态检查：L6/S0 红、蓝各完成一轮真实 `-game` 运行，
+  EDGE 8081 C++ 执行器有 `SCENE_EXEC_APPLY` 证据且无 `SCENE_EXEC_BAD_PAYLOAD`。
+  8-run 统计鲁棒性仍是可选后续指标，不把两轮核心验收夸大成统计结论。
+
+上述复核不删除历史失败记录；旧 checkpoint 的失败仍保留在 §1，当前 v4 的通过结果
+单独引用，防止两个实验被混为一谈。
+
+## 8. 最终运行时清理（2026-08-01）
+
+- 在线语言编码器收敛为预计算 embedding：删除 `language_encoder_node.py` 及其
+  ROS entrypoint；PC 端 `language_encoder.py` 仍保留，用于特征缓存构建。
+- Jetson 运行时只保留 `models/policy.onnx`、两个指令 embedding 和部署 manifest；
+  旧 Qwen 在线模型目录及 `policy_day21v2_backup.onnx` 不再属于最终系统。
+- PC checkpoint 根目录只保留 `sine_formation_v4` 与对应 ONNX；v1--v3 及旧
+  day21 摘要移到 `checkpoints/archive/`，供审计而不参与加载。
+- 原始采集包、特征缓存和 PC 训练依赖不删除，它们是重新训练与复现实验所需的输入，
+  不是 Jetson 在线运行时产物。
+
+## 9. 最终在线验收（2026-08-01）
+
+- **红色静态任务**：`L6/S0/seed=23`。UE 目标约 25 m 前方，ASV 由
+  `SCENE_EXEC_APPLY` 的 29 cm 级单步指令推进，在约 2.8 m 处停止；
+  `SCENE_EXEC_BAD_PAYLOAD=0`。
+- **蓝色静态任务**：`L6/S0/seed=42`。切换 `follow_blue_embedding.npy` 后 ASV
+  向蓝色侧运动，末端约 3.7 m；同样无坏 JSON，证明语言指令确实改变了侧向决策。
+- **动态安全边界**：`L6/S2/seed=17` 的 S2 参数、元数据和执行器链路通过；目标
+  开始运动后安全门检测到碰撞/曲率风险并保持位置，系统没有绕过安全门继续冒险。
+- **运行时修复**：控制器每次重规划只消费累计 waypoint 0；UE 字节流使用显式长度
+  转换；语言 embedding 参数切换返回标准 `SetParametersResult`。

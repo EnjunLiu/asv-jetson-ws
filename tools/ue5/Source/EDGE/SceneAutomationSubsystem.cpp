@@ -665,7 +665,12 @@ void USceneAutomationSubsystem::PollSetpointExecutor()
         const FUTF8ToTCHAR Converter(
             reinterpret_cast<const ANSICHAR*>(ExecBuffer.GetData()),
             Found);
-        HandleSetpointPayload(FString(Converter.Get()));
+        // The converter is length-bounded because the bridge frame is
+        // terminated by a marker and a NUL byte, not by a JSON C string.
+        // Construct FString with the converted length rather than relying
+        // on Converter.Get() being NUL-terminated.
+        const FString Payload(Converter.Length(), Converter.Get());
+        HandleSetpointPayload(Payload);
         ExecBuffer.RemoveAt(0, Found + Terminator.Num());
         // The bridge appends a NUL separator after the terminator; drop it
         // so the next payload does not start with a truncated string.
@@ -686,18 +691,44 @@ void USceneAutomationSubsystem::HandleSetpointPayload(const FString& Payload)
         UE_LOG(
             LogSceneAutomation,
             Warning,
-            TEXT("SCENE_EXEC_BAD_PAYLOAD %s"),
+            TEXT("SCENE_EXEC_BAD_PAYLOAD len=%d error=%s payload=%s"),
+            Payload.Len(),
+            *Reader->GetErrorMessage(),
             *Payload.Left(120));
         return;
     }
-    const bool Valid = Object->GetBoolField(TEXT("Valid"));
-    const bool Hold = Object->GetBoolField(TEXT("Hold_Position"));
+    bool Valid = false;
+    bool Hold = false;
+    if (!Object->TryGetBoolField(TEXT("Valid"), Valid)
+        || !Object->TryGetBoolField(TEXT("Hold_Position"), Hold))
+    {
+        UE_LOG(
+            LogSceneAutomation,
+            Warning,
+            TEXT("SCENE_EXEC_BAD_PAYLOAD len=%d missing_or_invalid_bool payload=%s"),
+            Payload.Len(),
+            *Payload.Left(120));
+        return;
+    }
     if (!Valid || Hold)
     {
         return;
     }
-    const double DeltaX = Object->GetNumberField(TEXT("Delta_X_Cm"));
-    const double DeltaY = Object->GetNumberField(TEXT("Delta_Y_Cm"));
+    double DeltaX = 0.0;
+    double DeltaY = 0.0;
+    if (!Object->TryGetNumberField(TEXT("Delta_X_Cm"), DeltaX)
+        || !Object->TryGetNumberField(TEXT("Delta_Y_Cm"), DeltaY)
+        || !FMath::IsFinite(DeltaX)
+        || !FMath::IsFinite(DeltaY))
+    {
+        UE_LOG(
+            LogSceneAutomation,
+            Warning,
+            TEXT("SCENE_EXEC_BAD_PAYLOAD len=%d missing_or_invalid_delta payload=%s"),
+            Payload.Len(),
+            *Payload.Left(120));
+        return;
+    }
     AActor* Asv = AsvActor.Get();
     if (Asv == nullptr)
     {
@@ -716,6 +747,22 @@ void USceneAutomationSubsystem::HandleSetpointPayload(const FString& Payload)
     ExecutedOffset.X += static_cast<float>(DeltaX);
     ExecutedOffset.Y += static_cast<float>(DeltaY);
     bExecutorActive = true;
+
+    // Keep a low-rate proof-of-life in long closed-loop logs without
+    // spamming once per setpoint.
+    static int32 ApplyLogCount = 0;
+    ++ApplyLogCount;
+    if (ApplyLogCount == 1 || ApplyLogCount % 25 == 0)
+    {
+        UE_LOG(
+            LogSceneAutomation,
+            Display,
+            TEXT("SCENE_EXEC_APPLY count=%d dx_cm=%.3f dy_cm=%.3f offset=%s"),
+            ApplyLogCount,
+            DeltaX,
+            DeltaY,
+            *ExecutedOffset.ToString());
+    }
 }
 
 void USceneAutomationSubsystem::ApplyExecutedOffset()

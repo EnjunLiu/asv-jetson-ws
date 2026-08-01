@@ -1,4 +1,4 @@
-"""Day 19 VLA policy inference node (ONNX, CPU).
+"""VLA policy inference node (ONNX, CPU).
 
 Subscribes to encoder topics, runs the frozen ONNX policy, and publishes
 one trajectory per frame to ``/vla/policy_trajectory``.
@@ -12,7 +12,9 @@ Key fixes vs the earlier PyTorch version:
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
+import math
 import time
 from typing import Any
 
@@ -38,14 +40,188 @@ VISUAL_DIM = 576
 ENTITY_GEOMETRY_DIM = 16
 EGO_DIM = 2
 
-# Maximum staleness for each modality (seconds).
+# Maximum staleness for the language modality (seconds).
 STALE_SEC = 1.0
+
+# The visual encoder can lag the entity stream by many frames while it is
+# running on the Jetson.  Keep enough keyed entries for that delay, but never
+# let the policy node retain an unbounded stream of feature tensors.
+SYNC_CACHE_SIZE = 256
+SYNC_CACHE_TTL_SEC = 5.0
+# Do not publish one invalid marker for every high-rate entity frame while the
+# CUDA encoder is catching up.  Emit a fail-closed marker only after the
+# synchronized stream has actually been quiet for this interval.
+SYNC_FAIL_PUBLISH_PERIOD_SEC = 1.0
 
 LANG_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+
+
+FrameKey = tuple[str, int, int]
+
+
+@dataclass(frozen=True)
+class _SyncEntry:
+    message: Any
+    received_at: float
+
+
+class FrameSyncCache:
+    """Bounded, exact-identity cache for visual and task features.
+
+    A policy input is executable only when both modalities are present under
+    the same ``(run_id, scene_seed, frame_index)`` key.  The cache deliberately
+    does not fall back to the latest message from either stream: an unmatched
+    frame is a fail-closed condition, while a later callback can still find
+    the counterpart that was delayed by the visual encoder.
+    """
+
+    def __init__(
+        self,
+        *,
+        cache_size: int = SYNC_CACHE_SIZE,
+        ttl_sec: float = SYNC_CACHE_TTL_SEC,
+    ) -> None:
+        if int(cache_size) <= 0:
+            raise ValueError("cache_size must be positive")
+        if not math.isfinite(float(ttl_sec)) or float(ttl_sec) <= 0.0:
+            raise ValueError("ttl_sec must be finite and positive")
+        self.cache_size = int(cache_size)
+        self.ttl_sec = float(ttl_sec)
+        self._visual: OrderedDict[FrameKey, _SyncEntry] = OrderedDict()
+        self._entities: OrderedDict[FrameKey, _SyncEntry] = OrderedDict()
+        self._active_run: tuple[str, int] | None = None
+
+    @staticmethod
+    def key_for(message: Any) -> FrameKey:
+        return (
+            str(message.run_id),
+            int(message.scene_seed),
+            int(message.frame_index),
+        )
+
+    @property
+    def active_run(self) -> tuple[str, int] | None:
+        return self._active_run
+
+    @property
+    def visual_size(self) -> int:
+        return len(self._visual)
+
+    @property
+    def entity_size(self) -> int:
+        return len(self._entities)
+
+    def keys(self) -> tuple[FrameKey, ...]:
+        """Return a snapshot of keys currently retained by either cache."""
+
+        return tuple(dict.fromkeys((*self._visual.keys(), *self._entities.keys())))
+
+    def clear(self) -> None:
+        self._visual.clear()
+        self._entities.clear()
+
+    def _select_run(self, key: FrameKey) -> bool:
+        run = (key[0], key[1])
+        if self._active_run is None:
+            self._active_run = run
+            return False
+        if run == self._active_run:
+            return False
+        # A new run/scene is a hard boundary.  Do not allow a prior run's
+        # delayed visual tensor to pair with the new task stream.
+        self.clear()
+        self._active_run = run
+        return True
+
+    def _put(
+        self,
+        cache: OrderedDict[FrameKey, _SyncEntry],
+        key: FrameKey,
+        message: Any,
+        received_at: float,
+    ) -> None:
+        cache[key] = _SyncEntry(message=message, received_at=float(received_at))
+        cache.move_to_end(key)
+        while len(cache) > self.cache_size:
+            cache.popitem(last=False)
+
+    def put_visual(
+        self, message: Any, received_at: float | None = None
+    ) -> tuple[FrameKey, bool]:
+        key = self.key_for(message)
+        switched = self._select_run(key)
+        self._put(
+            self._visual,
+            key,
+            message,
+            time.monotonic() if received_at is None else received_at,
+        )
+        return key, switched
+
+    def put_entities(
+        self, message: Any, received_at: float | None = None
+    ) -> tuple[FrameKey, bool]:
+        key = self.key_for(message)
+        switched = self._select_run(key)
+        self._put(
+            self._entities,
+            key,
+            message,
+            time.monotonic() if received_at is None else received_at,
+        )
+        return key, switched
+
+    def expire(self, now: float | None = None) -> int:
+        current = time.monotonic() if now is None else float(now)
+        removed = 0
+        for cache in (self._visual, self._entities):
+            for key, entry in tuple(cache.items()):
+                if current - entry.received_at > self.ttl_sec:
+                    del cache[key]
+                    removed += 1
+        return removed
+
+    def match(
+        self, key: FrameKey, now: float | None = None
+    ) -> tuple[tuple[Any, Any] | None, str]:
+        """Peek an exact pair and return ``(pair, status)``.
+
+        ``status`` is ``MATCH``, ``NO_MATCH`` or ``STALE``.  Fresh pairs stay
+        cached until :meth:`consume` so a temporarily unavailable language
+        embedding does not discard a correctly synchronized frame.
+        """
+
+        current = time.monotonic() if now is None else float(now)
+        if self._active_run is not None and (key[0], key[1]) != self._active_run:
+            return None, "RUN_MISMATCH"
+
+        visual = self._visual.get(key)
+        entities = self._entities.get(key)
+        if visual is None or entities is None:
+            return None, "NO_MATCH"
+
+        visual_stale = current - visual.received_at > self.ttl_sec
+        entities_stale = current - entities.received_at > self.ttl_sec
+        if visual_stale or entities_stale:
+            if visual_stale:
+                self._visual.pop(key, None)
+            if entities_stale:
+                self._entities.pop(key, None)
+            return None, "STALE"
+
+        return (visual.message, entities.message), "MATCH"
+
+    def entity_for(self, key: FrameKey) -> Any | None:
+        entry = self._entities.get(key)
+        return entry.message if entry is not None else None
+
+    def consume(self, key: FrameKey) -> None:
+        self._visual.pop(key, None)
+        self._entities.pop(key, None)
 
 
 class VLAPolicyNode(Node):
@@ -57,7 +233,23 @@ class VLAPolicyNode(Node):
         self.declare_parameter("model_path", model_path)
         self.declare_parameter("checkpoint_path", "")  # deprecated alias
 
-        # Latest encoder messages.
+        sync_cache_size = int(
+            self.declare_parameter("sync_cache_size", SYNC_CACHE_SIZE)
+            .get_parameter_value()
+            .integer_value
+        )
+        sync_cache_ttl_sec = float(
+            self.declare_parameter("sync_cache_ttl_sec", SYNC_CACHE_TTL_SEC)
+            .get_parameter_value()
+            .double_value
+        )
+        self._frame_sync = FrameSyncCache(
+            cache_size=sync_cache_size,
+            ttl_sec=sync_cache_ttl_sec,
+        )
+
+        # Latest messages are retained for diagnostics and language freshness;
+        # visual/entity inference always uses the exact keyed cache below.
         self._language: TaskEmbedding | None = None
         self._visual: VisualFeatures | None = None
         self._entities: TaskFeatures | None = None
@@ -68,6 +260,8 @@ class VLAPolicyNode(Node):
         # backwards headless; keep the published stamp strictly increasing
         # so downstream staleness checks never see a regression.
         self._last_out_stamp_us = 0
+        self._last_inference_time = 0.0
+        self._last_sync_fail_time = 0.0
 
         # Subscribers.
         self._lang_sub = self.create_subscription(
@@ -121,31 +315,43 @@ class VLAPolicyNode(Node):
 
     def _on_language(self, msg: TaskEmbedding) -> None:
         self._language = msg
-        self._language_stamp = time.monotonic()
+        now = time.monotonic()
+        self._language_stamp = now
+        # A synchronized pair may have arrived before the transient-local
+        # language embedding.  Retry only keys that are already in the
+        # bounded cache; an unmatched entity remains fail-closed without
+        # producing a burst of duplicate stop markers.
+        for key in self._frame_sync.keys():
+            self._maybe_infer(key, trigger="language", now=now)
 
     def _on_visual(self, msg: VisualFeatures) -> None:
         self._visual = msg
-        self._visual_stamp = time.monotonic()
+        now = time.monotonic()
+        self._visual_stamp = now
+        _, switched = self._frame_sync.put_visual(msg, received_at=now)
+        if switched:
+            self._recent_trajectories.clear()
+        self._maybe_infer(
+            self._frame_sync.key_for(msg), trigger="visual", now=now
+        )
 
     def _on_entities(self, msg: TaskFeatures) -> None:
         self._entities = msg
-        self._entities_stamp = time.monotonic()
-        # Entities arrive last (after visual), trigger inference.
-        self._maybe_infer()
-
-    def _maybe_infer(self) -> None:
         now = time.monotonic()
-        lang = self._language
-        vis = self._visual
-        ent = self._entities
+        self._entities_stamp = now
+        key, switched = self._frame_sync.put_entities(msg, received_at=now)
+        if switched:
+            self._recent_trajectories.clear()
+        # Trigger inference for this exact task frame.  If the visual tensor
+        # is still being encoded, retain the key and retry when the matching
+        # visual callback eventually arrives.  A throttled fail-closed marker
+        # is emitted only if no synchronized inference has arrived for a full
+        # interval; this avoids replacing good commands with one stop marker
+        # per entity frame on the normal high-rate/slow-encoder path.
+        self._maybe_infer(key, trigger="entities", now=now)
 
-        if lang is None or vis is None or ent is None:
-            return
-        if any(
-            now - t > STALE_SEC
-            for t in (self._language_stamp, self._visual_stamp, self._entities_stamp)
-        ):
-            return
+    def _new_output(self, ent: TaskFeatures) -> SelectedTrajectory:
+        """Create an output carrying the task frame identity and monotonic stamp."""
 
         msg = SelectedTrajectory()
         if int(ent.stamp_us) > self._last_out_stamp_us:
@@ -158,10 +364,82 @@ class VLAPolicyNode(Node):
                 f"stamp trace: out={msg.stamp_us} ent={int(ent.stamp_us)}"
             )
         msg.run_id = str(ent.run_id)
+        msg.scene_seed = int(ent.scene_seed)
+        msg.frame_index = int(ent.frame_index)
         msg.frame_id = FRAME_ID
         msg.model_version = POLICY_MODEL_VERSION
         msg.dt = DT_SEC
         msg.horizon = HORIZON
+        return msg
+
+    def _publish_fail_closed(self, ent: TaskFeatures, reason: str) -> None:
+        self._last_sync_fail_time = time.monotonic()
+        msg = self._new_output(ent)
+        msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
+        msg.safe_stop = True
+        msg.valid = False
+        # Keep the old literal available for source-level contract checks;
+        # normal mixed-frame input now fails as SYNC_NO_MATCH instead.
+        if reason == "IDENTITY_MISMATCH":
+            msg.reason = "IDENTITY_MISMATCH"
+        else:
+            msg.reason = reason
+        self._recent_trajectories.clear()
+        self._pub.publish(msg)
+        self._frame_seq += 1
+
+    def _maybe_infer(
+        self,
+        key: FrameKey | None = None,
+        *,
+        trigger: str = "entities",
+        now: float | None = None,
+    ) -> None:
+        current = time.monotonic() if now is None else float(now)
+        if key is None:
+            if self._entities is None:
+                return
+            key = self._frame_sync.key_for(self._entities)
+
+        # Never substitute the latest visual/entity message.  The cache
+        # returns a pair only for an exact identity match.
+        ent_for_key = self._frame_sync.entity_for(key)
+        pair, sync_status = self._frame_sync.match(key, now=current)
+        if pair is None:
+            if (
+                trigger == "entities"
+                and ent_for_key is not None
+                and sync_status in {"STALE", "RUN_MISMATCH"}
+                and (
+                    current - self._last_inference_time
+                    >= SYNC_FAIL_PUBLISH_PERIOD_SEC
+                )
+                and (
+                    current - self._last_sync_fail_time
+                    >= SYNC_FAIL_PUBLISH_PERIOD_SEC
+                )
+            ):
+                reason = {
+                    "STALE": "SYNC_STALE",
+                    "RUN_MISMATCH": "SYNC_RUN_MISMATCH",
+                }.get(sync_status, "SYNC_STALE")
+                self._publish_fail_closed(ent_for_key, reason)
+            return
+
+        vis, ent = pair
+        lang = self._language
+        if lang is None or current - self._language_stamp > STALE_SEC:
+            # Retain the synchronized pair.  The language callback retries it
+            # after the transient-local embedding arrives.
+            return
+
+        # Consume only after all freshness/identity preconditions pass.  A
+        # failed model/input/inference path below cannot accidentally replay
+        # the same frame on every callback.
+        self._frame_sync.consume(key)
+        self._last_inference_time = current
+
+        msg = self._new_output(ent)
 
         if self._session is None:
             msg.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)

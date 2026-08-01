@@ -1,6 +1,6 @@
 """Bridge: /vla/expert_trajectory (ExpertTrajectory) -> /vla/policy_trajectory.
 
-Deterministic-expert fallback for the Day 19 closed loop.  The project spec
+Deterministic-expert fallback for the closed loop.  The project spec
 sanctions the expert as the control-path reference when the learned policy
 is unstable (its per-frame outputs oscillate under the dynamic UE5 water
 simulation).  The safety gate and every downstream node is unchanged: they
@@ -28,6 +28,8 @@ class ExpertPolicyBridge(Node):
         out = SelectedTrajectory()
         out.stamp_us = int(msg.stamp_us)
         out.run_id = str(msg.run_id)
+        out.scene_seed = int(msg.scene_seed)
+        out.frame_index = int(msg.frame_index)
         out.frame_id = str(msg.frame_id)
         out.model_version = f"expert:{msg.model_version}"
         out.dt = float(msg.dt)

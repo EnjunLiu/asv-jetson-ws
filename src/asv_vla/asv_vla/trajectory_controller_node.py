@@ -1,4 +1,4 @@
-"""Day 18 ROS trajectory control bridge node.
+"""ROS trajectory control bridge node.
 
 Consumes ``/vla/selected_trajectory`` (from the safety gate) and publishes
 ``/decision/output`` with ``desired_x`` / ``desired_y``.  Never publishes
@@ -71,6 +71,10 @@ class TrajectoryControllerNode(Node):
         output.desired_x = float(command.desired_x)
         output.desired_y = float(command.desired_y)
         output.valid = command.valid
+        output.run_id = str(message.run_id)
+        output.scene_seed = int(message.scene_seed)
+        output.source_frame_index = int(message.frame_index)
+        output.source_model_version = str(message.model_version)
 
         self._pub.publish(output)
 

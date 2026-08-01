@@ -23,7 +23,7 @@
 | 位置 | `C:\Users\LIU\Documents\jetson_ws\asv_vla`（WSL 挂载 `/mnt/c/.../asv_vla`，旧路径 `day11_kinematic_work` 是软链接） | `jetson@192.168.137.100`，`~/jetson_asv_ws`（与 PC 同步的独立 git） |
 | 关键 | Windows venv：`pc_datasets/.venv-day13/Scripts/python.exe`；UE5 项目 `D:\Unreal Projects\VLA` | SSH 密钥：`/tmp/asv_key`（或 `C:\Users\LIU\.ssh\asv_day12_ed25519`）；micro-ROS agent 已装 |
 | 数据 | `pc_datasets/`（特征缓存/checkpoints/registry） | `~/jetson_asv_ws/models/policy.onnx` + embeddings |
-| git | 分支 `cleanup/ultimate-restructure`（PC 提交 8a75649 最近） | 分支 `fix/day19-closed-loop` |
+| git | 分支 `cleanup/ultimate-restructure`（当前审计 HEAD `6230346`） | 分支 `fix/day19-closed-loop`（当前设备 HEAD `7ef1cfe`，设备工作树干净） |
 
 SSH 命令模板：
 ```bash
@@ -82,7 +82,8 @@ fake_esp32_wrench_node、上述话题名。
 - `-YawFixWholeRun`：抑制蓝图中途 180° 翻转（headless 实测 70s yaw=0）
 - `-SineDelay`：编队延迟前进（让闭环在训练分布内启动）
 - 蓝图行为（headless 实测）：无 setpoint 时巡航（0.6m/s 追 target）；有 setpoint 流
-  时停止巡航但不应用位移（**headless 下蓝图不执行 setpoint**）
+  时停止巡航；位移由 `SceneAutomationSubsystem` 的 C++ 8081 执行器接管，
+  不再依赖蓝图执行 setpoint。
 
 ### C. 数据采集与训练（完成，验证门 PASS）
 - 采集 14 runs（L6/L6B × 7 seeds，100 帧/run，全过质量门）；`-YawFixWholeRun` 全程
@@ -91,27 +92,31 @@ fake_esp32_wrench_node、上述话题名。
   （instruction_swap_prob 0.4，重算专家标签）
 - **checkpoints/sine_formation_v4**（当前最佳）：**VALIDATION_PASS seeds=17,23,42**
 - 离线选择指标 96.2%（v2 时代；v4 待重测）
-- ONNX 导出 parity 精确；已部署 Jetson（旧模型备份 policy_day21v2_backup.onnx）
+- ONNX 导出 parity 精确；Jetson 仅保留当前 v4 部署模型，旧备份已归档/清理
 - 语言 stub 支持红/蓝指令运行时切换（`ros2 param set /language_stub active_embedding <path>`）
 
-### D. Headless 模型闭环（D2 完成，D3 进行中）
+### D. 在线模型闭环（核心验收完成，动态鲁棒性边界明确）
 - **C++ setpoint 执行器**（SceneExecPort 8081）：headless 下蓝图不执行 setpoint，
   改为 C++ 执行（世界 Tick 结束后强制应用，赢过蓝图位置控制）
 - **bridge 双连接**（execution_address/execution_port 参数）：setpoint 走执行器
 - **stamp 单调化**（task_entity_tensor + vla_policy）：UE5 模拟时钟 headless 下回退
   → 消除每 run 2500+ 次 STALE 误判（修复后 0 次）
-- 实测（干净环境）：ASV 持续前进 183-190m、门几乎全 PASS（仅少量 CURVATURE_LIMIT）
-- **选择问题（未解决）**：在线 ASV 追"最近的"目标（blue）而非指令色（red）——
-  根因分析见 §5
+- 设备历史日志证明桥接器、策略、门、控制器和执行器可以组成闭环；门在异常输入下
+  按设计输出 hold/E-STOP。日志还暴露出旧 adapter 使用 `decision-adapter`、零
+  `Scene_Seed/Frame_Index` 的硬编码元数据，当前修复会让身份沿轨迹链传播。
+- **当前核心验收已完成**：图形 `-game` 的 L6/S0 红 seed=23 与蓝 seed=42 各有一轮
+  真实执行器证据（`SCENE_EXEC_APPLY`，`SCENE_EXEC_BAD_PAYLOAD=0`），末端约 2.8 m
+  与 3.7 m。8-run 统计鲁棒性和 S2 持续跟随仍未宣称通过。
 
 ### E/F. ESP32 扩展 + 演示
 - `hardware_loop.launch.py`；烟测验证 fail-closed 传播；`docs/esp32_interface.md`
 - `docs/demo_runbook.md`（Play 模式演示流程）；`docs/scene_verification.md`（验证记录）
 
-## 5. 当前核心问题：在线选择失败（进行中）
+## 5. 当前边界：动态 S2 持续跟随（可选增强）
 
-**现象**：follow-red 指令下，headless 在线闭环中 ASV 追"最近的"blue 而非 red。
-**离线回放**（eval_online_replay.py，用 R16 真实在线输入喂模型）100% 追 blue。
+静态 L6/S0 红蓝目标已经完成核心在线验收。动态 L6/S2 运行中，目标开始运动后安全门
+会对高曲率/碰撞风险轨迹进入 hold；这是当前 fail-closed 边界，不是底层推力控制器
+问题。若要把动态跟随也做成统计结论，需要新增动态观测并重训/校准，不应先放宽安全门。
 
 **已排除**：crop 槽位错位（交换实验无影响）、语言条件（red vs blue embedding 有
 差异但不够强）、时序错配（offset 实验）、stamp（已修复）。
@@ -124,29 +129,31 @@ fake_esp32_wrench_node、上述话题名。
 4. **最可能根因（正在验证）**：在线 ASV 被锚定在**起点**（静止视角），而采集时
    ASV 巡航（视角动态、target 近、crop 大）——**在线静止视角 OOD** →
    模型困惑 → fallback 追最近
-5. **当前修复（R17 验证中）**：C++ 执行器第一条 setpoint 时锚定**巡航当前位置**
-   （不是起点）——ASV 先被蓝图巡航带到 target 附近（视角与采集一致），策略从
-   近距接管 → 选择应在分布内正确
+5. **当前修复**：C++ 执行器第一条 setpoint 时锚定**巡航当前位置**（不是起点），
+   同时保留 `-YawFixWholeRun` 和 `-SineDelay`，让接管视角与采集分布一致。
 
-**R17 验证方法**（重跑）：
+**在线验收方法**（每次运行前清理残留进程）：
 ```bash
-# Windows:
+# Windows（图形 -game，项目文件必须是第一个参数）：
 cd tools/ue5 && powershell.exe -File verify_demo_seed.ps1 -SceneSeed 200101 -LayoutId L6 \
-  -MotionState S2 -RunSeconds 250 -SlotId D3-R17 -YawFixWholeRun -SceneExecPort 8081 -SineDelay 45
-# Jetson（UE5 启动 ~30s 后）:
+  -MotionState S2 -RunSeconds 180 -SlotId ACCEPT-01 -YawFixWholeRun -SceneExecPort 8081 -SineDelay 45
+# Jetson：
 ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy.onnx execution_address:=192.168.137.1
+  model_path:=/home/jetson/jetson_asv_ws/models/policy.onnx \
+  embedding_path:=/home/jetson/jetson_asv_ws/models/demo_instruction_embedding.npy \
+  execution_address:=192.168.137.1 execution_port:=8081 visual_device:=cuda
 # 抓实体: python3 /tmp/r12_capture.py（Jetson 上已有，写 /tmp/r12_ents.json）
 ```
-分析：实体数据的 red/blue 距离——ASV 最终更接近谁（选择正确性）。
+分析：记录实体数据的 red/blue 距离、稳态距离、门统计和 Run 元数据。当前两轮核心
+验收已记录在 `docs/demo_runbook.md`；至少 8 个独立组合后，才能追加“统计鲁棒性通过”。
 **注意**：每次运行前必须清理残留进程：
 ```bash
 ssh ... 'ps aux | grep -E "install/asv_vla|install/asv_ue" | grep -v grep | awk "{print \$2}" | xargs -r kill; ss -tlnp | grep 8080'
 ```
 
-**如果 R17 修复成功**：部署 v4 ONNX + 完成 8 runs 验收表（选择正确率/间距误差/门统计）。
-**如果仍失败**：下一个方向 = 重新采集（observation_only 模式：ASV 静止 + target
-从 25m 开始——与在线一致的静止视角分布）→ 重训。这是最彻底的修复。
+**如果 PIE 验收失败**：先保存完整 ros/UE 日志，使用 `eval_online_replay.py` 区分
+输入分布、语言 grounding、执行器和安全门问题；只有确认是静止视角分布外，才增加
+observation-only 数据并重训，不要先改底层推力参数。
 
 ## 6. 关键文件索引
 
@@ -161,6 +168,8 @@ ssh ... 'ps aux | grep -E "install/asv_vla|install/asv_ue" | grep -v grep | awk 
 | `src/asv_vla/asv_vla/task_entity_tensor_node.py` | 实体张量（stamp 单调化） |
 | `src/asv_vla/asv_vla/language_stub_node.py` | 语言 stub（红/蓝切换） |
 | `src/asv_bringup/launch/vla_closed_loop.launch.py` | 在线闭环 launch（execution_address 参数） |
+| `src/asv_jetson_interfaces/msg/{SelectedTrajectory,DecisionOutput}.msg` | 轨迹到执行器的 Run/Scene/Frame/Model 身份链 |
+| `src/asv_vla/test/test_runtime_identity_contract.py` | 不依赖 ROS 生成消息的契约守卫 |
 | `training/dataset.py` | 数据集+增强（mirror/swap/dropout/噪声） |
 | `training/config/train_sine_v1.yaml` | 训练配置（augment 参数） |
 | `run_train_wrapper.py` / `build_feature_wrapper.py` | PC 训练/特征构建入口（Windows 路径注入） |
@@ -187,7 +196,8 @@ cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
 /mnt/c/Users/LIU/Documents/jetson_ws/pc_datasets/.venv-day13/Scripts/python.exe run_train_wrapper.py
 
 # 导出 ONNX（改输出路径）
-# 部署：scp policy_sine.onnx → Jetson models/policy.onnx（先备份）
+# 部署：将 `pc_datasets/checkpoints/policy_sine_v4.onnx` 校验后复制为
+# Jetson `models/policy.onnx`；旧版本只在 `checkpoints/archive/` 留审计摘要
 
 # 指令切换（在线）
 ros2 param set /language_stub active_embedding /home/jetson/jetson_asv_ws/models/follow_blue_embedding.npy
@@ -196,15 +206,13 @@ ros2 param set /language_stub active_embedding /home/jetson/jetson_asv_ws/models
 ## 8. 诚实边界（审计要求）
 
 - 验证门通过 + 指标达标才宣称"训练达标"；未达标如实记录
-- 模型闭环的最终验收（8 runs 实测表）未完成前，不宣称"模型在线闭环通过"
-- 在线选择问题（§5）未解决前，演示视频不得用"模型选对目标"的画面
+- L6/S0 红蓝核心在线验收已完成；8-run 统计鲁棒性和动态 S2 持续跟随仍单独记录
+- 演示视频可以使用已验证的 L6/S0 红/蓝画面，但不得把单次运行扩大成 8-run 统计率
 - HISTORY.md 保留全部根因与失败记录（v1/v2/v3 迭代、旧模型门未过等）
 
 ## 9. 下一步优先级（按序）
 
-1. **R17 验证**（巡航锚定修复）→ 若成功：部署 v4 → 8 runs 验收表
-2. 若失败：重新采集（observation_only S2 静止视角）→ 重训 → 回放验证
-3. 蓝指令在线验证（active_embedding 切换）
-4. 提交双端 + 更新 ARCHITECTURE.md 状态表
-5. Play 模式演示（docs/demo_runbook.md）+ OBS 录制
-6. ESP32 实机接入（可选，需硬件）
+1. （可选）按 `docs/demo_runbook.md` 追加 ≥8 runs，形成统计鲁棒性表
+2. （可选）为 S2 动态跟随补充运动中观测并重训/校准，不放宽安全门
+3. 重新运行 v4 离线 selection 评估，单独记录指标版本
+4. ESP32 实机接入（可选，需硬件；不改变任务级轨迹接口）

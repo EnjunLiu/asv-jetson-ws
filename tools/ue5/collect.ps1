@@ -18,7 +18,10 @@ $sshExe = Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe"
 $scpExe = Join-Path $env:WINDIR "System32\OpenSSH\scp.exe"
 
 function Quote-NativeArgument([string]$Value) {
-    return '"' + $Value.Replace('"', '\"') + '"'
+    # UE requires the .uproject path as the first native argument.  Preserve
+    # the quotes through Start-Process so spaces in D:\Unreal Projects\... do
+    # not split the project path into multiple argv entries.
+    return '"' + $Value + '"'
 }
 
 if (-not $LocalOutput) {

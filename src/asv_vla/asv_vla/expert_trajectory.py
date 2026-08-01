@@ -224,7 +224,7 @@ def generate_expert_trajectory(
     if x <= 0.0:
         # Fail-closed label: a target at/behind the camera is not visually
         # observable, so a plain FOLLOW label would teach the policy to
-        # drive away from what it sees (the Day 12 UE5 scene flips the ASV
+        # drive away from what it sees (the baseline UE5 scene flips the ASV
         # yaw mid-run, leaving targets behind the camera in base_link).
         # Label those frames STOP instead of following the inverted
         # coordinate.

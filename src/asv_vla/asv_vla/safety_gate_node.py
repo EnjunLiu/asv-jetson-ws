@@ -1,4 +1,4 @@
-"""Day 17 ROS safety gate node.
+"""ROS safety gate node.
 
 The safety gate is the *only* publisher of ``/vla/selected_trajectory``.
 It consumes ``/vla/policy_trajectory`` and publishes a validated,
@@ -187,6 +187,8 @@ class SafetyGateNode(Node):
         output = SelectedTrajectory()
         output.stamp_us = int(message.stamp_us)
         output.run_id = str(message.run_id)
+        output.scene_seed = int(message.scene_seed)
+        output.frame_index = int(message.frame_index)
         output.frame_id = FRAME_ID
         output.model_version = SAFETY_GATE_MODEL_VERSION
         output.dt = DT_SEC

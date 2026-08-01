@@ -31,7 +31,6 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
-            "language_encoder = asv_vla.language_encoder_node:main",
             "visual_encoder = asv_vla.visual_encoder_node:main",
             "task_entity_tensor = asv_vla.task_entity_tensor_node:main",
             "evaluate_language_similarity = asv_vla.evaluate_language_similarity:main",

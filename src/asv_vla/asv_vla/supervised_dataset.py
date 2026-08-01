@@ -1,4 +1,4 @@
-"""Build and verify deterministic Day 10 multimodal supervision manifests."""
+"""Build and verify deterministic multimodal supervision manifests."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ VALID_LANGUAGE_SPLITS = {"train", "validation", "test"}
 
 
 class SupervisedDatasetError(ValueError):
-    """Raised when a Day 10 dataset is incomplete or not reproducible."""
+    """Raised when a dataset is incomplete or not reproducible."""
 
 
 def _sha256_file(path: Path) -> str:
@@ -702,7 +702,7 @@ def evaluate_supervised_dataset(
 
 def build_main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build deterministic Day 10 supervised trajectory data."
+        description="Build deterministic supervised trajectory data."
     )
     parser.add_argument(
         "--episode",
@@ -742,7 +742,7 @@ def build_main() -> int:
 
 def evaluate_main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify a deterministic Day 10 supervised dataset."
+        description="Verify a deterministic supervised dataset."
     )
     parser.add_argument("dataset_dir", type=Path)
     parser.add_argument("--require-all-labels", action="store_true")

@@ -1,4 +1,4 @@
-"""Single-owner Day 12 collection launch.
+"""Single-owner data collection launch.
 
 This launch owns TCP port 8080, the expert rollout, the UE5 kinematic
 setpoint, and the episode recorder.  Start it before pressing Play in UE5.
@@ -139,7 +139,7 @@ def generate_launch_description():
                 on_exit=[
                     EmitEvent(
                         event=Shutdown(
-                            reason="Day 12 recorder process exited"
+                            reason="recorder process exited"
                         )
                     )
                 ],
@@ -151,7 +151,7 @@ def generate_launch_description():
                 on_exit=[
                     EmitEvent(
                         event=Shutdown(
-                            reason="Day 12 expert process exited"
+                            reason="expert process exited"
                         )
                     )
                 ],

@@ -1,6 +1,7 @@
 # Jetson to UE5 kinematic command contract v1
 
-Status: code and static tests implemented; UE5 Blueprint runtime acceptance pending.
+Status: core UE5/Jetson runtime acceptance passed in graphical `-game` mode (L6/S0
+red and blue); dynamic S2 continuous-follow and 8-run statistics remain separate.
 
 This is a simulation-only execution contract. It lets an expert trajectory
 move the UE5 boat without using `DecisionOutput`, the controller, wrench,
@@ -37,7 +38,7 @@ The ObjectDeliverer bridge parameter `outbound_command_mode` is one of:
 - `kinematic`: subscribe only to `/ue/kinematic_setpoint`;
 - `disabled`: send no actuation command.
 
-The Day 11 launch selects `kinematic`. Do not run the legacy full-system launch
+The closed-loop launch selects `kinematic`. Do not run the legacy full-system launch
 at the same time. Exactly one bridge may own TCP port `8080`.
 
 ## Jetson launch
@@ -83,6 +84,11 @@ Example:
 }
 ```
 
+`Run_ID`、`Scene_Seed`、`Source_Frame_Index` 和 `Source_Model_Version` 从 UE observation
+经 `SelectedTrajectory → DecisionOutput → UEKinematicSetpoint` 原样传播；adapter
+只负责递增 transport `Sequence`。任何缺少 Run 身份的旧 `DecisionOutput` 都会被
+fail-closed 为 invalid hold，不会伪造一条可执行命令。
+
 The bridge performs the coordinate conversion:
 
 ```text
@@ -116,8 +122,20 @@ over 20 points: Jetson has already reduced the trajectory to one step.
 
 ## Runtime acceptance
 
-For the first test, place a red target more than 3 m ahead and run the launch
-above. Press Play only after Jetson prints that it is listening.
+For the reproducible demo, start Jetson first, then run UE5 with a complete
+`.uproject` path as the first argument:
+
+```powershell
+D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe `
+  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map.Main_Map -game -log `
+  -SceneAuto -Slot=DEMO-L6-S0-RED -Layout=L6 -Motion=S0 -Seed=23 `
+  -SceneExecPort=8081 -MaxRuntimeSeconds=120 -YawFixWholeRun `
+  -ResX=1280 -ResY=720 -windowed
+```
+
+This graphical game-mode path has been run end to end. A headless invocation is
+still useful for TCP executor, sequence/stamp and fail-closed diagnostics; it is
+not a substitute for a recorded task statistic.
 
 Pass conditions:
 
@@ -130,5 +148,6 @@ Pass conditions:
 - pausing UE observations for more than `0.5 s` produces one invalid hold;
 - no `/ue/thruster_command` subscriber exists in this launch.
 
-Runtime proof must record the ROS topic output and UE5 behavior. Static tests
-and `colcon build` alone do not complete this acceptance.
+Runtime proof must record the ROS topic output and UE5 behavior. The current
+evidence is in `docs/scene_verification.md` and `docs/demo_runbook.md`; static
+tests and `colcon build` alone do not complete this acceptance.

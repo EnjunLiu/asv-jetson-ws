@@ -1,4 +1,4 @@
-"""Day 17 deterministic trajectory safety gate.
+"""Deterministic trajectory safety gate.
 
 The safety gate is the *only* publisher of ``/vla/selected_trajectory``.
 It consumes the learned policy output from ``/vla/policy_trajectory`` and
@@ -88,7 +88,7 @@ DEFAULT_MAX_TURN_RAD = math.radians(170.0)
 MIN_CURVATURE_SEGMENT_M = 0.05
 DEFAULT_STALE_TIMEOUT_SEC = 1.0  # seconds since last valid policy input
 DEFAULT_ESTOP_TIMEOUT_SEC = 2.0  # seconds until forced E-STOP
-# Calibrated to the Day 12 scene geometry: targets are 1.5-4 m apart and a
+# Calibrated to the baseline scene geometry: targets are 1.5-4 m apart and a
 # 3 m standoff approach legitimately ends ~0.5 m from the nearest neighbor;
 # the margin still rejects any executed step that would drive INTO an
 # entity (wp within 0.5 m of one).

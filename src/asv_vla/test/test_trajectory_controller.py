@@ -1,4 +1,4 @@
-"""Day 18 trajectory control bridge tests."""
+"""VLA runtime trajectory control bridge tests."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ class TestNormalFollow:
             traj, safe_stop=False, valid=True, reason="PASS", stamp_us=1000
         )
         assert cmd.valid is True
-        assert cmd.desired_x == pytest.approx(0.15)  # avg of 0.1 and 0.2
-        assert cmd.desired_y == pytest.approx(0.075)
+        assert cmd.desired_x == pytest.approx(0.1)  # cumulative waypoint 0
+        assert cmd.desired_y == pytest.approx(0.05)
 
     def test_clip_excessive_displacement(self) -> None:
         traj = _step_trajectory(5.0, 0.0)

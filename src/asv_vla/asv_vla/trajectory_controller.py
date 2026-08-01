@@ -1,4 +1,4 @@
-"""Day 18 trajectory control bridge.
+"""VLA runtime trajectory control bridge.
 
 Rolling execution of the *prefix* (0.2–0.5 s) of the safe trajectory.
 Only publishes ``desired_x`` / ``desired_y`` — never thruster values.
@@ -12,7 +12,7 @@ from typing import Sequence
 
 from .trajectory_contract import ACTION_DIM, DT_SEC, FLOAT_TOLERANCE, HORIZON
 
-EXECUTE_WAYPOINTS = 2  # execute 0.4 s of the 4 s trajectory
+EXECUTE_WAYPOINTS = 1  # execute only cumulative waypoint 0 per replanning frame
 STALE_THRESHOLD_SEC = 0.6  # trajectory older than this → invalid hold
 MAX_DESIRED_M = 3.0  # maximum single-step desired displacement
 
@@ -41,8 +41,8 @@ def trajectory_to_command(
 ) -> ControlCommand:
     """Convert a safety-gated trajectory to a single-step control command.
 
-    Only the first ``EXECUTE_WAYPOINTS`` waypoints of the prefix are
-    consumed.  The controller does *not* walk the full trajectory.
+    Only cumulative waypoint 0 is consumed on each replanning frame.  The
+    controller does *not* average or walk the remainder of the trajectory.
     """
 
     # Duplicate frame → no new command.
@@ -73,15 +73,8 @@ def trajectory_to_command(
     first_x = values[0]
     first_y = values[1]
 
-    if EXECUTE_WAYPOINTS >= 2 and len(values) >= 2 * ACTION_DIM:
-        # Average the first two steps for smoother motion.
-        second_x = values[2]
-        second_y = values[3]
-        step_x = (first_x + second_x) / 2.0
-        step_y = (first_y + second_y) / 2.0
-    else:
-        step_x = first_x
-        step_y = first_y
+    step_x = first_x
+    step_y = first_y
 
     step_x = _clip(step_x, MAX_DESIRED_M)
     step_y = _clip(step_y, MAX_DESIRED_M)

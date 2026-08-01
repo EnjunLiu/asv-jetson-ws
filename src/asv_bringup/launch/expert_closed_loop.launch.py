@@ -1,4 +1,4 @@
-"""Day 19/20: closed loop with the deterministic expert as the controller.
+"""Closed loop with the deterministic expert as the controller.
 
 The project spec sanctions the expert as the control-path reference when
 the learned policy is unstable (its per-frame outputs oscillate under the

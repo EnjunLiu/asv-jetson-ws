@@ -1,4 +1,4 @@
-"""Day 17 launch: safety gate node without UE5 or the learned policy.
+"""Safety gate launch without UE5 or the learned policy.
 
 The safety gate subscribes to ``/vla/policy_trajectory`` and is the sole
 publisher of ``/vla/selected_trajectory``.  This launch does NOT start any
