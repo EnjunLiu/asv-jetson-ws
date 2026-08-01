@@ -1,10 +1,30 @@
-"""Day 19: VLA closed-loop launch (UE5 simulation).
+"""Day 19/20: VLA closed-loop launch (UE5 simulation).
 
-mode:=vla     — visual encoder + entity tensor + policy + safety + control
-mode:=legacy  — stub stack (Day 1 fail-closed)
+Pipeline (no duplicate publishers, no stub stack):
 
-The learned policy node is started only when a checkpoint path is provided.
-Language is a stub embedding (Qwen excluded to stay within 8 GB memory).
+    UE5 -> bridge -> /ue/camera_frame + /ue/entities
+                        |
+                        v
+              visual_encoder -> /vla/visual_features
+              task_entity_tensor -> /vla/task_features
+              language_stub   -> /vla/language_embedding
+                        |
+                        v
+              vla_policy (ONNX, CPU) -> /vla/policy_trajectory
+                        |
+                        v
+              safety_gate -> /vla/selected_trajectory
+                        |
+                        v
+              trajectory_controller -> /decision/output
+                        |
+                        v
+              decision_setpoint_adapter -> /ue/kinematic_setpoint
+                        |
+                        v
+              UE5 (kinematic execution)
+
+The launch intentionally starts NO control manager, allocator, or ESP32.
 """
 
 import os
@@ -29,11 +49,11 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("start_ue_bridge", default_value="true"),
             DeclareLaunchArgument(
-                "checkpoint_path",
-                default_value="/tmp/best_day16.pt",
+                "model_path",
+                default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
-            # ── TCP bridge ──
+            # ── TCP bridge (kinematic outbound) ──
             Node(
                 package="asv_ue_bridge",
                 executable="ue_object_deliverer_bridge_node",
@@ -55,10 +75,10 @@ def generate_launch_description():
                 respawn=True,
                 respawn_delay=2.0,
             ),
-            # ── Stub language encoder (256-dim zero → safe, no OOM) ──
+            # ── Language stub (zero embedding; Qwen excluded to save memory) ──
             Node(
                 package="asv_vla",
-                executable="stub_stack",
+                executable="language_stub",
                 name="language_stub",
                 output="screen",
                 parameters=[{
@@ -67,11 +87,8 @@ def generate_launch_description():
                         value_type=bool,
                     ),
                 }],
-                remappings=[
-                    ("/vla/selected_trajectory", "/vla/stub_trajectory"),
-                ],
             ),
-            # ── Visual encoder ──
+            # ── Visual encoder (MobileNet, CUDA) ──
             Node(
                 package="asv_vla",
                 executable="visual_encoder",
@@ -97,7 +114,7 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── VLA policy inference ──
+            # ── VLA policy inference (ONNX, CPU) ──
             Node(
                 package="asv_vla",
                 executable="vla_policy",
@@ -105,9 +122,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
-                        "checkpoint_path": LaunchConfiguration(
-                            "checkpoint_path"
-                        ),
+                        "model_path": LaunchConfiguration("model_path"),
                     },
                     {
                         "use_sim_time": ParameterValue(
@@ -117,7 +132,7 @@ def generate_launch_description():
                     },
                 ],
             ),
-            # ── Safety gate ──
+            # ── Safety gate (sole publisher of /vla/selected_trajectory) ──
             Node(
                 package="asv_vla",
                 executable="safety_gate",
@@ -130,11 +145,24 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── Trajectory controller ──
+            # ── Trajectory controller (prefix execution -> desired_x/y) ──
             Node(
                 package="asv_vla",
                 executable="trajectory_controller",
                 name="trajectory_controller",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    ),
+                }],
+            ),
+            # ── Adapter: /decision/output -> /ue/kinematic_setpoint ──
+            Node(
+                package="asv_vla",
+                executable="decision_setpoint_adapter",
+                name="decision_setpoint_adapter",
                 output="screen",
                 parameters=[{
                     "use_sim_time": ParameterValue(
