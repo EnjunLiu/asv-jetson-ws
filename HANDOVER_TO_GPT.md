@@ -1,14 +1,19 @@
-# 交接手册（给后续 AI 助手）
+# 操作交接（2026-08-01 最终审计）
 
-> 2026-08-01 重构声明：本文件下面的旧审计内容已过时。当前权威状态只看
-> TODO.md、models/manifest.yaml 和工作树。在线 VLA 不再把 /ue/entities
-> 作为感知输入；它走 camera -> image_entity_perception ->
-> temporal_entity_tracker -> tracked_entities。/ue/entities 仅用于录制真值、
-> 离线标签和专家基线。图像感知不输出速度，速度由时序跟踪器计算。当前第一版
-> 感知模型的验证指标尚未达到最终验收门，不能用旧文档的“核心验收完成”表述。
+> 当前权威状态只看 [TODO.md](TODO.md)、[models/manifest.yaml](models/manifest.yaml)、
+> 工作树和 Jetson `install/`。下面第 1--3 节是当前可执行架构；第 4 节以后保留为
+> 历史审计，不得覆盖 TODO 中较新的结论。
 
-> 写于 2026-08-01 中午。本手册包含让新助手接手所需的一切：项目背景、架构、
-> 当前状态、根因分析、环境、命令、待办。**所有声明均为实测事实，未验证的不写。**
+当前系统边界已经固定：UE5 的 `/ue/entities` 只用于录制和离线标签；在线链路是
+`camera -> image_entity_perception -> temporal_entity_tracker -> tracked_entities`。
+图像感知不输出速度，速度由带 `(Run_ID, Scene_Seed, Frame_Index, stamp_us)` 的多帧
+跟踪得到。候选策略 `policy_image_seed17.onnx` 已在 Jetson 加载并完成真实 UE 在线
+链路演示，但 `validation_gate_passed=false`，不得称为最终策略验收通过。
+
+本地分支为 `cleanup/ultimate-restructure`，当前最终提交包含 `d51aab3`（越界预测不再
+杀死感知节点）和 `5e301cb`（部署 manifest、默认 launch、TODO 与在线证据更新）。
+全量测试为 **201 passed、5 skipped**；Jetson 9 包重建通过，运行时只保留源码、
+`install/`、模型和文档。
 
 ---
 
@@ -29,8 +34,8 @@
 |---|---|---|
 | 位置 | `C:\Users\LIU\Documents\jetson_ws\asv_vla`（WSL 挂载 `/mnt/c/.../asv_vla`，旧路径 `day11_kinematic_work` 是软链接） | `jetson@192.168.137.100`，`~/jetson_asv_ws`（与 PC 同步的独立 git） |
 | 关键 | Windows venv：`pc_datasets/.venv-day13/Scripts/python.exe`；UE5 项目 `D:\Unreal Projects\VLA` | SSH 密钥：`/tmp/asv_key`（或 `C:\Users\LIU\.ssh\asv_day12_ed25519`）；micro-ROS agent 已装 |
-| 数据 | `pc_datasets/`（特征缓存/checkpoints/registry） | `~/jetson_asv_ws/models/policy.onnx` + embeddings |
-| git | 分支 `cleanup/ultimate-restructure`（当前审计 HEAD `6230346`） | 分支 `fix/day19-closed-loop`（当前设备 HEAD `7ef1cfe`，设备工作树干净） |
+| 数据 | `pc_datasets/`（canonical 数据、image-only cache、checkpoints/registry） | `~/jetson_asv_ws/models/policy_image_seed17.onnx` + embeddings |
+| git | 分支 `cleanup/ultimate-restructure`（当前状态以工作树和 TODO 为准） | 分支 `fix/day19-closed-loop`（源码已同步，运行时以 `install/` 和模型哈希为准） |
 
 SSH 命令模板：
 ```bash
@@ -97,12 +102,13 @@ fake_esp32_wrench_node、上述话题名。
 - 特征缓存 14 个/117500 样本；**ego 置零**（训练/在线一致）
 - 训练增强：几何噪声 + 槽位 dropout + 镜像（mirror_prob 0.3）+ 指令互换
   （instruction_swap_prob 0.4，重算专家标签）
-- **checkpoints/sine_formation_v4**（当前最佳）：**VALIDATION_PASS seeds=17,23,42**
+- **checkpoints/sine_formation_v4**（历史旧数据，已隔离）：不要当作当前策略验收证据；
+  当前 image-only 三 seed gate 结果见 TODO，状态为 FAIL。
 - 离线选择指标 96.2%（v2 时代；v4 待重测）
 - ONNX 导出 parity 精确；Jetson 仅保留当前 v4 部署模型，旧备份已归档/清理
 - 语言 stub 支持红/蓝指令运行时切换（`ros2 param set /language_stub active_embedding <path>`）
 
-### D. 在线模型闭环（核心验收完成，动态鲁棒性边界明确）
+### D. 历史在线模型闭环（旧配置审计；当前结论以 TODO 为准）
 - **C++ setpoint 执行器**（SceneExecPort 8081）：headless 下蓝图不执行 setpoint，
   改为 C++ 执行（世界 Tick 结束后强制应用，赢过蓝图位置控制）
 - **bridge 双连接**（execution_address/execution_port 参数）：setpoint 走执行器
@@ -146,7 +152,7 @@ cd tools/ue5 && powershell.exe -File verify_demo_seed.ps1 -SceneSeed 200101 -Lay
   -MotionState S2 -RunSeconds 180 -SlotId ACCEPT-01 -YawFixWholeRun -SceneExecPort 8081 -SineDelay 45
 # Jetson：
 ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy.onnx \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_image_seed17.onnx \
   embedding_path:=/home/jetson/jetson_asv_ws/models/demo_instruction_embedding.npy \
   execution_address:=192.168.137.1 execution_port:=8081 visual_device:=cuda
 # 抓实体: python3 /tmp/r12_capture.py（Jetson 上已有，写 /tmp/r12_ents.json）
@@ -182,8 +188,8 @@ observation-only 数据并重训，不要先改底层推力参数。
 | `run_train_wrapper.py` / `build_feature_wrapper.py` | PC 训练/特征构建入口（Windows 路径注入） |
 | `training/evaluate_selection.py` | 离线选择指标（缓存） |
 | `eval_online_replay.py` | **在线输入回放评估**（R16 特征喂模型） |
-| `pc_datasets/checkpoints/sine_formation_v4/` | 当前最佳模型（3 seeds 全过） |
-| `pc_datasets/r16_feats.json` | R16 在线特征抓取（回放评估用） |
+| `pc_datasets/checkpoints/sine_formation_v4/` | 历史模型（已移入可恢复清理目录，不是当前部署） |
+| `pc_datasets/r16_feats.json` | 历史 R16 在线特征抓取（已隔离，不是当前数据源） |
 | `docs/scene_verification.md` / `docs/esp32_interface.md` / `docs/demo_runbook.md` | 验证/接口/演示文档 |
 
 ## 7. 常用命令速查
@@ -204,7 +210,7 @@ cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
 
 # 导出 ONNX（改输出路径）
 # 部署：将 `pc_datasets/checkpoints/policy_sine_v4.onnx` 校验后复制为
-# Jetson `models/policy.onnx`；旧版本只在 `checkpoints/archive/` 留审计摘要
+# Jetson `models/policy_image_seed17.onnx`；该候选仍是 provisional_demo_only，历史模型已隔离
 
 # 指令切换（在线）
 ros2 param set /language_stub active_embedding /home/jetson/jetson_asv_ws/models/follow_blue_embedding.npy
