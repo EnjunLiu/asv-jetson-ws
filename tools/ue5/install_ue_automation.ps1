@@ -27,6 +27,9 @@ Copy-Item -Force `
 Copy-Item -Force `
     (Join-Path $automationSource "SceneAutomationSubsystem.cpp") `
     (Join-Path $projectSource "SceneAutomationSubsystem.cpp")
+Copy-Item -Force `
+    (Join-Path $automationSource "EDGE.Build.cs") `
+    (Join-Path $projectSource "EDGE.Build.cs")
 
 Write-Host "SCENE_UE_INSTALL_PASS source=$projectSource"
 

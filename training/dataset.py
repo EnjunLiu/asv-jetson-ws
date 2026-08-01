@@ -312,14 +312,18 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         augment: bool = False,
         geometry_noise_std: float = 0.02,
         slot_dropout_prob: float = 0.1,
+        mirror_prob: float = 0.0,
     ) -> None:
         if frame_stride <= 0:
             raise ValueError("frame_stride must be positive")
         if geometry_noise_std < 0.0 or slot_dropout_prob < 0.0:
             raise ValueError("augmentation strengths must be non-negative")
+        if not 0.0 <= mirror_prob <= 1.0:
+            raise ValueError("mirror_prob must be in [0, 1]")
         self._augment = augment
         self._geometry_noise_std = float(geometry_noise_std)
         self._slot_dropout_prob = float(slot_dropout_prob)
+        self._mirror_prob = float(mirror_prob)
         normalized_split = (
             str(selected_split).strip().casefold()
             if selected_split is not None
@@ -417,6 +421,32 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         geometry_mask = cache.entity_geometry_mask[frame_row].copy()
         entity_visual = cache.entity_visual[frame_row].copy()
         entity_visual_mask = cache.entity_visual_mask[frame_row].copy()
+        trajectory = cache.target_trajectories[sample_row].copy()
+        safe_stop = cache.target_safe_stop[sample_row].copy()
+
+        if self._augment and self._mirror_prob > 0.0:
+            # Geometric mirroring: negate the lateral axis (positions,
+            # velocities, derived lateral columns) and mirror the expert
+            # trajectory so the "follow red/blue" instruction is decoupled
+            # from which side the commanded boat is on.  The training set
+            # is red-near biased (~78%); mirroring halves that bias and
+            # makes the model follow the commanded colour regardless of
+            # which target is nearest.
+            rng = np.random.default_rng(
+                int(reference.sample_row) * 7919 + int(frame_row) * 104729
+            )
+            if rng.random() < self._mirror_prob:
+                # Columns: 1=y, 4=vy, 7=bearing_sin, 9=closing_speed,
+                # 11=cpa_distance keep signs consistent via explicit negate.
+                mirrored = geometry.copy()
+                for slot in range(geometry.shape[0]):
+                    if not geometry_mask[slot]:
+                        continue
+                    mirrored[slot, 1] = -mirrored[slot, 1]
+                    mirrored[slot, 4] = -mirrored[slot, 4]
+                    mirrored[slot, 7] = -mirrored[slot, 7]
+                geometry = mirrored
+                trajectory[:, 1] = -trajectory[:, 1]
 
         if self._augment:
             # Training-time augmentation targeting online robustness:
@@ -465,11 +495,9 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             "policy_input_valid": torch.tensor(
                 bool(cache.policy_input_valid[frame_row]), dtype=torch.bool
             ),
-            "target_trajectory": torch.from_numpy(
-                cache.target_trajectories[sample_row].copy()
-            ),
+            "target_trajectory": torch.from_numpy(trajectory),
             "target_stop": torch.tensor(
-                [float(cache.target_safe_stop[sample_row])],
+                [float(safe_stop)],
                 dtype=torch.float32,
             ),
             "run_id": cache.run_id,

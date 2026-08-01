@@ -35,6 +35,7 @@ def now_us(node: Node) -> int:
 class TaskEntityTensorNode(Node):
     def __init__(self) -> None:
         super().__init__("task_entity_tensor")
+        self._last_stamp_us = 0
         self.status_run_id = (
             self.declare_parameter("run_id", "task-entity-tensor")
             .get_parameter_value()
@@ -89,7 +90,14 @@ class TaskEntityTensorNode(Node):
 
     def _new_message(self, source: UEEntityArray) -> TaskFeatures:
         message = TaskFeatures()
-        message.stamp_us = source.stamp_us
+        # The UE5 simulation clock can step backwards in headless runs
+        # (frame-rate dependent time accumulation); monotonicise the stamp
+        # so downstream staleness checks (safety gate) see a strict order.
+        if source.stamp_us > self._last_stamp_us:
+            self._last_stamp_us = int(source.stamp_us)
+        else:
+            self._last_stamp_us += 1
+        message.stamp_us = self._last_stamp_us
         message.run_id = source.run_id
         message.scene_seed = source.scene_seed
         message.frame_index = source.frame_index

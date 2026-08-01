@@ -8,6 +8,14 @@
 #include "Misc/Parse.h"
 #include "UObject/UnrealType.h"
 
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Sockets.h"
+#include "SocketSubsystem.h"
+#include "IPAddress.h"
+#include "Interfaces/IPv4/IPv4Endpoint.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogSceneAutomation, Log, All);
 
 namespace
@@ -232,7 +240,19 @@ bool USceneAutomationSubsystem::ReadCommandLine()
     FParse::Value(CommandLine, TEXT("SineWavelength="), SineWavelengthCm);
     FParse::Value(CommandLine, TEXT("SineAmplitude="), SineAmplitudeCm);
     FParse::Value(CommandLine, TEXT("SineSpeed="), SineSpeedCmPerSec);
+    FParse::Value(CommandLine, TEXT("SineDelay="), SineDelaySec);
     bYawFixWholeRun = FParse::Param(FCommandLine::Get(), TEXT("YawFixWholeRun"));
+    FParse::Value(CommandLine, TEXT("SceneExecPort="), ExecPort);
+    if (ExecPort > 0)
+    {
+        // Apply setpoint displacements after the whole world tick so the
+        // executor wins over any blueprint-side position control.
+        WorldTickEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
+            [this](UWorld*, ELevelTick, float)
+            {
+                ApplyExecutedOffset();
+            });
+    }
     if (SlotId.IsEmpty()
         || !LayoutId.StartsWith(TEXT("L"))
         || (MotionState != TEXT("S0")
@@ -344,6 +364,7 @@ bool USceneAutomationSubsystem::ConfigureScene()
     // regardless of BeginPlay ordering.
     ForceAsvYawZero(*Asv);
     AsvActor = Asv;
+    AsvAnchorLocation = Asv->GetActorLocation();
     UE_LOG(
         LogSceneAutomation,
         Display,
@@ -462,16 +483,20 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
         {
             // Analytic world-frame sine: the formation advances along X and
             // each boat oscillates laterally about its center-line offset.
+            // The formation holds its spawn position for SineDelaySec so a
+            // late-starting closed loop still sees training-distance inputs.
+            const double MotionTime =
+                FMath::Max(0.0, ElapsedSeconds - SineDelaySec);
             const double X =
                 InitialWorldLocations[Binding.EntityId].X
-                + Params->ForwardSpeedCmPerSec * ElapsedSeconds;
+                + Params->ForwardSpeedCmPerSec * MotionTime;
             const double Y =
                 InitialWorldLocations[Binding.EntityId].Y
                 + Params->LateralOffsetCm
                 + Params->AmplitudeCm
                     * FMath::Sin(
                         2.0 * PI * Params->ForwardSpeedCmPerSec
-                            * ElapsedSeconds / SineWavelengthCm
+                            * MotionTime / SineWavelengthCm
                         + Params->PhaseRad);
             Location = FVector(X, Y, InitialWorldLocations[Binding.EntityId].Z);
         }
@@ -519,10 +544,189 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
                 (int32)FMath::RoundToInt(Asv->GetActorRotation().Yaw));
         }
     }
+    PollSetpointExecutor();
     if (ElapsedSeconds >= MaxRuntimeSeconds)
     {
         FailAndExit(TEXT("maximum automation runtime exceeded"));
     }
+}
+
+void USceneAutomationSubsystem::PollSetpointExecutor()
+{
+    if (ExecPort <= 0)
+    {
+        return;
+    }
+    if (ExecServerSocket == nullptr)
+    {
+        ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get();
+        if (SocketSubsystem == nullptr)
+        {
+            return;
+        }
+        ExecServerSocket = SocketSubsystem->CreateSocket(
+            NAME_Stream, TEXT("SceneSetpointExecutor"), false);
+        if (ExecServerSocket == nullptr)
+        {
+            UE_LOG(
+                LogSceneAutomation,
+                Error,
+                TEXT("SCENE_EXEC_FAIL cannot create socket"));
+            return;
+        }
+        ExecServerSocket->SetNonBlocking(true);
+        FIPv4Endpoint Endpoint(FIPv4Address::Any, ExecPort);
+        if (!ExecServerSocket->Bind(*Endpoint.ToInternetAddr())
+            || !ExecServerSocket->Listen(4))
+        {
+            UE_LOG(
+                LogSceneAutomation,
+                Error,
+                TEXT("SCENE_EXEC_FAIL cannot bind/listen port %d"),
+                ExecPort);
+            ExecServerSocket->Close();
+            ExecServerSocket = nullptr;
+            return;
+        }
+        UE_LOG(
+            LogSceneAutomation,
+            Display,
+            TEXT("SCENE_EXEC_READY port=%d"),
+            ExecPort);
+    }
+
+    // Accept new connections (non-blocking; keep the latest one).
+    FSocket* NewClient = ExecServerSocket->Accept(TEXT("SceneSetpointClient"));
+    if (NewClient != nullptr)
+    {
+        NewClient->SetNonBlocking(true);
+        if (ExecClientSocket != nullptr)
+        {
+            ExecClientSocket->Close();
+        }
+        ExecClientSocket = NewClient;
+        UE_LOG(
+            LogSceneAutomation,
+            Display,
+            TEXT("SCENE_EXEC_CLIENT_CONNECTED"));
+    }
+
+    if (ExecClientSocket == nullptr)
+    {
+        return;
+    }
+
+    // Drain available bytes and split on the __OD_END__ terminator.
+    uint8 Chunk[4096];
+    int32 BytesRead = 0;
+    while (ExecClientSocket->Recv(
+               Chunk, sizeof(Chunk), BytesRead,
+               ESocketReceiveFlags::None)
+           && BytesRead > 0)
+    {
+        ExecBuffer.Append(Chunk, BytesRead);
+    }
+    static const TArray<uint8> Terminator = []() {
+        const FString T = TEXT("__OD_END__");
+        TArray<uint8> Out;
+        Out.Reserve(T.Len());
+        for (int32 i = 0; i < T.Len(); ++i)
+        {
+            Out.Add(static_cast<uint8>(T[i]));
+        }
+        return Out;
+    }();
+    const auto FindTerminator = [&]() -> int32 {
+        if (ExecBuffer.Num() < Terminator.Num())
+        {
+            return INDEX_NONE;
+        }
+        for (int32 i = 0; i + Terminator.Num() <= ExecBuffer.Num(); ++i)
+        {
+            bool Match = true;
+            for (int32 j = 0; j < Terminator.Num(); ++j)
+            {
+                if (ExecBuffer[i + j] != Terminator[j])
+                {
+                    Match = false;
+                    break;
+                }
+            }
+            if (Match)
+            {
+                return i;
+            }
+        }
+        return INDEX_NONE;
+    };
+    int32 Found = INDEX_NONE;
+    while ((Found = FindTerminator()) != INDEX_NONE)
+    {
+        const FUTF8ToTCHAR Converter(
+            reinterpret_cast<const ANSICHAR*>(ExecBuffer.GetData()),
+            Found);
+        HandleSetpointPayload(FString(Converter.Get()));
+        ExecBuffer.RemoveAt(0, Found + Terminator.Num());
+        // The bridge appends a NUL separator after the terminator; drop it
+        // so the next payload does not start with a truncated string.
+        while (ExecBuffer.Num() > 0 && ExecBuffer[0] == 0)
+        {
+            ExecBuffer.RemoveAt(0, 1);
+        }
+    }
+}
+
+void USceneAutomationSubsystem::HandleSetpointPayload(const FString& Payload)
+{
+    TSharedPtr<FJsonObject> Object;
+    const TSharedRef<TJsonReader<>> Reader =
+        TJsonReaderFactory<>::Create(Payload);
+    if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+    {
+        UE_LOG(
+            LogSceneAutomation,
+            Warning,
+            TEXT("SCENE_EXEC_BAD_PAYLOAD %s"),
+            *Payload.Left(120));
+        return;
+    }
+    const bool Valid = Object->GetBoolField(TEXT("Valid"));
+    const bool Hold = Object->GetBoolField(TEXT("Hold_Position"));
+    if (!Valid || Hold)
+    {
+        return;
+    }
+    const double DeltaX = Object->GetNumberField(TEXT("Delta_X_Cm"));
+    const double DeltaY = Object->GetNumberField(TEXT("Delta_Y_Cm"));
+    if (AsvActor.Get() == nullptr)
+    {
+        return;
+    }
+    ExecutedOffset.X += static_cast<float>(DeltaX);
+    ExecutedOffset.Y += static_cast<float>(DeltaY);
+    bExecutorActive = true;
+}
+
+void USceneAutomationSubsystem::ApplyExecutedOffset()
+{
+    if (!bExecutorActive || ExecPort <= 0)
+    {
+        return;
+    }
+    AActor* Asv = AsvActor.Get();
+    if (Asv == nullptr)
+    {
+        return;
+    }
+    // The blueprint may reposition the ASV during its own tick; re-assert
+    // the anchor-plus-setpoint position after the whole world tick so the
+    // C++ executor is the effective kinematic controller.
+    Asv->SetActorLocationAndRotation(
+        AsvAnchorLocation + ExecutedOffset,
+        FRotator(0.0, 0.0, 0.0),
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
 }
 
 TStatId USceneAutomationSubsystem::GetStatId() const

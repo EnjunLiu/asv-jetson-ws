@@ -64,6 +64,10 @@ class VLAPolicyNode(Node):
         self._language_stamp = 0.0
         self._visual_stamp = 0.0
         self._entities_stamp = 0.0
+        # Monotonic output stamp: the UE5 simulation clock can step
+        # backwards headless; keep the published stamp strictly increasing
+        # so downstream staleness checks never see a regression.
+        self._last_out_stamp_us = 0
 
         # Subscribers.
         self._lang_sub = self.create_subscription(
@@ -144,7 +148,15 @@ class VLAPolicyNode(Node):
             return
 
         msg = SelectedTrajectory()
-        msg.stamp_us = int(ent.stamp_us)
+        if int(ent.stamp_us) > self._last_out_stamp_us:
+            self._last_out_stamp_us = int(ent.stamp_us)
+        else:
+            self._last_out_stamp_us += 1
+        msg.stamp_us = self._last_out_stamp_us
+        if self._frame_seq < 20:
+            self.get_logger().info(
+                f"stamp trace: out={msg.stamp_us} ent={int(ent.stamp_us)}"
+            )
         msg.run_id = str(ent.run_id)
         msg.frame_id = FRAME_ID
         msg.model_version = POLICY_MODEL_VERSION

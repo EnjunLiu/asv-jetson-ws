@@ -9,7 +9,8 @@ param(
     [double]$SineWavelength = 6000.0,
     [double]$SineAmplitude = 600.0,
     [double]$SineSpeed = 60.0,
-    [switch]$YawFixWholeRun
+    [switch]$YawFixWholeRun,
+    [int]$SceneExecPort = 0
 )
 
 # Headless scene verification: launch the fixed automation binary with a
@@ -46,6 +47,7 @@ $ueArguments = @(
     "-SineAmplitude=$SineAmplitude",
     "-SineSpeed=$SineSpeed",
     $(if ($YawFixWholeRun) { "-YawFixWholeRun" } else { "" }),
+    $(if ($SceneExecPort -gt 0) { "-SceneExecPort=$SceneExecPort" } else { "" }),
     "-RenderOffscreen",
     "-unattended",
     "-nosplash",

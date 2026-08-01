@@ -53,6 +53,9 @@ def generate_launch_description():
                 default_value="/home/jetson/jetson_asv_ws/models/policy.onnx",
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
+            DeclareLaunchArgument(
+                "execution_address", default_value=""
+            ),
             # ── TCP bridge (kinematic outbound) ──
             Node(
                 package="asv_ue_bridge",
@@ -66,6 +69,10 @@ def generate_launch_description():
                         "use_sim_time": ParameterValue(
                             LaunchConfiguration("use_sim_time"),
                             value_type=bool,
+                        ),
+                        "execution_address": ParameterValue(
+                            LaunchConfiguration("execution_address"),
+                            value_type=str,
                         ),
                     },
                 ],

@@ -217,6 +217,9 @@ public:
       declare_parameter<double>("kinematic_position_scale", 100.0);
     kinematic_lateral_sign_ =
       declare_parameter<double>("kinematic_lateral_sign", -1.0);
+    execution_address_ =
+      declare_parameter<std::string>("execution_address", "");
+    execution_port_ = declare_parameter<int>("execution_port", 8081);
 
     if (port_ <= 0 || port_ > 65535) {
       throw std::runtime_error("port must be in 1..65535");
@@ -295,6 +298,11 @@ public:
           [this](
             const asv_jetson_interfaces::msg::UEKinematicSetpoint::SharedPtr message)
           {
+            RCLCPP_INFO(
+              get_logger(),
+              "kinematic setpoint received stamp=%ld valid=%d",
+              static_cast<long>(message->stamp_us),
+              static_cast<int>(message->valid));
             send_kinematic_setpoint(*message);
           });
     }
@@ -303,12 +311,24 @@ public:
     running_.store(true);
     server_thread_ = std::thread(&UeObjectDelivererBridgeNode::server_loop, this);
 
+    // Optional C++ kinematic executor connection (headless closed loop):
+    // the UE5 Connection blueprint does not apply kinematic setpoints when
+    // running headless, so the bridge can deliver setpoints to the EDGE
+    // executor socket instead.  Enabled when execution_address is set.
+    if (!execution_address_.empty()) {
+      execution_thread_ =
+        std::thread(&UeObjectDelivererBridgeNode::execution_loop, this);
+    }
+
     RCLCPP_INFO(
       get_logger(),
       "Listening for UE5 ObjectDeliverer on %s:%d, terminator='%s', "
-      "outbound_command_mode='%s'",
+      "outbound_command_mode='%s'%s",
       listen_address_.c_str(), port_, terminator_.c_str(),
-      outbound_command_mode_.c_str());
+      outbound_command_mode_.c_str(),
+      execution_address_.empty() ? "" :
+        (std::string("; kinematic executor -> ") + execution_address_ +
+         ":" + std::to_string(execution_port_)).c_str());
   }
 
   ~UeObjectDelivererBridgeNode() override
@@ -319,10 +339,14 @@ public:
       std::lock_guard<std::mutex> lock(socket_mutex_);
       close_socket(client_fd_);
       close_socket(server_fd_);
+      close_socket(execution_fd_);
     }
 
     if (server_thread_.joinable()) {
       server_thread_.join();
+    }
+    if (execution_thread_.joinable()) {
+      execution_thread_.join();
     }
   }
 
@@ -333,6 +357,60 @@ private:
       ::shutdown(file_descriptor, SHUT_RDWR);
       ::close(file_descriptor);
       file_descriptor = -1;
+    }
+  }
+
+  void execution_loop()
+  {
+    while (running_.load()) {
+      const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (fd < 0) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        continue;
+      }
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(static_cast<uint16_t>(execution_port_));
+      if (::inet_pton(AF_INET, execution_address_.c_str(),
+                      &address.sin_addr) != 1) {
+        RCLCPP_ERROR(
+          get_logger(), "Invalid execution address: %s",
+          execution_address_.c_str());
+        ::close(fd);
+        return;
+      }
+      if (::connect(fd, reinterpret_cast<sockaddr *>(&address),
+                    sizeof(address)) < 0) {
+        ::close(fd);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        close_socket(execution_fd_);
+        execution_fd_ = fd;
+      }
+      RCLCPP_INFO(
+        get_logger(), "Connected to UE5 kinematic executor %s:%d",
+        execution_address_.c_str(), execution_port_);
+
+      // Keep the connection open; reconnect on close.
+      while (running_.load()) {
+        char probe;
+        const ssize_t n = ::recv(fd, &probe, 1, MSG_PEEK);
+        if (n == 0) {
+          break;
+        }
+        if (n < 0 && errno != EINTR && errno != EAGAIN
+            && errno != EWOULDBLOCK) {
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+      {
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        close_socket(execution_fd_);
+      }
     }
   }
 
@@ -895,16 +973,28 @@ private:
       {"Reason", reason}
     };
 
+    if (!execution_address_.empty()) {
+      // Headless closed loop: deliver to the UE5 C++ executor (the
+      // blueprint does not apply kinematic setpoints headless).
+      send_json_payload_to(response, execution_fd_, "kinematic setpoint");
+      return;
+    }
     send_json_payload(response, "kinematic setpoint");
   }
 
   void send_json_payload(const json & response, const char * label)
   {
+    send_json_payload_to(response, client_fd_, label);
+  }
+
+  void send_json_payload_to(
+    const json & response, int file_descriptor, const char * label)
+  {
     std::string payload = response.dump() + terminator_;
     payload.push_back('\0');
 
     std::lock_guard<std::mutex> lock(socket_mutex_);
-    if (client_fd_ < 0) {
+    if (file_descriptor < 0) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Dropping %s: UE5 client is not connected", label);
@@ -914,7 +1004,7 @@ private:
     std::size_t sent_total = 0;
     while (sent_total < payload.size()) {
       const ssize_t sent = ::send(
-        client_fd_,
+        file_descriptor,
         payload.data() + sent_total,
         payload.size() - sent_total,
         MSG_NOSIGNAL);
@@ -956,6 +1046,12 @@ private:
   std::string outbound_command_mode_{"thruster"};
   double kinematic_position_scale_{100.0};
   double kinematic_lateral_sign_{-1.0};
+
+  // Optional UE5 C++ kinematic executor (headless closed loop).
+  std::string execution_address_;
+  int execution_port_{8081};
+  int execution_fd_{-1};
+  std::thread execution_thread_;
 
   std::atomic<bool> running_{false};
   std::thread server_thread_;

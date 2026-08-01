@@ -34,3 +34,9 @@ ue_object_deliverer_bridge_node:
     # UE local +Y is right, so the outbound lateral sign is negative.
     kinematic_position_scale: 100.0
     kinematic_lateral_sign: -1.0
+
+    # Optional UE5 C++ kinematic executor (headless closed loop): when set,
+    # kinematic setpoints are delivered to the EDGE executor socket instead
+    # of the blueprint channel (the blueprint ignores them headless).
+    execution_address: ""
+    execution_port: 8081

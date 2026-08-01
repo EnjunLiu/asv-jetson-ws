@@ -6,6 +6,7 @@
 #include "SceneAutomationSubsystem.generated.h"
 
 class AActor;
+class FSocket;
 
 /** Per-target motion parameters for the sine formation (motion state S2). */
 struct FSceneSineParams
@@ -57,7 +58,32 @@ private:
     double SineWavelengthCm = 6000.0;
     double SineAmplitudeCm = 600.0;
     double SineSpeedCmPerSec = 60.0;
+    // Seconds the S2 formation stays at its spawn distance before advancing
+    // (lets the closed loop start while the targets are still within the
+    // training distance distribution).
+    double SineDelaySec = 0.0;
     TMap<FName, FSceneSineParams> SineParams;
+
+    // C++ kinematic setpoint executor.  The Connection blueprint does not
+    // apply kinematic setpoints when running headless, so this subsystem
+    // listens on SceneExecPort (default 8081) and moves the ASV itself
+    // (same semantics as ue5_kinematic_command_v1: incremental world-space
+    // cm displacement, y already sign-flipped by the bridge).  The
+    // blueprint's TCP channel (8080) keeps serving entity/camera reports
+    // untouched.  Enabled only when SceneExecPort > 0.
+    void PollSetpointExecutor();
+    void HandleSetpointPayload(const FString& Payload);
+    void ApplyExecutedOffset();
+    int32 ExecPort = 0;
+    FSocket* ExecServerSocket = nullptr;
+    FSocket* ExecClientSocket = nullptr;
+    TArray<uint8> ExecBuffer;
+    // Cumulative executor displacement applied after the world tick (i.e.
+    // after any blueprint position control) so setpoints win the race.
+    FVector ExecutedOffset = FVector::ZeroVector;
+    FVector AsvAnchorLocation = FVector::ZeroVector;
+    bool bExecutorActive = false;
+    FDelegateHandle WorldTickEndHandle;
 
     // Seconds during which Tick re-applies the canonical ASV yaw.  The
     // Connection blueprint consumes SceneSeed at BeginPlay, spawns its own
