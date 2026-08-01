@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse, json, hashlib, sys
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -19,15 +21,28 @@ def _sha256_file(path: Path) -> str:
     return d.hexdigest()
 
 
+def _checkpoint_model_config(
+    checkpoint: Mapping[str, Any],
+) -> tuple[SmallPolicyConfig, str]:
+    """Resolve the exact policy config used to create a checkpoint."""
+
+    raw_config = checkpoint.get("model_config")
+    if raw_config is None:
+        # Older checkpoints predate model_config provenance.  Match the
+        # dataclass defaults (the model_small_v1 training default), rather
+        # than silently selecting a different attention architecture.
+        return SmallPolicyConfig(), "dataclass_defaults_legacy"
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("checkpoint model_config must be a mapping")
+    return SmallPolicyConfig.from_mapping(raw_config), "checkpoint:model_config"
+
+
 def export_onnx(checkpoint_path: str, output_path: str) -> dict:
     device = torch.device("cpu")
-    cfg = SmallPolicyConfig(
-        entity_attention_mode="language_additive",
-        language_conditioned_entity_attention=True,
-    )
-    model = SmallTrajectoryPolicy(cfg)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    cfg, config_source = _checkpoint_model_config(ckpt)
+    model = SmallTrajectoryPolicy(cfg)
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.eval()
 
     # Dummy inputs matching the policy contract.
@@ -168,6 +183,8 @@ def export_onnx(checkpoint_path: str, output_path: str) -> dict:
         "onnx_path": str(Path(output_path).resolve()),
         "onnx_sha256": onnx_sha,
         "parameter_count": model.trainable_parameter_count(),
+        "model_config": asdict(cfg),
+        "model_config_source": config_source,
         "max_abs_error": float(max_diff),
         "cosine_similarity": float(cos_sim),
         "passed": max_diff < 1e-4 and cos_ok,
