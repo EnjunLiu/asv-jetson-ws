@@ -133,7 +133,7 @@ UE5 采集 (collect.ps1, 自动化) → episode 包 (tar.gz, SHA-256 校验)
 | 选择指标 | **96.2%** | L6 97.9% / L6B 95.3%（红蓝双向） |
 | ONNX 导出 | 完成 | parity max_diff=0、cos=1.0；已部署 Jetson（旧模型备份） |
 | 语言 stub | 完成 | 红/蓝指令运行时切换（参数驱动） |
-| 在线闭环 | **待 PIE 实测** | headless 下 setpoint 不执行（已证实）；runbook 见 docs/demo_runbook.md |
+| 在线闭环（headless） | **部分通过** | C++ 执行器 + stamp 修复（STALE=0）；follow-red 选择正确（2/2 seeds，R18/R21，3m standoff 到达）、门几乎全 PASS；follow-blue 在线不稳定（离线 89.5%）；动态持续跟随待改进 |
 | ESP32 扩展 | 完成 | hardware_loop.launch.py + 链烟测（fail-closed 验证）+ docs/esp32_interface.md |
 
 **诚实记录**：模型闭环的最终验收（Play 实测 ≥8 runs）需用户在 PIE 模式
