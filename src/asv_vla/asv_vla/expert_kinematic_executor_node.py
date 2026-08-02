@@ -51,8 +51,13 @@ class ExpertKinematicExecutorNode(Node):
                 "max_step_m", DEFAULT_MAX_STEP_M
             ).value
         )
+        self.start_delay_sec = float(
+            self.declare_parameter("start_delay_sec", 0.0).value
+        )
         if not math.isfinite(self.publish_rate_hz) or self.publish_rate_hz <= 0:
             raise ValueError("publish_rate_hz must be positive and finite")
+        if not math.isfinite(self.start_delay_sec) or self.start_delay_sec < 0:
+            raise ValueError("start_delay_sec must be non-negative and finite")
         if (
             not math.isfinite(self.source_timeout_sec)
             or self.source_timeout_sec <= 0
@@ -84,6 +89,7 @@ class ExpertKinematicExecutorNode(Node):
         self.create_timer(1.0, self.publish_status)
 
         self.latest: ExpertTrajectory | None = None
+        self.start_monotonic = time.monotonic()
         self.latest_received_monotonic = 0.0
         self.last_source_identity: tuple[str, int, int] | None = None
         self.stale_reported_identity: tuple[str, int, int] | None = None
@@ -149,6 +155,13 @@ class ExpertKinematicExecutorNode(Node):
         )
 
     def publish_latest_once(self) -> None:
+        # Collection-time start delay: keeps the ASV stationary for
+        # start_delay_sec while the UE5 targets hold their spawn positions
+        # (matching -SineDelay), so the recorded frames include the static
+        # initial geometry the online loop sees during its own startup.
+        if time.monotonic() - self.start_monotonic < self.start_delay_sec:
+            return
+
         source = self.latest
         if source is None:
             return

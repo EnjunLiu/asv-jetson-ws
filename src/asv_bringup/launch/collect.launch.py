@@ -111,6 +111,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("distance_bucket", default_value="3m"),
         DeclareLaunchArgument("max_speed_mps", default_value="0.15"),
+        DeclareLaunchArgument("start_delay_sec", default_value="0.0"),
         DeclareLaunchArgument("execution_address", default_value=""),
         DeclareLaunchArgument("execution_port", default_value="8081"),
         DeclareLaunchArgument(
@@ -153,6 +154,9 @@ def generate_launch_description():
                 "publish_rate_hz": 5.0,
                 "source_timeout_sec": 0.5,
                 "max_step_m": 0.35,
+                "start_delay_sec": ParameterValue(
+                    LaunchConfiguration("start_delay_sec"), value_type=float
+                ),
                 "use_sim_time": False,
             }],
         ),

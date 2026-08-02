@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 4 || $# -gt 7 ]]; then
-  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION] [TARGET_ATTRIBUTE]" >&2
+if [[ $# -lt 4 || $# -gt 8 ]]; then
+  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION] [TARGET_ATTRIBUTE] [START_DELAY_SEC]" >&2
   exit 2
 fi
 
@@ -16,7 +16,7 @@ execution_address=${EXECUTION_ADDRESS:-}
 execution_port=${EXECUTION_PORT:-8081}
 max_speed_mps=${MAX_SPEED_MPS:-0.8}
 
-[[ $slot_id =~ ^(BLUE_)?L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
+[[ $slot_id =~ ^[A-Z0-9]*_?L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid slot_id=$slot_id" >&2
   exit 2
 }
@@ -93,6 +93,7 @@ setsid env PYTHONUNBUFFERED=1 ros2 launch asv_bringup collect.launch.py \
   scene_seed:="$scene_seed" \
   action:="$rollout_action" \
   target_attribute:="$rollout_target_attribute" \
+  start_delay_sec:="${8:-0.0}" \
   distance_bucket:="$rollout_distance_bucket" \
   execution_address:="$execution_address" \
   execution_port:="$execution_port" \
