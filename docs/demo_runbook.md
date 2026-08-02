@@ -46,7 +46,7 @@ POLICY_READY backend=torch_cuda device=cuda
   "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
   -Slot=FINAL-S2-230908 -Layout=L7 -Motion=S2 -Seed=230908 `
   -MaxRuntimeSeconds=35 -SceneExecPort=8081 -YawFixWholeRun `
-  -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+  -SineAmplitude=200 -SineDelay=40 -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
 ```
 
 录制时保留 UE5 窗口、Jetson 日志和 `Saved/Logs/VLA.log`。成功标准：
