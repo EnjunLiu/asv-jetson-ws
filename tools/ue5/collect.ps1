@@ -9,6 +9,7 @@ param(
     [string]$UeProject = "D:\Unreal Projects\VLA\VLA.uproject",
     [string]$UnrealExe = "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe",
     [string]$LocalOutput = "",
+    [string]$TargetAttribute = "color:red",
     [string]$ExecutionAddress = "192.168.137.1",
     [int]$ExecutionPort = 8081,
     [double]$MaxSpeedMps = 0.8,
@@ -94,7 +95,7 @@ while ($Count -eq 0 -or $completedThisInvocation -lt $Count) {
     $remoteStderr = Join-Path $env:TEMP "collect-$slot-$stamp.stderr.log"
     $ueStdout = Join-Path $env:TEMP "collect-$slot-$stamp.ue.stdout.log"
     $ueStderr = Join-Path $env:TEMP "collect-$slot-$stamp.ue.stderr.log"
-    $remoteCommand = "cd '$RemoteRepo' && EXECUTION_ADDRESS='$ExecutionAddress' EXECUTION_PORT='$ExecutionPort' MAX_SPEED_MPS='$MaxSpeedMps' bash scripts/remote_collect.sh '$slot' '$layout' '$motion' '$seed' '$RemotePlan' '$rolloutAction'"
+    $remoteCommand = "cd '$RemoteRepo' && EXECUTION_ADDRESS='$ExecutionAddress' EXECUTION_PORT='$ExecutionPort' MAX_SPEED_MPS='$MaxSpeedMps' bash scripts/remote_collect.sh '$slot' '$layout' '$motion' '$seed' '$RemotePlan' '$rolloutAction' '$TargetAttribute'"
 
     $remoteProcess = Start-Process $sshExe `
         -ArgumentList @(

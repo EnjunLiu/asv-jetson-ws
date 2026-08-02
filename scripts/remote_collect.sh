@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 4 || $# -gt 6 ]]; then
-  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION]" >&2
+if [[ $# -lt 4 || $# -gt 7 ]]; then
+  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION] [TARGET_ATTRIBUTE]" >&2
   exit 2
 fi
 
@@ -16,7 +16,7 @@ execution_address=${EXECUTION_ADDRESS:-}
 execution_port=${EXECUTION_PORT:-8081}
 max_speed_mps=${MAX_SPEED_MPS:-0.8}
 
-[[ $slot_id =~ ^L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
+[[ $slot_id =~ ^(BLUE_)?L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid slot_id=$slot_id" >&2
   exit 2
 }
@@ -36,12 +36,16 @@ max_speed_mps=${MAX_SPEED_MPS:-0.8}
   echo "SCENE_REMOTE_FAIL invalid rollout_action=$rollout_action" >&2
   exit 2
 }
-rollout_target_attribute=color:red
+rollout_target_attribute=${7:-color:red}
 rollout_distance_bucket=3m
 if [[ $rollout_action == stop ]]; then
   rollout_target_attribute=none
   rollout_distance_bucket=none
 fi
+[[ $rollout_target_attribute == color:red || $rollout_target_attribute == color:blue ]] || {
+  echo "SCENE_REMOTE_FAIL invalid target_attribute=$rollout_target_attribute" >&2
+  exit 2
+}
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"

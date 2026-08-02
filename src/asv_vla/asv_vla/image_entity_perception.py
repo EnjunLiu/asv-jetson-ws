@@ -38,6 +38,7 @@ ENTITY_COUNT = len(ENTITY_IDS)
 OUTPUT_DIM = ENTITY_COUNT * 4  # visible logit + relative x/y/z per slot
 POSITION_SCALE_M = np.asarray((40.0, 40.0, 5.0), dtype=np.float32)
 COLOR_CALIBRATED_MODEL_VERSION = "image_entity_color_calibrated_v1"
+COLOR_CALIBRATED_MODEL_VERSION_V2 = "image_entity_ridge_v2"
 COLOR_CALIBRATION_WIDTH = 320
 COLOR_CALIBRATION_HEIGHT = 180
 # Fit on the available near-range S2 red masks.  The form is intentionally
@@ -176,13 +177,14 @@ def _largest_red_component(mask: np.ndarray) -> tuple[int, float, float]:
     return best_count, best_sum_x / best_count, best_sum_y / best_count
 
 
-def calibrated_red_geometry(
+def calibrated_color_geometry(
     image: Image.Image | np.ndarray,
+    color: str,
 ) -> tuple[bool, float, float, float, tuple[float, float]]:
-    """Estimate red-target geometry from RGB only.
+    """Estimate red/blue-target geometry from RGB only.
 
     The returned area is the fraction of the fixed 320x180 grid occupied by
-    the largest red component, and the centroid is in that same grid.  A
+    the largest color component, and the centroid is in that same grid.  A
     missing or out-of-calibration component returns ``valid=False`` with NaN
     geometry; callers must keep their existing ridge prediction in that case.
     """
@@ -210,12 +212,20 @@ def calibrated_red_geometry(
         dtype=np.float32,
     ) / 255.0
     red, green, blue = grid.transpose(2, 0, 1)
-    mask = (
-        (red >= 0.25)
-        & (red >= green * 1.25)
-        & (red >= blue * 1.15)
-        & ((red - green) >= 0.08)
-    )
+    if color == "blue":
+        mask = (
+            (blue >= 0.25)
+            & (blue >= red * 1.25)
+            & (blue >= green * 1.15)
+            & ((blue - green) >= 0.08)
+        )
+    else:
+        mask = (
+            (red >= 0.25)
+            & (red >= green * 1.25)
+            & (red >= blue * 1.15)
+            & ((red - green) >= 0.08)
+        )
     component_pixels, centroid_x, centroid_y = _largest_red_component(mask)
     area = component_pixels / float(COLOR_CALIBRATION_WIDTH * COLOR_CALIBRATION_HEIGHT)
     if component_pixels < 8 or not (COLOR_AREA_MIN <= area <= COLOR_AREA_MAX):
@@ -697,8 +707,12 @@ class ImageEntityModel:
         # calibration, the target is marked invisible instead of allowing a
         # hallucinated ridge position to drive the vessel.
         calibrated_red: tuple[bool, float, float, float, tuple[float, float]] | None = None
+        calibrated_blue: tuple[bool, float, float, float, tuple[float, float]] | None = None
         if self.model_version == COLOR_CALIBRATED_MODEL_VERSION:
-            calibrated_red = calibrated_red_geometry(image)
+            calibrated_red = calibrated_color_geometry(image, "red")
+        elif self.model_version == COLOR_CALIBRATED_MODEL_VERSION_V2:
+            calibrated_red = calibrated_color_geometry(image, "red")
+            calibrated_blue = calibrated_color_geometry(image, "blue")
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
@@ -712,6 +726,16 @@ class ImageEntityModel:
                     visible = True
                     confidence = 1.0
                     geometry = np.asarray((red_x, red_y, 0.0), dtype=np.float32)
+                else:
+                    visible = False
+                    confidence = 0.0
+                    geometry = np.zeros(3, dtype=np.float32)
+            elif index == 1 and calibrated_blue is not None:
+                blue_valid, blue_x, blue_y, _, _ = calibrated_blue
+                if blue_valid:
+                    visible = True
+                    confidence = 1.0
+                    geometry = np.asarray((blue_x, blue_y, 0.0), dtype=np.float32)
                 else:
                     visible = False
                     confidence = 0.0
