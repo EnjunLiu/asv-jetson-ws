@@ -60,6 +60,10 @@ $ueArguments = @(
     "-FullStdOutLogOutput"
 )
 
+# Drop empty placeholders from the conditional flags so Start-Process
+# receives only real arguments.
+$ueArguments = @($ueArguments | Where-Object { -not [string]::IsNullOrEmpty($_) })
+
 $ueProcess = Start-Process $UnrealExe `
     -ArgumentList $ueArguments `
     -RedirectStandardOutput $log `

@@ -179,18 +179,34 @@ TMap<FName, FSceneSineParams> MakeSineParams(
     // Each boat swings with half the peak amplitude so the formation's total
     // lateral extent stays within the configured peak. The white boats
     // advance straight ahead as distractors (zero lateral amplitude). L6/L7
-    // put red left of blue; mirrored L6B/L7B swap the sine offsets.
-    const bool RedOnLeft =
-        LayoutId == TEXT("L6") || LayoutId == TEXT("L7");
+    // put red left of blue; mirrored L6B/L7B swap the sine offsets.  L7's
+    // near-range pair is 2 m apart (+/-100 cm), L6's far pair 6 m apart.
+    double RedOffsetCm = -300.0;
+    double BlueOffsetCm = 300.0;
+    if (LayoutId == TEXT("L7"))
+    {
+        RedOffsetCm = -100.0;
+        BlueOffsetCm = 100.0;
+    }
+    else if (LayoutId == TEXT("L6B"))
+    {
+        RedOffsetCm = 300.0;
+        BlueOffsetCm = -300.0;
+    }
+    else if (LayoutId == TEXT("L7B"))
+    {
+        RedOffsetCm = 100.0;
+        BlueOffsetCm = -100.0;
+    }
     FSceneSineParams Red;
     Red.ForwardSpeedCmPerSec = ForwardSpeedCmPerSec;
-    Red.LateralOffsetCm = RedOnLeft ? -300.0 : 300.0;
+    Red.LateralOffsetCm = RedOffsetCm;
     Red.AmplitudeCm = PeakAmplitudeCm / 2.0;
     Red.PhaseRad = PhaseRad;
     Result.Add(TEXT("target_red"), Red);
 
     FSceneSineParams Blue = Red;
-    Blue.LateralOffsetCm = RedOnLeft ? 300.0 : -300.0;
+    Blue.LateralOffsetCm = BlueOffsetCm;
     Result.Add(TEXT("target_blue"), Blue);
 
     FSceneSineParams White = Red;
@@ -512,9 +528,11 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
             const double X =
                 InitialWorldLocations[Binding.EntityId].X
                 + Params->ForwardSpeedCmPerSec * MotionTime;
+            // The layout already encodes each boat's lateral offset from the
+            // formation center line; the sine only adds the swing around it
+            // (adding LateralOffsetCm again would double the pair gap).
             const double Y =
                 InitialWorldLocations[Binding.EntityId].Y
-                + Params->LateralOffsetCm
                 + Params->AmplitudeCm
                     * FMath::Sin(
                         2.0 * PI * Params->ForwardSpeedCmPerSec
