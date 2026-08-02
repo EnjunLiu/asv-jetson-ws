@@ -46,14 +46,14 @@ source install/setup.bash
 ros2 launch asv_bringup vla_closed_loop.launch.py \
   model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
   perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
-  language_device:=cuda language_release_after_encode:=false \
+  language_device:=cuda language_release_after_encode:=true \
   policy_device:=cuda visual_device:=cuda \
   execution_address:=192.168.137.1 execution_port:=8081
 ```
 
-默认使用常驻 Qwen CUDA，可在任务文本更新时重新编码。只有设备级内存验证失败时，才
-显式使用 `language_release_after_encode:=true`；这仍然是实时 Qwen 首次编码，不得改
-回 `.npy` 或 CPU。
+实测 Orin Nano 8 GB 统一内存下常驻 Qwen 与其他 CUDA 模型并发会 OOM，因此默认
+`language_release_after_encode:=true`（Qwen 首次 CUDA 编码后释放权重，仍为真实
+Qwen embedding，不得改回 `.npy` 或 CPU）；launch 已对 CUDA 模型错峰启动。
 
 然后启动 UE5，项目文件必须是 UnrealEditor 的第一个参数：
 

@@ -33,7 +33,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -55,12 +55,20 @@ def generate_launch_description():
             LaunchConfiguration("use_sim_time"), value_type=bool
         ),
     }]
-    visual_encoder_node = Node(
-        package="asv_vla",
-        executable="visual_encoder",
-        name="visual_encoder",
-        output="screen",
-        parameters=visual_parameters,
+    # Staggered CUDA startup: Qwen is the largest model on the 8 GB
+    # unified-memory pool; the other CUDA models load 20 s later so the
+    # concurrent allocation peak does not OOM (NvMapMemAlloc error 12).
+    visual_encoder_node = TimerAction(
+        period=20.0,
+        actions=[
+            Node(
+                package="asv_vla",
+                executable="visual_encoder",
+                name="visual_encoder",
+                output="screen",
+                parameters=visual_parameters,
+            )
+        ],
     )
 
     language_qwen_node = Node(
@@ -164,18 +172,26 @@ def generate_launch_description():
                 respawn_delay=2.0,
             ),
             # ── Image-only perception (UE truth is not an input) ──
-            Node(
-                package="asv_vla",
-                executable="image_entity_perception",
-                name="image_entity_perception",
-                output="screen",
-                parameters=[{
-                    "model_path": LaunchConfiguration("perception_model_path"),
-                    "device": "cuda",
-                    "use_sim_time": ParameterValue(
-                        LaunchConfiguration("use_sim_time"), value_type=bool
-                    ),
-                }],
+            TimerAction(
+                period=20.0,
+                actions=[
+                    Node(
+                        package="asv_vla",
+                        executable="image_entity_perception",
+                        name="image_entity_perception",
+                        output="screen",
+                        parameters=[{
+                            "model_path": LaunchConfiguration(
+                                "perception_model_path"
+                            ),
+                            "device": "cuda",
+                            "use_sim_time": ParameterValue(
+                                LaunchConfiguration("use_sim_time"),
+                                value_type=bool,
+                            ),
+                        }],
+                    )
+                ],
             ),
             Node(
                 package="asv_vla",
@@ -223,22 +239,31 @@ def generate_launch_description():
                 }],
             ),
             # ── VLA policy inference (JetPack PyTorch, CUDA) ──
-            Node(
-                package="asv_vla",
-                executable="vla_policy",
-                name="vla_policy",
-                output="screen",
-                parameters=[
-                    {
-                        "model_path": LaunchConfiguration("model_path"),
-                        "device": LaunchConfiguration("policy_device"),
-                    },
-                    {
-                        "use_sim_time": ParameterValue(
-                            LaunchConfiguration("use_sim_time"),
-                            value_type=bool,
-                        ),
-                    },
+            TimerAction(
+                period=20.0,
+                actions=[
+                    Node(
+                        package="asv_vla",
+                        executable="vla_policy",
+                        name="vla_policy",
+                        output="screen",
+                        parameters=[
+                            {
+                                "model_path": LaunchConfiguration(
+                                    "model_path"
+                                ),
+                                "device": LaunchConfiguration(
+                                    "policy_device"
+                                ),
+                            },
+                            {
+                                "use_sim_time": ParameterValue(
+                                    LaunchConfiguration("use_sim_time"),
+                                    value_type=bool,
+                                ),
+                            },
+                        ],
+                    )
                 ],
             ),
             # ── Safety gate (sole publisher of /vla/selected_trajectory) ──

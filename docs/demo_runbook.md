@@ -14,7 +14,7 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
   model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
   perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
   language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
-  language_device:=cuda language_release_after_encode:=false \
+  language_device:=cuda language_release_after_encode:=true \
   task_text:="跟随红色目标船，保持3米距离" \
   execution_address:=192.168.137.1 execution_port:=8081
 ```
@@ -29,9 +29,13 @@ visual_encoder ... device=cuda
 POLICY_READY backend=torch_cuda device=cuda
 ```
 
-如果常驻 Qwen 在设备上确实造成内存不足，停止节点并显式重启为
-`language_release_after_encode:=true`。这仍使用真实 Qwen 首次 CUDA 编码，绝不能切换
-到 `.npy` 或 CPU。
+**实测（2026-08-02）**：Orin Nano 8 GB 统一内存下常驻 Qwen
+（`release_after_encode:=false`）与其余 CUDA 模型并发加载/推理会 OOM
+（`NvMapMemAlloc error 12`）。已内置两层对策并验证：
+1. launch 对视觉/感知/策略节点错峰启动（`TimerAction` 20 s，Qwen 先加载编码）；
+2. `language_release_after_encode:=true`（默认）：Qwen 首次 CUDA 编码后释放权重，
+   仍使用真实 Qwen 生成的 embedding，绝不切换 `.npy` 或 CPU。
+此组合已完整跑通在线闭环（SCENE_EXEC_APPLY 连续）。
 
 ## 2. UE5
 
