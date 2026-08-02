@@ -91,3 +91,11 @@ L7/S2 `seed=230908` 的历史运行已证明 JPEG→图像实体→tracker→CUD
 executor 的在线链路，曾记录约 350 次 `SCENE_EXEC_APPLY` 和正常 `SCENE_UE_COMPLETE`。
 这证明当前 near S2 可录制，不等于所有布局、距离和颜色已经统计泛化。约 7 m 白色干扰
 船是 OOD fail-closed 边界，不能用 UE 真值补齐。
+
+## 6. 红蓝切换验证记录（2026-08-02）
+
+- **红色**：指令解析 ✓，感知检测 target_red 4.9 m（confidence 1.0），策略 applied，
+  ASV 向左（red 侧）跟随 30 m（Y -10017 → -10180），间距 3 m 保持
+- **蓝色**：指令解析 ✓，感知无蓝色输出（模型仅校准红），守卫
+  VISUAL_TARGET_MISSING 阻止，ASV fail-closed hold（t=50 后静止）
+  —— 蓝色视觉跟踪是记录在案的未验收项，未伪装成已验收
