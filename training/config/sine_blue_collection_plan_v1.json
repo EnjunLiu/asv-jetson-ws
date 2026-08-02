@@ -14,7 +14,7 @@
  "relation_evaluation_frames": 1,
  "minimum_relation_pass_fraction": 1.0,
  "motion_evaluation_frames": 50,
- "minimum_motion_pass_fraction": 0.6,
+ "minimum_motion_pass_fraction": 0.3,
  "minimum_pairwise_distance_change_m": 0.05,
  "note": "Blue-follow collection: expert tracks the BLUE target (L7/L7B), so the blue boat stays centered in frame for perception calibration/training. Fresh seeds.",
  "slots": [

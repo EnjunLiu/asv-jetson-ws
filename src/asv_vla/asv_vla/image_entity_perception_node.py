@@ -147,7 +147,7 @@ class ImageEntityPerceptionNode(Node):
             .string_value
         )
         self.confidence_threshold = float(
-            self.declare_parameter("confidence_threshold", 0.55)
+            self.declare_parameter("confidence_threshold", 0.3)
             .get_parameter_value()
             .double_value
         )

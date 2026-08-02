@@ -37,6 +37,8 @@ SUPPORTED_SPLITS = {
     # Sine formation: 9/2/3 keeps the test split colour-paired
     # (red-left and red-right geometry both represented).
     14: {"train": 9, "validation": 2, "test": 3},
+    # Combined near red-view + blue-view: 16/4/4, stratified by view.
+    24: {"train": 16, "validation": 4, "test": 4},
     30: {"train": 18, "validation": 6, "test": 6},
 }
 

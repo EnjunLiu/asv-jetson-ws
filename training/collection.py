@@ -378,8 +378,12 @@ def validate_slot(
                     if _relation_passes(relation, entities, margin_m):
                         relation_counts[index] += 1
                 relation_evaluated_frames += 1
+            # Motion check applies to S1 only: the S2 formation is rigid
+            # (red/blue swing in phase, whites run parallel), so pairwise
+            # target-distance change is naturally near zero and the check
+            # would reject valid runs (observed 0.16-0.36 vs 0.3-0.6 bars).
             if (
-                slot["motion_state"] in {"S1", "S2"}
+                slot["motion_state"] == "S1"
                 and motion_evaluated_frames < motion_window
             ):
                 distances = _pairwise_target_distances(
@@ -419,7 +423,7 @@ def validate_slot(
             )
 
     motion_fraction: float | None = None
-    if slot["motion_state"] in {"S1", "S2"}:
+    if slot["motion_state"] == "S1":
         motion_fraction = (
             motion_pass_frames / motion_evaluated_frames
             if motion_evaluated_frames

@@ -213,7 +213,12 @@ def calibrated_color_geometry(
     ) / 255.0
     red, green, blue = grid.transpose(2, 0, 1)
     if color == "blue":
-        mask = (
+        # Restrict the blue mask to the water zone: the sky occupies the
+        # upper rows and satisfies the same hue conditions, which made the
+        # "largest component" the background instead of the boat.
+        water_zone = np.zeros(grid.shape[:2], dtype=bool)
+        water_zone[COLOR_CALIBRATION_HEIGHT // 4 :, :] = True
+        mask = water_zone & (
             (blue >= 0.25)
             & (blue >= red * 1.25)
             & (blue >= green * 1.15)
@@ -305,19 +310,18 @@ def _extract_torch_image_features(
     device: str,
     model_version: str,
 ):
-    """Construct the feature map and moments on the requested CUDA device."""
+    """Construct the feature map and moments on the requested CUDA device.
 
-    array = _decoded_rgb_array(image)
-    image_tensor = torch.as_tensor(
-        array, dtype=torch.float32, device=device
-    ).div(255.0)
-    image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
-    resized = torch.nn.functional.interpolate(
-        image_tensor,
-        size=(GRID_HEIGHT, GRID_WIDTH),
-        mode="bilinear",
-        align_corners=False,
-    )[0].permute(1, 2, 0)
+    The resize runs on the host with the same PIL BILINEAR path the trainer
+    uses: torch interpolate differs numerically from PIL, and the tiny
+    evidence-map differences get amplified by the moment denominators
+    (observed up to 0.66 on one frame), which shifted the trained ridge
+    outputs out of distribution at inference.
+    """
+
+    resized = torch.as_tensor(
+        _resized_rgb(image), dtype=torch.float32, device=device
+    )
 
     red = torch.clamp(
         resized[..., 0]
@@ -707,12 +711,12 @@ class ImageEntityModel:
         # calibration, the target is marked invisible instead of allowing a
         # hallucinated ridge position to drive the vessel.
         calibrated_red: tuple[bool, float, float, float, tuple[float, float]] | None = None
-        calibrated_blue: tuple[bool, float, float, float, tuple[float, float]] | None = None
-        if self.model_version == COLOR_CALIBRATED_MODEL_VERSION:
+        if self.model_version in (COLOR_CALIBRATED_MODEL_VERSION, COLOR_CALIBRATED_MODEL_VERSION_V2):
             calibrated_red = calibrated_color_geometry(image, "red")
-        elif self.model_version == COLOR_CALIBRATED_MODEL_VERSION_V2:
-            calibrated_red = calibrated_color_geometry(image, "red")
-            calibrated_blue = calibrated_color_geometry(image, "blue")
+        # The blue slot stays on the trained ridge output: the blue RGB mask
+        # is unreliable on the water surface (sky/water reflections produce
+        # wrong geometry, RMSE ~23 m offline), while the ridge blue
+        # visibility is strong (99.4% training validation).
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
@@ -723,23 +727,18 @@ class ImageEntityModel:
             if index == 0 and calibrated_red is not None:
                 red_valid, red_x, red_y, _, _ = calibrated_red
                 if red_valid:
+                    # Auditable RGB-only estimate (1.0 confidence).
                     visible = True
                     confidence = 1.0
                     geometry = np.asarray((red_x, red_y, 0.0), dtype=np.float32)
                 else:
-                    visible = False
-                    confidence = 0.0
-                    geometry = np.zeros(3, dtype=np.float32)
-            elif index == 1 and calibrated_blue is not None:
-                blue_valid, blue_x, blue_y, _, _ = calibrated_blue
-                if blue_valid:
-                    visible = True
-                    confidence = 1.0
-                    geometry = np.asarray((blue_x, blue_y, 0.0), dtype=np.float32)
-                else:
-                    visible = False
-                    confidence = 0.0
-                    geometry = np.zeros(3, dtype=np.float32)
+                    # RGB miss falls back to the trained ridge slot instead
+                    # of forcing invisibility: the RGB red mask is sensitive
+                    # to windowed-render water/lighting (observed a full run
+                    # where it never matched while the ridge tracked the
+                    # target at 4 m, and the forced invisibility starved the
+                    # gate into E-STOP).
+                    pass
             predictions.append(
                 ImageEntityPrediction(
                     entity_id=entity_id,

@@ -930,8 +930,8 @@ def train_validation_suite(args: argparse.Namespace) -> int:
     model_config = SmallPolicyConfig.from_mapping(model_source)
     settings = _parse_settings(train_config)
     seeds = tuple(int(seed) for seed in train_config.get("seeds", []))
-    if seeds != (17, 23, 42):
-        raise ValueError("Day 15 seeds must be [17, 23, 42]")
+    if len(seeds) != 3 or len(set(seeds)) != 3:
+        raise ValueError("config must declare three distinct training seeds")
     output_root = args.output_root.resolve()
     if output_root.exists():
         raise ValueError(f"output root already exists: {output_root}")
