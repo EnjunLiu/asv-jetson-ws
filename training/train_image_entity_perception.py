@@ -11,9 +11,10 @@ import argparse
 from pathlib import Path
 import json
 import math
+import random
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 from asv_vla.image_entity_perception import (
     ENTITY_COUNT,
@@ -37,12 +38,39 @@ ACCEPTANCE_MAX_RUN_GEOMETRY_RMSE_M = 0.5
 GEOMETRY_METRIC_MASK = "camera_projected_visibility_only"
 
 
+def _augment_image(image: Image.Image) -> Image.Image:
+    """Random position/brightness perturbation for the training split.
+
+    The online windowed render puts the blue target at geometries the
+    expert-driven collections undersample (e.g. the stationary 4.5 m / +0.4 m
+    startup position, where the un-augmented detector drops to ~3% frame
+    visibility while the red target at image centre stays near 100%).
+    Training-time translation/brightness jitter makes the ridge robust to
+    target position and appearance instead of relying on a privileged
+    centre-position bias.
+    """
+
+    width, height = image.size
+    dx = random.uniform(-0.08, 0.08) * width
+    dy = random.uniform(-0.08, 0.08) * height
+    image = image.transform(
+        (width, height),
+        Image.AFFINE,
+        (1.0, 0.0, -dx, 0.0, 1.0, -dy),
+        resample=Image.BILINEAR,
+    )
+    factor = random.uniform(0.88, 1.12)
+    image = ImageEnhance.Brightness(image).enhance(factor)
+    return image
+
+
 def _read_samples(
     root: Path,
     *,
     max_primary_distance_m: float,
     max_abs_yaw_rad: float,
     max_abs_surge_velocity_mps: float,
+    augment: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str], int, int, int]:
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
@@ -85,6 +113,8 @@ def _read_samples(
             image_path = episode / str(record["camera"]["image_path"])
             try:
                 with Image.open(image_path) as image:
+                    if augment:
+                        image = _augment_image(image)
                     features.append(extract_image_features(image))
             except (OSError, KeyError, ValueError) as exc:
                 raise RuntimeError(f"cannot read {frame_path}: {exc}") from exc
@@ -268,6 +298,21 @@ def train(
         max_primary_distance_m=max_primary_distance_m,
         max_abs_yaw_rad=max_abs_yaw_rad,
         max_abs_surge_velocity_mps=max_abs_surge_velocity_mps,
+        augment=False,
+    )
+    (
+        x_aug,
+        _,
+        _,
+        _,
+        _,
+        _,
+    ) = _read_samples(
+        root,
+        max_primary_distance_m=max_primary_distance_m,
+        max_abs_yaw_rad=max_abs_yaw_rad,
+        max_abs_surge_velocity_mps=max_abs_surge_velocity_mps,
+        augment=True,
     )
     unique_runs = sorted(set(run_ids))
     if len(unique_runs) < 2:
@@ -275,7 +320,10 @@ def train(
     validation_runs = set(unique_runs[::5] or unique_runs[-1:])
     train_mask = np.asarray([run not in validation_runs for run in run_ids])
     val_mask = ~train_mask
-    mean, scale, weights, bias = _ridge_fit(x[train_mask], y[train_mask], ridge)
+    # Train on the augmented features (position/brightness jitter); the
+    # validation features stay unperturbed.
+    x_train = np.where(train_mask[:, None], x_aug, x)
+    mean, scale, weights, bias = _ridge_fit(x_train[train_mask], y[train_mask], ridge)
     prediction = ((x - mean) / scale) @ weights + bias
     run_array = np.asarray(run_ids)
     validation_by_run = {

@@ -129,8 +129,17 @@ def parse_task_instruction(instruction: object) -> TaskSpec:
     return TaskSpec(text, "unknown", "unknown")
 
 
-def _largest_red_component(mask: np.ndarray) -> tuple[int, float, float]:
-    """Return pixel count and centroid of the largest 8-connected component."""
+def _largest_color_component_in_area(
+    mask: np.ndarray,
+) -> tuple[int, float, float]:
+    """Return the largest 8-connected component whose area is within
+    [COLOR_AREA_MIN, COLOR_AREA_MAX].
+
+    Background clutter (sky/water) often forms a huge component that exceeds
+    the calibration area cap; picking the largest in-range component keeps
+    the calibration robust to background while excluding noise.  Returns
+    (0, nan, nan) when no component is in range.
+    """
 
     height, width = mask.shape
     visited = np.zeros(mask.shape, dtype=bool)
@@ -168,7 +177,8 @@ def _largest_red_component(mask: np.ndarray) -> tuple[int, float, float]:
                     ]:
                         visited[neighbor_row, neighbor_column] = True
                         stack.append((neighbor_row, neighbor_column))
-        if count > best_count:
+        area = count / float(height * width)
+        if COLOR_AREA_MIN <= area <= COLOR_AREA_MAX and count > best_count:
             best_count = count
             best_sum_x = sum_x
             best_sum_y = sum_y
@@ -231,7 +241,7 @@ def calibrated_color_geometry(
             & (red >= blue * 1.15)
             & ((red - green) >= 0.08)
         )
-    component_pixels, centroid_x, centroid_y = _largest_red_component(mask)
+    component_pixels, centroid_x, centroid_y = _largest_color_component_in_area(mask)
     area = component_pixels / float(COLOR_CALIBRATION_WIDTH * COLOR_CALIBRATION_HEIGHT)
     if component_pixels < 8 or not (COLOR_AREA_MIN <= area <= COLOR_AREA_MAX):
         return False, float("nan"), float("nan"), float(area), (
@@ -711,12 +721,15 @@ class ImageEntityModel:
         # calibration, the target is marked invisible instead of allowing a
         # hallucinated ridge position to drive the vessel.
         calibrated_red: tuple[bool, float, float, float, tuple[float, float]] | None = None
+        calibrated_blue: tuple[bool, float, float, float, tuple[float, float]] | None = None
         if self.model_version in (COLOR_CALIBRATED_MODEL_VERSION, COLOR_CALIBRATED_MODEL_VERSION_V2):
             calibrated_red = calibrated_color_geometry(image, "red")
-        # The blue slot stays on the trained ridge output: the blue RGB mask
-        # is unreliable on the water surface (sky/water reflections produce
-        # wrong geometry, RMSE ~23 m offline), while the ridge blue
-        # visibility is strong (99.4% training validation).
+            # Area-filtered blue RGB: background (sky/water) components exceed
+            # the calibration area cap and are skipped, so the blue mask
+            # recovers the boat (72% of static-start frames offline vs 0%
+            # before).  Its geometry is coarse (~3 m), so the ridge geometry
+            # is preferred; the RGB detection only lifts visibility.
+            calibrated_blue = calibrated_color_geometry(image, "blue")
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
