@@ -1,0 +1,33 @@
+{
+  "RED 4m": {
+    "scene": "RED 4m",
+    "target_color": "red",
+    "target_entity": "target_red",
+    "desired_standoff_m": 4.0,
+    "available": true,
+    "ue_log": "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/red4m/ue_live.log",
+    "jetson_logs": [
+      "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/red4m/jetson_live.log"
+    ],
+    "asv_samples": 186,
+    "target_samples": 186,
+    "path_length_m": 94.2918931145258,
+    "standoff_mean_abs_error_m": 0.3474492117623516,
+    "standoff_p95_abs_error_m": 0.8474942023379519,
+    "standoff_final_m": 3.78582329784421,
+    "audit": {
+      "events": 700,
+      "events_complete": true,
+      "raw_action_observed": 12,
+      "policy_driven": 677,
+      "backstop": 15,
+      "hold": 8,
+      "fail_closed": 0,
+      "policy_stop_subset": 0,
+      "policy_dominance_rate": 0.9671428571428572,
+      "backstop_rate": 0.02142857142857143,
+      "source": "POLICY_AUDIT",
+      "observed_trace_records": 6
+    }
+  }
+}

@@ -11,6 +11,7 @@ torch = pytest.importorskip("torch")
 from training.dataset import (  # noqa: E402
     EpochSynonymDataset,
     InstructionMetadata,
+    mask_task_conditioned_entity_geometry,
 )
 from training.train import (  # noqa: E402
     _FrameGroupedBatchSampler,
@@ -20,6 +21,7 @@ from training.train import (  # noqa: E402
     compute_action_metrics,
     fit_label_mean_action_baseline,
     predict_label_mean_action_baseline,
+    _selection_score,
     _improvement_fraction,
     _write_progress,
 )
@@ -130,10 +132,39 @@ def test_metrics_expert_and_speed_contract() -> None:
     metrics = compute_action_metrics(target, target, logits, stop, labels)
 
     assert metrics["action_error_m"] == pytest.approx(0.0)
+    assert metrics["lateral_action_error_m"] == pytest.approx(0.0)
     assert metrics["stop_classification"]["f1"] == pytest.approx(1.0)
     assert metrics["stop_drift"]["within_0_10m_rate"] == pytest.approx(1.0)
     assert metrics["action_bound"]["violation_count"] == 0
     assert metrics["per_label"]["follow|color:red|3m"]["sample_count"] == 1
+
+
+def test_task_conditioned_geometry_matches_online_single_target_contract() -> None:
+    geometry = np.arange(4 * 16, dtype=np.float32).reshape(4, 16)
+    mask = np.asarray([True, True, True, False])
+    entity_ids = np.asarray(
+        ["target_blue", "target_red", "target_left", ""], dtype=object
+    )
+
+    red_values, red_mask, red_valid = mask_task_conditioned_entity_geometry(
+        geometry, mask, entity_ids, "跟随红色目标船，保持4米距离"
+    )
+    assert red_valid is True
+    assert red_mask.tolist() == [True, False, False, False]
+    assert np.allclose(red_values[0], geometry[1])
+
+    stop_values, stop_mask, stop_valid = mask_task_conditioned_entity_geometry(
+        geometry, mask, entity_ids, "停止"
+    )
+    assert stop_valid is True
+    assert not np.any(stop_mask)
+    assert not np.any(stop_values)
+
+    _, missing_mask, missing_valid = mask_task_conditioned_entity_geometry(
+        geometry, mask, entity_ids, "跟随右侧目标船，保持4米距离"
+    )
+    assert missing_valid is False
+    assert not np.any(missing_mask)
 
 
 def test_label_mean_baseline_and_improvement() -> None:
@@ -175,6 +206,15 @@ def test_checkpoint_selection_requires_both_stop_gates() -> None:
     )
 
 
+def test_single_point_selection_rejects_trajectory_metric() -> None:
+    metrics = {"action_error_m": 0.1}
+    assert _selection_score(
+        metrics, {"selection_metric": "action_error_m"}
+    ) == pytest.approx(0.1)
+    with pytest.raises(ValueError, match="single-step training supports only"):
+        _selection_score(metrics, {"selection_metric": "ade_plus_half_fde"})
+
+
 def test_acceptance_requires_every_frozen_gate() -> None:
     metrics = {
         "action_error_m": 0.6,
@@ -197,6 +237,21 @@ def test_acceptance_requires_every_frozen_gate() -> None:
     assert result["passed"] is True
     metrics["stop_classification"]["f1"] = 0.94
     assert _acceptance(metrics, baseline, config)["passed"] is False
+
+
+def test_single_point_acceptance_rejects_fde_gate() -> None:
+    with pytest.raises(ValueError, match="cannot define an FDE gate"):
+        _acceptance(
+            {
+                "action_error_m": 0.6,
+                "stop_drift": {"within_0_10m_rate": 0.95},
+                "stop_classification": {"f1": 0.95},
+                "action_bound": {"violation_rate": 0.0},
+                "invalid_count": 0,
+            },
+            {"action_error_m": 1.0},
+            {"minimum_fde_improvement_over_label_mean": 0.3},
+        )
 
 
 def test_progress_snapshot_is_atomic_and_records_training_identity(tmp_path) -> None:

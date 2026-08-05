@@ -47,7 +47,7 @@ def test_lateral_geometry_produces_bounded_body_step():
     step = compute_standoff_step(observation, 3.0)
     assert step is not None
     assert step[0] > 0.0 and step[1] > 0.0
-    assert np.linalg.norm(step) <= 0.15 + 1.0e-9
+    assert np.linalg.norm(step) <= 0.30 + 1.0e-9
 
 
 def test_distance_parser_and_deadband():
@@ -63,7 +63,7 @@ def test_velocity_prediction_changes_bounded_step():
     moving = _task("follow red boat 3m", x=3.0, vx=4.0)
     observation = extract_target_observation(moving)
     assert observation is not None
-    assert compute_standoff_step(observation, 3.0) == (0.15, 0.0)
+    assert compute_standoff_step(observation, 3.0) == (0.30, 0.0)
 
 
 def test_missing_or_nonfinite_target_fails_closed():
@@ -98,10 +98,10 @@ def test_policy_step_toward_target_is_kept_as_one_point():
 
 def test_away_policy_step_uses_radial_backstop_but_frozen_step_is_kept():
     task = _task("follow red boat keep 3m", x=5.0, y=4.0)
-    guarded, reason = apply_standoff_guard((-0.1, 0.0), task)
+    guarded, reason = apply_standoff_guard((-0.22, -0.19), task)
     assert reason == GUARD_BACKSTOP
     assert guarded is not None
-    assert np.allclose(guarded, (0.11713032, 0.09370426))
+    assert np.allclose(guarded, (0.23426064, 0.18740852))
     frozen, frozen_reason = apply_standoff_guard((0.0, 0.0), task)
     assert frozen_reason == GUARD_POLICY_DRIVEN
     assert frozen == (0.0, 0.0)
@@ -132,27 +132,12 @@ def test_lateral_sign_mismatch_does_not_replace_forward_policy_action():
     assert guarded == (0.1, -0.001)
 
 
-def test_strong_predicted_lateral_reverse_uses_radial_backstop():
-    task = _task("follow red boat keep 3m", x=5.0, y=0.4, vy=2.0)
+def test_strong_predicted_lateral_reverse_keeps_raw_policy_action():
+    task = _task("follow red boat keep 3m", x=5.0, y=0.8, vy=2.5)
     observation = extract_target_observation(task)
     assert observation is not None
     predicted_lateral = observation.relative_y + observation.relative_velocity_y * 0.2
-    assert np.isclose(predicted_lateral, 0.8)
-
-    raw = (0.1, -0.1)
-    assert raw[0] * observation.relative_x + raw[1] * observation.relative_y > 0.0
-    guarded, reason = apply_standoff_guard(raw, task)
-
-    assert reason == GUARD_BACKSTOP
-    assert guarded == compute_standoff_step(observation, 3.0)
-
-
-def test_weak_predicted_lateral_reverse_keeps_raw_policy_action():
-    task = _task("follow red boat keep 3m", x=5.0, y=0.4, vy=1.7)
-    observation = extract_target_observation(task)
-    assert observation is not None
-    predicted_lateral = observation.relative_y + observation.relative_velocity_y * 0.2
-    assert np.isclose(predicted_lateral, 0.74)
+    assert np.isclose(predicted_lateral, 1.3)
 
     raw = (0.1, -0.1)
     assert raw[0] * observation.relative_x + raw[1] * observation.relative_y > 0.0
@@ -162,9 +147,31 @@ def test_weak_predicted_lateral_reverse_keeps_raw_policy_action():
     assert guarded == raw
 
 
-def test_hold_at_standoff_is_valid_zero_point():
+def test_weak_predicted_lateral_reverse_keeps_raw_policy_action():
+    task = _task("follow red boat keep 3m", x=5.0, y=0.4, vy=4.0)
+    observation = extract_target_observation(task)
+    assert observation is not None
+    predicted_lateral = observation.relative_y + observation.relative_velocity_y * 0.2
+    assert np.isclose(predicted_lateral, 1.2)
+
+    raw = (0.1, -0.1)
+    assert raw[0] * observation.relative_x + raw[1] * observation.relative_y > 0.0
+    guarded, reason = apply_standoff_guard(raw, task)
+
+    assert reason == GUARD_POLICY_DRIVEN
+    assert guarded == raw
+
+
+def test_meaningful_policy_action_survives_standoff_deadband():
     task = _task("follow red boat keep 3m", x=3.05, y=0.0)
     guarded, reason = apply_standoff_guard((0.1, 0.0), task)
+    assert reason == GUARD_POLICY_DRIVEN
+    assert guarded == (0.1, 0.0)
+
+
+def test_near_zero_action_is_held_inside_standoff_deadband():
+    task = _task("follow red boat keep 3m", x=3.05, y=0.0)
+    guarded, reason = apply_standoff_guard((0.01, 0.0), task)
     assert reason == GUARD_HOLD
     assert guarded == (0.0, 0.0)
 

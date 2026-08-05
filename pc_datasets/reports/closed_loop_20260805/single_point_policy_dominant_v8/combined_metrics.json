@@ -1,0 +1,64 @@
+{
+  "RED 4m": {
+    "scene": "RED 4m",
+    "target_color": "red",
+    "target_entity": "target_red",
+    "desired_standoff_m": 4.0,
+    "available": true,
+    "ue_log": "/mnt/c/Users/LIU/Documents/jetson_ws/asv_vla/pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant_v8/red4m/ue_TRACK-SYNTH-RED-4m-V1.log",
+    "jetson_logs": [
+      "/mnt/c/Users/LIU/Documents/jetson_ws/asv_vla/pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant_v8/red4m/jetson_TRACK-SYNTH-RED-4m-V1.log"
+    ],
+    "asv_samples": 186,
+    "target_samples": 186,
+    "path_length_m": 94.2918931145258,
+    "standoff_mean_abs_error_m": 0.3474492117623516,
+    "standoff_p95_abs_error_m": 0.8474942023379519,
+    "standoff_final_m": 3.78582329784421,
+    "audit": {
+      "events": 700,
+      "events_complete": true,
+      "raw_action_observed": 12,
+      "policy_driven": 677,
+      "backstop": 15,
+      "hold": 8,
+      "fail_closed": 0,
+      "policy_stop_subset": 0,
+      "policy_dominance_rate": 0.9671428571428572,
+      "backstop_rate": 0.02142857142857143,
+      "source": "POLICY_AUDIT",
+      "observed_trace_records": 6
+    }
+  },
+  "BLUE 3m": {
+    "scene": "BLUE 3m",
+    "target_color": "blue",
+    "target_entity": "target_blue",
+    "desired_standoff_m": 3.0,
+    "available": true,
+    "ue_log": "/mnt/c/Users/LIU/Documents/jetson_ws/asv_vla/pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant_v8/blue3m/ue_TRACK-SYNTH-BLUE-3m-V1.log",
+    "jetson_logs": [
+      "/mnt/c/Users/LIU/Documents/jetson_ws/asv_vla/pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant_v8/blue3m/jetson_TRACK-SYNTH-BLUE-3m-V1.log"
+    ],
+    "asv_samples": 186,
+    "target_samples": 186,
+    "path_length_m": 112.33703029890336,
+    "standoff_mean_abs_error_m": 0.5681765553970027,
+    "standoff_p95_abs_error_m": 1.4516696922053853,
+    "standoff_final_m": 3.5209091067506995,
+    "audit": {
+      "events": 700,
+      "events_complete": true,
+      "raw_action_observed": 12,
+      "policy_driven": 691,
+      "backstop": 8,
+      "hold": 1,
+      "fail_closed": 0,
+      "policy_stop_subset": 0,
+      "policy_dominance_rate": 0.9871428571428571,
+      "backstop_rate": 0.011428571428571429,
+      "source": "POLICY_AUDIT",
+      "observed_trace_records": 6
+    }
+  }
+}

@@ -42,6 +42,7 @@ TRAIN_SCHEMA_VERSION = "train_v1"
 SUMMARY_SCHEMA_VERSION = "training_summary_v1"
 CHECKPOINT_SCHEMA_VERSION = "policy_checkpoint_v1"
 PROGRESS_SCHEMA_VERSION = "training_progress_v1"
+SINGLE_POINT_SELECTION_METRIC = "action_error_m"
 
 
 def _improvement_fraction(policy_value: float, baseline_value: float) -> float:
@@ -106,6 +107,7 @@ def compute_action_metrics(
     if not np.all(np.isfinite(target_action)):
         raise ValueError("target action contains NaN or Inf")
     error = np.linalg.norm(predicted_action - target_action, axis=1)
+    lateral_error = np.abs(predicted_action[:, 1] - target_action[:, 1])
     predicted_stop = logits >= 0.0
     stop_drift = np.linalg.norm(predicted_action[stop_target], axis=1)
     action_norm = np.linalg.norm(predicted_action, axis=1)
@@ -113,12 +115,18 @@ def compute_action_metrics(
         label: {
             "sample_count": int(np.count_nonzero(labels == label)),
             "action_error_m": float(np.mean(error[labels == label])),
+            "lateral_action_error_m": float(
+                np.mean(lateral_error[labels == label])
+            ),
         }
         for label in sorted(set(labels.tolist()))
     }
     return {
         "sample_count": sample_count,
         "action_error_m": float(np.mean(error)) if sample_count else 0.0,
+        "lateral_action_error_m": (
+            float(np.mean(lateral_error)) if sample_count else 0.0
+        ),
         "stop_drift": {
             "sample_count": int(len(stop_drift)),
             "mean_m": float(np.mean(stop_drift)) if len(stop_drift) else 0.0,
@@ -349,6 +357,24 @@ def _checkpoint_selection_eligible_for_modality(
     if modality != "full":
         raise ValueError(f"unsupported training modality: {modality}")
     return _checkpoint_selection_eligible(metrics, training_config)
+
+
+def _selection_score(
+    metrics: Mapping[str, Any], training_config: Mapping[str, Any]
+) -> float:
+    """Return the metric used to select a single-step action checkpoint."""
+    metric = str(
+        training_config.get("selection_metric", SINGLE_POINT_SELECTION_METRIC)
+    ).strip()
+    if metric != SINGLE_POINT_SELECTION_METRIC:
+        raise ValueError(
+            "single-step training supports only selection_metric="
+            f"{SINGLE_POINT_SELECTION_METRIC!r}; got {metric!r}"
+        )
+    score = float(metrics["action_error_m"])
+    if not np.isfinite(score):
+        raise ValueError("single-step selection metric is not finite")
+    return score
 
 
 def _build_dataset_bundle(
@@ -914,7 +940,7 @@ def _train_one(
             modality=modality,
         )
         train_loss = weighted_loss / max(trained_samples, 1)
-        selection_score = float(validation_metrics["action_error_m"])
+        selection_score = _selection_score(validation_metrics, training_config)
         minimum_checkpoint_epoch = int(
             training_config.get("minimum_checkpoint_epoch", 1)
         )
@@ -1133,6 +1159,11 @@ def _acceptance(
     label_mean: Mapping[str, Any],
     acceptance: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if "minimum_fde_improvement_over_label_mean" in acceptance:
+        raise ValueError(
+            "single-step acceptance cannot define an FDE gate; use "
+            "minimum_action_error_improvement_over_label_mean"
+        )
     action_improvement = _improvement_fraction(
         float(metrics["action_error_m"]), float(label_mean["action_error_m"])
     )

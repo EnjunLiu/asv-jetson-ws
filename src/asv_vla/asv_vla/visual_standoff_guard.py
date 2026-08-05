@@ -15,31 +15,31 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from .trajectory_contract import MAX_DISPLACEMENT_M
+
 
 FEATURE_DIM = 16
 POSITION_SCALE_M = 20.0
 VELOCITY_SCALE_MPS = 5.0
 DEFAULT_STANDOFF_M = 3.0
-DEFAULT_GUARD_MAX_STEP_M = 0.15
-# Hold tolerance.  The verified closed-loop envelope (2.4-3.3 m for 3 m)
-# is ~+-0.45 m around the standoff; a too-narrow 0.15 m deadband lets pipeline
-# latency push the ASV past the reliable image-detection range.
-DEFAULT_DEADBAND_M = 0.45
+DEFAULT_GUARD_MAX_STEP_M = MAX_DISPLACEMENT_M
+# Keep the hold region narrow enough that the trained raw action remains the
+# default outside a small standoff tolerance.
+DEFAULT_DEADBAND_M = 0.20
+# A deadband may suppress numerical jitter, but it must not erase a meaningful
+# policy command while the target is moving through the standoff band.
+HOLD_ACTION_NORM_M = 0.02
 DEFAULT_PREDICTION_HORIZON_SEC = 0.2
 MAX_TARGET_DISTANCE_M = 20.0
 MAX_TARGET_SPEED_MPS = 5.0
 TARGET_IDS = ("target_red", "target_blue", "target_left", "target_right")
 
 # Backstop semantics: the learned policy drives the executed point; the
-# deterministic radial step only replaces a policy action that points away
-# from the target.  ``BACKSTOP_DOT_THRESHOLD`` = 0.0 means an angle greater
-# than 90 degrees is corrected.
-BACKSTOP_DOT_THRESHOLD = 0.0
+# deterministic radial step only replaces a clearly reversed policy action.
+BACKSTOP_DOT_THRESHOLD = -0.25
 # Retained as a keyword-compatible parameter; action magnitude alone no
 # longer activates the backstop.
 BACKSTOP_ZERO_STEP_M = 1.0e-3
-LATERAL_BACKSTOP_THRESHOLD_M = 0.75
-LATERAL_BACKSTOP_PRODUCT_THRESHOLD_M2 = -0.01
 
 # Guard outcomes returned by ``apply_standoff_guard``.
 GUARD_PASS_THROUGH = "pass_through"  # non-FOLLOW task, action unchanged
@@ -263,11 +263,11 @@ def apply_standoff_guard(
       so the caller can publish a safe stop.
     - A FOLLOW task with a visible target keeps the policy's direct action
       (the learned policy drives the executed command) unless the action
-      points away from the target (``dot(action, target_dir) < dot_threshold``,
-      i.e. > 90 deg), or the predicted lateral deviation is at least 0.75 m
-      and the policy lateral component points against it with product below
-      -0.01 m^2. Only then is it replaced by the deterministic radial
-      standoff action (``GUARD_BACKSTOP``).
+      has a substantial reverse projection (``dot(action, target_dir) <
+      dot_threshold``, -0.25 m by default). Only then is it replaced by the
+      deterministic radial standoff action (``GUARD_BACKSTOP``). Lateral
+      geometry remains a decision-head responsibility; it does not silently
+      replace a valid learned action.
     """
 
     # ``zero_step_m`` is retained for callers of the previous interface.  A
@@ -302,9 +302,9 @@ def apply_standoff_guard(
     if step is None:
         return None, GUARD_FAIL_CLOSED
 
-    # The hold rule is an intentional safety behavior: within the standoff
-    # deadband, no approach or retreat action is allowed through.
-    if abs(error) <= effective_deadband:
+    # Only suppress a near-zero command inside the deadband. A meaningful raw
+    # action remains policy-driven so the controller can follow a moving target.
+    if abs(error) <= effective_deadband and np.linalg.norm(values) <= HOLD_ACTION_NORM_M:
         values = values.copy()
         values[:] = (0.0, 0.0)
         return tuple(float(value) for value in values), GUARD_HOLD
@@ -316,17 +316,7 @@ def apply_standoff_guard(
         return None, GUARD_FAIL_CLOSED
     target_dir = (target_dir[0] / target_norm, target_dir[1] / target_norm)
     dot_value = first_step[0] * target_dir[0] + first_step[1] * target_dir[1]
-    predicted_lateral = observation.relative_y
-    if observation.velocity_valid:
-        predicted_lateral += (
-            observation.relative_velocity_y * DEFAULT_PREDICTION_HORIZON_SEC
-        )
-    lateral_backstop = (
-        abs(predicted_lateral) >= LATERAL_BACKSTOP_THRESHOLD_M
-        and first_step[1] * predicted_lateral
-        < LATERAL_BACKSTOP_PRODUCT_THRESHOLD_M2
-    )
-    if dot_value < dot_threshold or lateral_backstop:
+    if dot_value < dot_threshold:
         values = values.copy()
         values[:] = step
         return tuple(float(value) for value in values), GUARD_BACKSTOP

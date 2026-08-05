@@ -32,7 +32,7 @@ training:
   weight_decay: 0.0001
   gradient_clip_norm: 1.0
   num_workers: 0
-  selection_metric: "ade_plus_half_fde"
+  selection_metric: "action_error_m"
   selection_constraints:
     minimum_stop_f1: 0.90
     minimum_stop_within_0_10m_rate: 0.90
@@ -47,8 +47,7 @@ baselines:
   entity_only_seed: 42
 
 acceptance:
-  minimum_ade_improvement_over_label_mean: 0.30
-  minimum_fde_improvement_over_label_mean: 0.30
+  minimum_action_error_improvement_over_label_mean: 0.30
   minimum_stop_within_0_10m_rate: 0.95
   minimum_stop_f1: 0.90
   maximum_speed_violation_rate: 0.0

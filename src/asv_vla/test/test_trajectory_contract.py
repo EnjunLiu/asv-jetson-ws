@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from asv_vla.trajectory_contract import (
     DT_SEC,
     FRAME_ID,
+    MAX_DISPLACEMENT_M,
     SAFE_STOP_MODEL_VERSION,
     is_safe_stop,
 )
@@ -29,6 +30,11 @@ def message(**overrides):
 
 def test_safe_stop_contract_accepts_invalid_zero_point():
     assert is_safe_stop(message())
+
+
+def test_single_point_contract_matches_trained_action_limit():
+    assert DT_SEC == 0.2
+    assert MAX_DISPLACEMENT_M == 0.30
 
 
 def test_safe_stop_contract_rejects_executable_zero_point():

@@ -122,7 +122,7 @@ def task_features_identity_reason(
     message: Any,
     previous_identity: FrameKey | None = None,
 ) -> str | None:
-    """Validate TaskFeatures frame identity and same-run frame continuity."""
+    """Validate TaskFeatures identity and monotonic same-run frame order."""
 
     identity = _identity_tuple(message)
     if identity is None:
@@ -134,8 +134,9 @@ def task_features_identity_reason(
     if stamp_us <= 0:
         return "IDENTITY_MISMATCH"
     if previous_identity is not None:
-        if identity[:2] == previous_identity[:2] and identity[2] != (
-            previous_identity[2] + 1
+        if (
+            identity[:2] == previous_identity[:2]
+            and identity[2] <= previous_identity[2]
         ):
             return "IDENTITY_MISMATCH"
     return None
@@ -176,25 +177,30 @@ def smooth_policy_displacement(
     max_step_m: float = POLICY_MAX_STEP_M,
     max_delta_m: float = POLICY_MAX_ACTION_DELTA_M,
 ) -> tuple[float, float] | None:
-    """Apply a bounded per-frame action change around the previous command."""
+    """Apply a bounded per-frame action change around the previous command.
+
+    A missing previous command starts from zero, so the first action uses the
+    same delta bound as later frames while preserving the policy direction.
+    """
 
     current = bound_policy_displacement(displacement, max_step_m=max_step_m)
     if current is None:
         return None
-    if previous_action is None:
-        return current
     try:
-        previous = np.asarray(previous_action, dtype=np.float64).reshape(-1)
         maximum_delta = float(max_delta_m)
     except (TypeError, ValueError):
         return None
-    if (
-        previous.size != ACTION_DIM
-        or not np.all(np.isfinite(previous))
-        or not math.isfinite(maximum_delta)
-        or maximum_delta < 0.0
-    ):
+    if not math.isfinite(maximum_delta) or maximum_delta < 0.0:
         return None
+    if previous_action is None:
+        previous = np.zeros(ACTION_DIM, dtype=np.float64)
+    else:
+        try:
+            previous = np.asarray(previous_action, dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if previous.size != ACTION_DIM or not np.all(np.isfinite(previous)):
+            return None
     current_array = np.asarray(current, dtype=np.float64)
     delta = current_array - previous
     delta_norm = float(np.linalg.norm(delta))
@@ -414,6 +420,7 @@ class VLAPolicyNode(Node):
             self._last_gate_frame_index >= 0
             and frame_index <= self._last_gate_frame_index
         ):
+            self._clear_previous_action()
             return
         # A delayed result must not retroactively become the history for a
         # newer control frame that has already been inferred.
@@ -422,22 +429,18 @@ class VLAPolicyNode(Node):
             and frame_index < self._last_inferred_frame_index
         ):
             self._pending_actions.pop(identity, None)
+            self._clear_previous_action()
             return
         pending = self._pending_actions.pop(identity, None)
         if pending is None:
+            self._last_gate_frame_index = frame_index
+            self._clear_previous_action()
             return
         try:
             stamp_matches = int(message.stamp_us) == pending.stamp_us
         except (AttributeError, TypeError, ValueError):
             stamp_matches = False
         if not stamp_matches:
-            self._last_gate_frame_index = frame_index
-            self._clear_previous_action()
-            return
-        if (
-            self._last_gate_frame_index >= 0
-            and frame_index != self._last_gate_frame_index + 1
-        ):
             self._last_gate_frame_index = frame_index
             self._clear_previous_action()
             return
@@ -635,7 +638,7 @@ class VLAPolicyNode(Node):
             self._clear_control_history()
         elif (
             self._last_entity_frame_index >= 0
-            and identity[2] != self._last_entity_frame_index + 1
+            and identity[2] <= self._last_entity_frame_index
         ):
             self._clear_control_history()
         self._last_entity_identity = identity
@@ -682,17 +685,17 @@ class VLAPolicyNode(Node):
         self._frame_seq += 1
 
     def _discard_old_pending_actions(self, identity: FrameKey) -> None:
+        discarded_pending = False
         for pending_identity in tuple(self._pending_actions):
             if (
                 pending_identity[:2] == identity[:2]
                 and pending_identity[2] < identity[2]
             ):
                 self._pending_actions.pop(pending_identity, None)
-        if (
-            self._previous_action_identity is not None
-            and self._previous_action_identity[:2] == identity[:2]
-            and self._previous_action_identity[2] < identity[2] - 1
-        ):
+                discarded_pending = True
+        # A discarded pending action means its gate result was not received;
+        # a frame gap alone does not invalidate a committed action.
+        if discarded_pending:
             self._clear_previous_action()
 
     def _maybe_infer(
@@ -729,7 +732,7 @@ class VLAPolicyNode(Node):
         message = self._new_output(ent)
         if (
             self._last_inferred_frame_index >= 0
-            and int(ent.frame_index) != self._last_inferred_frame_index + 1
+            and int(ent.frame_index) < self._last_inferred_frame_index
         ):
             self._clear_previous_action()
         self._last_inferred_frame_index = int(ent.frame_index)
@@ -743,7 +746,7 @@ class VLAPolicyNode(Node):
                 self._previous_action_valid
                 and self._previous_action_identity is not None
                 and self._previous_action_identity[:2] == key[:2]
-                and self._previous_action_identity[2] == key[2] - 1
+                and self._previous_action_identity[2] < key[2]
             )
             inputs = self._build_inputs(
                 self._language,

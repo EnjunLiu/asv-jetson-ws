@@ -170,6 +170,39 @@ def test_calibrated_color_geometry_is_symmetric(
 
 
 @pytest.mark.parametrize(
+    ("color", "rgb"),
+    (("red", (220, 20, 20)), ("blue", (20, 20, 220))),
+)
+def test_calibrated_color_geometry_keeps_near_range_component(
+    color: str, rgb: tuple[int, int, int]
+) -> None:
+    image = Image.new("RGB", (1280, 720), (20, 30, 40))
+    # This component occupies about 3.6% of the image, larger than the old
+    # 1.72% cap and representative of a target after it approaches the ASV.
+    ImageDraw.Draw(image).rectangle((280, 260, 520, 400), fill=rgb)
+
+    valid, relative_x, relative_y, area, _ = calibrated_color_geometry(image, color)
+
+    assert valid
+    assert area > 0.0172222222
+    assert np.isfinite((relative_x, relative_y)).all()
+
+
+def test_calibrated_color_geometry_still_rejects_oversized_background_component() -> None:
+    image = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(image).rectangle((0, 0, 1279, 719), fill=(220, 20, 20))
+
+    valid, relative_x, relative_y, area, centroid = calibrated_color_geometry(image, "red")
+
+    assert not valid
+    assert area == 0.0
+    assert np.isnan(relative_x)
+    assert np.isnan(relative_y)
+    assert np.isnan(centroid[0])
+    assert np.isnan(centroid[1])
+
+
+@pytest.mark.parametrize(
     "color",
     ("red", "blue"),
 )

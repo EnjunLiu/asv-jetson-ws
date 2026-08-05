@@ -59,6 +59,46 @@ Windows 自动化入口为 `tools/ue5/collect.ps1`，其默认计划也指向同
 5. `training.evaluate_selection`、`training.contract_checks` 和近距离 S2 回放生成
    外部报告，只有通过验证的 checkpoint 才能复制到 Jetson `models/`。
 
+单点策略的 checkpoint 选择指标是 `action_error_m`；它不能使用轨迹级 ADE/FDE。
+验证报告同时输出 `lateral_action_error_m` 和每个语言任务的横向误差，用于单独检查
+红 4m、蓝 3m 的左右泛化。当前 12-Run 数据的 PC 重训命令如下，输出目录必须是
+新的空目录：
+
+```bash
+cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
+export PYTHONPATH=src/asv_vla
+export TRAIN_OUTPUT=/mnt/c/Temp/asv_vla_retrain_20260805/policy_single_point_v4_20260805
+
+python3 -m training.train train \
+  --config training/config/train_sine_near_image_v3.yaml \
+  --model-config training/config/model_small_v3.yaml \
+  --features /mnt/c/Temp/asv_vla_retrain_20260805/features_v3 \
+  --split /mnt/c/Temp/asv_vla_retrain_20260805/group_split_v2.json \
+  --instructions dataset/language/instructions.jsonl \
+  --output-root "$TRAIN_OUTPUT" \
+  --git-sha "$(git rev-parse --short HEAD)" \
+  --device cuda \
+  --execution-target pc
+
+python3 -m training.train evaluate-test \
+  --config training/config/train_sine_near_image_v3.yaml \
+  --model-config training/config/model_small_v3.yaml \
+  --features /mnt/c/Temp/asv_vla_retrain_20260805/features_v3 \
+  --split /mnt/c/Temp/asv_vla_retrain_20260805/group_split_v2.json \
+  --instructions dataset/language/instructions.jsonl \
+  --output-root "$TRAIN_OUTPUT" \
+  --git-sha "$(git rev-parse --short HEAD)" \
+  --device cuda \
+  --execution-target pc
+```
+
+接受 checkpoint 至少需要：三 seed 的 sealed test 均通过 `action_error_m` 相对
+label-mean 提升 `>=30%`、STOP F1 `>=0.90`、STOP 零动作在 `0.10m` 内的比例
+`>=0.95`、动作越界率为 `0`、无 invalid；另外红 4m 和蓝 3m 各自的
+`per_label[*].lateral_action_error_m` 建议 `<=0.08m`。既有
+`policy_v3_single_point_20260805/full_seed17/best.pt` 的总体 test action error 为
+`0.0511m`，但仍应使用上述命令在修复后的选择逻辑下重新生成并复核。
+
 典型命令（在仓库根目录，`PYTHONPATH=src/asv_vla`）：
 
 ```bash
@@ -112,3 +152,32 @@ PYTHONPATH=src/asv_vla pytest -q
 提交新的模型前，至少提供独立 Scene Seed 的 S2 近距离闭环日志、图像感知 trace、
 策略 CUDA ready、有效 setpoint 和 UE5 executor apply 计数。一次成功演示不等于跨场景
 泛化；统计结论应在新增 Runs 后再报告。
+
+## PC 合成几何训练工具
+
+`training.synthetic_geometry_train` 是一个隔离的 PC-only smoke/training 工具。它复用
+现有 `asv_vla.task_entity_tensor` 的 16 维结构化实体行和
+`asv_vla.expert_trajectory` 的单步专家公式，覆盖红/蓝目标、3m/4m/10m，以及带余量的
+L7/S2 运行时范围 `x=[3.80,4.85] m`、`y=[-1.35,0.55] m`。前 12 个样本固定包含
+`(4.74,0.49)` 与 `(3.94,-1.27)` 两个回归点的全部颜色/距离组合；同时生成上一帧有效性
+和 `[desired_x, desired_y]` 标签。
+
+在 Windows CUDA Python 上运行真实语言条件训练（语言文件来自已经完成的 PC Qwen
+CUDA 编码；WSL 的 `python3` 不承担训练）：
+
+```powershell
+Set-Location 'C:\Users\LIU\Documents\jetson_ws\asv_vla'
+& 'D:\Softwares\Python\Python313\python.exe' -m training.synthetic_geometry_train `
+  --model-config training/config/model_small_v3.yaml `
+  --output 'C:\Temp\asv_vla_synthetic_qwen_l7_20260805\policy_synthetic_qwen_l7_seed23.pt' `
+  --language-embeddings 'C:\Temp\asv_vla_retrain_20260805\language_embeddings_130.npz' `
+  --sample-count 16384 --epochs 250 --batch-size 1024 --learning-rate 0.002 --device cuda
+```
+
+输出的 checkpoint 保持现有 `model_config` + `model_state_dict` 严格加载格式，因此可由
+Jetson 的 `SmallPolicyConfig`/`SmallActionPolicy` 做结构检查；checkpoint metadata 会记录
+语言文件的 SHA-256。默认 CLI 拒绝没有真实 embedding 的部署训练。仅做无 Torch 的几何
+smoke 时才显式添加 `--synthetic-language`；该产物不能部署，也不能作为真实语言闭环证据。
+当前 WSL 若无 Torch，仍可运行 `training/test/test_synthetic_geometry_train.py` 的几何、
+专家方向、真实 embedding 对齐和数据序列化测试；checkpoint round-trip 测试会明确跳过，
+需在安装了 PC Torch 的环境运行。

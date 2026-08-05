@@ -11,7 +11,9 @@ HORIZON = 20
 ACTION_DIM = 2
 DT_SEC = 0.2
 FRAME_ID = "base_link"
-MAX_DISPLACEMENT_M = 0.15
+# The trained decision head and online desired_x/desired_y contract share one
+# bounded single-step displacement.  The 0.2 s control interval is unchanged.
+MAX_DISPLACEMENT_M = 0.30
 SAFE_STOP_MODEL_VERSION = "safe_stop:none"
 FLOAT_TOLERANCE = 1.0e-6
 

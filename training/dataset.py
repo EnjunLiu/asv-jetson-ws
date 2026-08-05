@@ -57,33 +57,98 @@ _HOLD_TARGET_PATTERNS = (
     (
         "target_red",
         re.compile(
-            r"\btarget[_ -]?red\b|(?:红色?)(?:目标)?(?:船|艇)?",
+            r"\btarget[_ -]?red\b|\bred\b|(?:红色?)(?:目标)?(?:船|艇)?",
             re.IGNORECASE,
         ),
     ),
     (
         "target_blue",
         re.compile(
-            r"\btarget[_ -]?blue\b|(?:蓝色?)(?:目标)?(?:船|艇)?",
+            r"\btarget[_ -]?blue\b|\bblue\b|(?:蓝色?)(?:目标)?(?:船|艇)?",
             re.IGNORECASE,
         ),
     ),
     (
         "target_left",
         re.compile(
-            r"\btarget[_ -]?left\b|左(?:侧)?(?:目标)?(?:船|艇)?",
+            r"\btarget[_ -]?left\b|\bleft\b|左(?:侧)?(?:目标)?(?:船|艇)?",
             re.IGNORECASE,
         ),
     ),
     (
         "target_right",
         re.compile(
-            r"\btarget[_ -]?right\b|右(?:侧)?(?:目标)?(?:船|艇)?",
+            r"\btarget[_ -]?right\b|\bright\b|右(?:侧)?(?:目标)?(?:船|艇)?",
             re.IGNORECASE,
         ),
     ),
 )
 _HOLD_STOP_RE = re.compile(r"\bstop\b|停止|停船|中止|终止", re.IGNORECASE)
+
+
+def task_target_id_from_instruction(instruction_text: str) -> str | None:
+    """Map task language to a loader-only canonical target ID."""
+
+    text = str(instruction_text)
+    for target_id, pattern in _HOLD_TARGET_PATTERNS:
+        if pattern.search(text):
+            return target_id
+    return None
+
+
+def is_stop_instruction(instruction_text: str) -> bool:
+    """Return whether task language requests a stop/no-entity input."""
+
+    return bool(_HOLD_STOP_RE.search(str(instruction_text)))
+
+
+def mask_task_conditioned_entity_geometry(
+    geometry: np.ndarray,
+    geometry_mask: np.ndarray,
+    entity_ids: Sequence[Any],
+    instruction_text: str,
+    *,
+    force_stop: bool = False,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Match the online task-selective entity tensor at sample granularity.
+
+    Entity IDs are used only to choose the retained row.  The returned arrays
+    contain no ID or colour field and are safe to pass as policy inputs.  A
+    follow sample with a missing or ambiguous target is invalid; STOP remains
+    a valid all-false entity input.
+    """
+
+    values = np.asarray(geometry, dtype=np.float32)
+    masks = np.asarray(geometry_mask, dtype=np.bool_).reshape(-1)
+    if values.ndim != 2 or values.shape[0] != masks.shape[0]:
+        raise ValueError(
+            "entity geometry/mask must have shapes [N, D] and [N]"
+        )
+    if len(entity_ids) < values.shape[0]:
+        raise ValueError("entity_ids has fewer entries than entity geometry")
+
+    masked_values = np.zeros_like(values)
+    masked_mask = np.zeros_like(masks)
+    if force_stop or is_stop_instruction(instruction_text):
+        return masked_values, masked_mask, True
+
+    target_id = task_target_id_from_instruction(instruction_text)
+    if target_id is None:
+        return masked_values, masked_mask, False
+    matches = [
+        slot
+        for slot in range(values.shape[0])
+        if bool(masks[slot])
+        and str(entity_ids[slot]).strip().casefold() == target_id
+    ]
+    if len(matches) != 1 or not np.all(np.isfinite(values[matches[0]])):
+        return masked_values, masked_mask, False
+
+    # Compact to slot 0 to mirror task_entity_tensor's target-first output;
+    # attention still sees exactly one active row either way.
+    masked_values[0] = values[matches[0]]
+    masked_mask[0] = True
+    return masked_values, masked_mask, True
 
 
 @dataclass(frozen=True)
@@ -550,6 +615,18 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                     cache.policy_input_valid[frame_row_int]
                 ):
                     continue
+                if require_valid:
+                    _, _, task_input_valid = (
+                        mask_task_conditioned_entity_geometry(
+                            cache.entity_geometry[frame_row_int],
+                            cache.entity_geometry_mask[frame_row_int],
+                            cache.entity_ids[frame_row_int],
+                            str(cache.instruction_texts[instruction_row_int]),
+                            force_stop=bool(cache.target_safe_stop[sample_row]),
+                        )
+                    )
+                    if not task_input_valid:
+                        continue
                 if (
                     int(cache.frame_indices[frame_row_int]) - first_frame_index
                 ) % frame_stride:
@@ -559,6 +636,20 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                 ).casefold()
                 if allowed is not None and language_split not in allowed:
                     continue
+                if require_valid:
+                    _, _, task_input_valid = (
+                        mask_task_conditioned_entity_geometry(
+                            cache.entity_geometry[frame_row_int],
+                            cache.entity_geometry_mask[frame_row_int],
+                            cache.entity_ids[frame_row_int],
+                            str(cache.instruction_texts[instruction_row_int]),
+                            force_stop=bool(
+                                cache.target_safe_stop[sample_row]
+                            ),
+                        )
+                    )
+                    if not task_input_valid:
+                        continue
                 self._samples.append(_SampleRef(cache_index, sample_row))
 
         self._raw_sample_count = len(self._samples)
@@ -641,7 +732,6 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
         safe_stop = cache.target_safe_stop[sample_row].copy()
         previous_action = cache.previous_expert_actions[sample_row].copy()
         previous_action_valid = bool(cache.previous_action_valid[sample_row])
-        instruction_row = int(cache.sample_instruction_rows[sample_row])
         language = cache.language[instruction_row].copy()
 
         if self._augment and self._instruction_swap_prob > 0.0:
@@ -691,6 +781,22 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                                 previous_action = np.zeros(2, dtype=np.float32)
                                 previous_action_valid = False
 
+                    instruction_row = new_row
+
+        instruction_text = str(cache.instruction_texts[instruction_row])
+        geometry, geometry_mask, task_input_valid = (
+            mask_task_conditioned_entity_geometry(
+                geometry,
+                geometry_mask,
+                cache.entity_ids[frame_row],
+                instruction_text,
+                force_stop=bool(safe_stop),
+            )
+        )
+        policy_input_valid = bool(cache.policy_input_valid[frame_row]) and (
+            task_input_valid
+        )
+
         if self._augment and self._mirror_prob > 0.0:
             # Geometric mirroring: negate the lateral axis (positions,
             # velocities, derived lateral columns) and mirror the expert
@@ -739,6 +845,8 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
             if np.any(drop):
                 geometry[drop] = 0.0
                 geometry_mask[drop] = False
+            if not bool(safe_stop) and not bool(np.any(geometry_mask)):
+                policy_input_valid = False
 
         if self._runtime_first_step_limit_m is not None:
             action = np.clip(
@@ -757,7 +865,7 @@ class FrozenFeatureDataset(Dataset[dict[str, Tensor | str]]):
                 previous_action_valid, dtype=torch.bool
             ),
             "policy_input_valid": torch.tensor(
-                bool(cache.policy_input_valid[frame_row]), dtype=torch.bool
+                policy_input_valid, dtype=torch.bool
             ),
             "target_action": torch.from_numpy(action),
             "target_stop": torch.tensor(

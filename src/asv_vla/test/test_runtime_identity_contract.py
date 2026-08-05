@@ -131,12 +131,19 @@ def test_language_identity_uses_task_text_not_encoder_or_frame_stamp() -> None:
     )
 
 
-def test_task_features_identity_is_complete_and_contiguous() -> None:
+def test_task_features_identity_is_complete_and_monotonic() -> None:
     first = _features("follow red target", frame_index=10)
     assert task_features_identity_reason(first) is None
     assert (
         task_features_identity_reason(
             _features("follow red target", frame_index=12),
+            ("scene-run", 42, 10),
+        )
+        is None
+    )
+    assert (
+        task_features_identity_reason(
+            _features("follow red target", frame_index=9),
             ("scene-run", 42, 10),
         )
         == "IDENTITY_MISMATCH"

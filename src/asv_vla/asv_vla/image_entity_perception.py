@@ -79,8 +79,11 @@ LOW_LIGHT_PREPROCESS_CONTRAST = 1.0
 # explicit so the PC calibration script can replace these values in a model
 # artifact without changing the online image-only contract.
 COLOR_X_COEFFICIENTS = (0.63521458, 0.15866379)
-COLOR_AREA_MIN = 0.00125
-COLOR_AREA_MAX = 0.0172222222
+# The target grows substantially in the near field.  Keep the lower bound
+# above isolated pixel noise, but do not discard a valid target merely because
+# its image component is larger than the original far-field calibration crop.
+COLOR_AREA_MIN = 0.0001
+COLOR_AREA_MAX = 0.08
 
 
 class ImageEntityPerceptionError(RuntimeError):

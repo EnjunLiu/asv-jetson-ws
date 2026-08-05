@@ -61,9 +61,9 @@ def test_duplicate_and_stale_points_are_rejected():
 
 def test_reversal_is_rate_limited():
     command = _command(
-        desired_x=-0.15,
+        desired_x=-MAX_DESIRED_M,
         desired_y=0.0,
-        previous_desired=(0.15, 0.0),
+        previous_desired=(MAX_DESIRED_M, 0.0),
         stamp_us=2000,
     )
     assert command.valid

@@ -4,7 +4,7 @@ The demo task is "follow the red boat" / "follow the blue boat" when the
 red/blue pair moves side by side.  The policy must steer toward the
 commanded colour.  This script checks, for every follow-red / follow-blue
 sample in the TEST split, whether the model's first executed step points
-toward the commanded entity's bearing rather than the distractor's.
+toward the task-selected entity's bearing.
 
 Selection correctness = fraction of samples whose first-step direction is
 within 45 deg of the commanded entity's bearing.
@@ -25,7 +25,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from training.dataset import load_split_assignments
+from training.dataset import (
+    load_split_assignments,
+    mask_task_conditioned_entity_geometry,
+    task_target_id_from_instruction,
+)
 
 
 def _bearing_deg(dx: float, dy: float) -> float:
@@ -97,47 +101,43 @@ def main() -> int:
                 cache_dir / "frames_000.npz", allow_pickle=False
             )
             entity_ids = frames_source["entity_ids"]
-            entity_mask = frames_source["entity_mask"]
             for sample_row in range(len(cache.sample_ids)):
                 frame_row = int(cache.sample_frame_rows[sample_row])
                 instruction_row = int(cache.sample_instruction_rows[sample_row])
                 instruction = str(instruction_texts[instruction_row])
-                if "红" in instruction:
-                    commanded = "red"
-                elif "蓝" in instruction:
-                    commanded = "blue"
-                else:
+                commanded_id = task_target_id_from_instruction(instruction)
+                if commanded_id not in {"target_red", "target_blue"}:
                     continue
                 if not bool(cache.policy_input_valid[frame_row]):
                     continue
                 entities = entity_ids[frame_row]
-                geometry = cache.entity_geometry[frame_row]
-                # Bearing to the commanded entity (x/y columns, cols 0/1).
-                red_bearing = blue_bearing = None
-                for slot, entity_id in enumerate(entities):
-                    if not bool(entity_mask[frame_row][slot]):
-                        continue
-                    x, y = float(geometry[slot][0]), float(geometry[slot][1])
-                    if entity_id == "target_red":
-                        red_bearing = _bearing_deg(x, y)
-                    elif entity_id == "target_blue":
-                        blue_bearing = _bearing_deg(x, y)
-                if red_bearing is None or blue_bearing is None:
+                geometry, geometry_mask, target_valid = (
+                    mask_task_conditioned_entity_geometry(
+                        cache.entity_geometry[frame_row],
+                        cache.entity_geometry_mask[frame_row],
+                        entities,
+                        instruction,
+                    )
+                )
+                if not target_valid or not bool(geometry_mask[0]):
                     continue
+                expected = _bearing_deg(
+                    float(geometry[0][0]), float(geometry[0][1])
+                )
 
                 item = {
                     "language": torch.from_numpy(
                         cache.language[instruction_row].copy()
                     ).unsqueeze(0).to(args.device),
                     "entity_geometry": torch.from_numpy(
-                        cache.entity_geometry[frame_row].copy()
+                        geometry.copy()
                     ).unsqueeze(0).to(args.device),
                     "previous_action": torch.from_numpy(
                         cache.previous_expert_actions[sample_row].copy()
                     ).unsqueeze(0).to(args.device),
                     "language_valid": torch.tensor([True], dtype=torch.bool),
                     "entity_geometry_mask": torch.from_numpy(
-                        cache.entity_geometry_mask[frame_row].copy()
+                        geometry_mask.copy()
                     ).unsqueeze(0).to(args.device),
                     "previous_action_valid": torch.tensor(
                         [bool(cache.previous_action_valid[sample_row])],
@@ -160,11 +160,8 @@ def main() -> int:
                     if stop:
                         continue
                 step_bearing = _bearing_deg(first_dx, first_dy)
-                expected = red_bearing if commanded == "red" else blue_bearing
-                distractor = blue_bearing if commanded == "red" else red_bearing
                 toward_expected = _angle_between_deg(step_bearing, expected)
-                toward_distractor = _angle_between_deg(step_bearing, distractor)
-                is_correct = toward_expected <= min(toward_distractor, 45.0)
+                is_correct = toward_expected <= 45.0
                 correct += int(is_correct)
                 total += 1
                 layout = "L6B" if is_mirrored else "L6"
