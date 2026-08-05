@@ -5,9 +5,9 @@
     "target_entity": "target_blue",
     "desired_standoff_m": 3.0,
     "available": true,
-    "ue_log": "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/blue3m/ue_live.log",
+    "ue_log": "blue3m/ue_TRACK-SYNTH-BLUE-3m-V1.log",
     "jetson_logs": [
-      "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/blue3m/jetson_live.log"
+      "blue3m/jetson_TRACK-SYNTH-BLUE-3m-V1.log"
     ],
     "asv_samples": 186,
     "target_samples": 186,

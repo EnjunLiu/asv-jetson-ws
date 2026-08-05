@@ -54,6 +54,8 @@ L7_RUNTIME_X_RANGE_M = (3.80, 4.85)
 L7_RUNTIME_Y_RANGE_M = (-1.35, 0.55)
 L7_RUNTIME_POINTS_M = ((4.74, 0.49), (3.94, -1.27))
 LANGUAGE_DIM = 256
+DATASET_SCHEMA_VERSION = "synthetic_geometry_dataset_v1"
+CHECKPOINT_SCHEMA_VERSION = "synthetic_geometry_single_point_v2"
 
 
 @dataclass(frozen=True)
@@ -473,6 +475,7 @@ def save_synthetic_dataset(path: str | Path, dataset: SyntheticGeometryDataset) 
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
+        schema_version=np.asarray(DATASET_SCHEMA_VERSION),
         language=dataset.language,
         entity_geometry=dataset.entity_geometry,
         entity_geometry_mask=dataset.entity_geometry_mask,
@@ -487,6 +490,63 @@ def save_synthetic_dataset(path: str | Path, dataset: SyntheticGeometryDataset) 
             json.dumps(dataset.metadata, ensure_ascii=False, sort_keys=True)
         ),
     )
+
+
+def checkpoint_contract(model_config: Any) -> dict[str, Any]:
+    """Describe the exact decision-head tensors stored in the checkpoint."""
+
+    batch = "B"
+    entity_shape = [
+        batch,
+        int(model_config.entity_count),
+        int(model_config.entity_geometry_dim),
+    ]
+    return {
+        "decision_inputs": [
+            "language",
+            "entity_geometry",
+            "previous_action",
+            "language_valid",
+            "entity_geometry_mask",
+            "previous_action_valid",
+            "policy_input_valid",
+        ],
+        "input_shapes": {
+            "language": [batch, int(model_config.language_dim)],
+            "entity_geometry": entity_shape,
+            "previous_action": [batch, int(model_config.previous_action_dim)],
+            "language_valid": [batch],
+            "entity_geometry_mask": [batch, int(model_config.entity_count)],
+            "previous_action_valid": [batch],
+            "policy_input_valid": [batch],
+        },
+        "input_dtypes": {
+            "language": "float32",
+            "entity_geometry": "float32",
+            "previous_action": "float32",
+            "language_valid": "bool",
+            "entity_geometry_mask": "bool",
+            "previous_action_valid": "bool",
+            "policy_input_valid": "bool",
+        },
+        "decision_input_exclusions": ["global_visual", "entity_visual", "ego"],
+        "outputs": {
+            "action": {
+                "shape": [batch, int(model_config.action_dim)],
+                "dtype": "float32",
+                "frame": "base_link",
+                "kind": "single_step_desired_displacement_m",
+                "maximum_norm_m": float(model_config.maximum_action_m),
+            },
+            "stop_logit": {"shape": [batch, 1], "dtype": "float32"},
+            "valid_mask": {"shape": [batch], "dtype": "bool"},
+        },
+        "temporal_context": {
+            "previous_action_source": "same_run_same_instruction_previous_frame",
+            "first_frame_action": [0.0, 0.0],
+            "first_frame_valid": False,
+        },
+    }
 
 
 def _load_torch() -> Any:
@@ -611,6 +671,11 @@ def save_checkpoint(
     *,
     dataset: SyntheticGeometryDataset,
     history: Sequence[Mapping[str, float]] = (),
+    seed: int,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    device: str,
 ) -> None:
     """Save a strict-loadable Jetson policy checkpoint."""
 
@@ -618,15 +683,23 @@ def save_checkpoint(
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": "synthetic_geometry_single_point_v1",
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "model_config": asdict(model_config),
+        "contract": checkpoint_contract(model_config),
         "model_state_dict": {
             name: value.detach().cpu()
             for name, value in model.state_dict().items()
         },
         "training": {
             "source": "pc_only_synthetic_geometry",
+            "dataset_schema_version": DATASET_SCHEMA_VERSION,
             "sample_count": len(dataset.language),
+            "seed": int(seed),
+            "dataset_seed": int(seed),
+            "epochs": int(epochs),
+            "batch_size": int(batch_size),
+            "learning_rate": float(learning_rate),
+            "device": str(device),
             "target_colors": list(COLORS),
             "distance_buckets": list(DISTANCE_BUCKETS),
             "l7_runtime_x_range_m": list(L7_RUNTIME_X_RANGE_M),
@@ -728,6 +801,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_config,
         dataset=dataset,
         history=history,
+        seed=args.seed,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        device=args.device,
     )
     print(
         json.dumps(

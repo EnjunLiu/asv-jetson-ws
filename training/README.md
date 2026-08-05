@@ -176,7 +176,8 @@ Set-Location 'C:\Users\LIU\Documents\jetson_ws\asv_vla'
 
 输出的 checkpoint 保持现有 `model_config` + `model_state_dict` 严格加载格式，因此可由
 Jetson 的 `SmallPolicyConfig`/`SmallActionPolicy` 做结构检查；checkpoint metadata 会记录
-语言文件的 SHA-256。默认 CLI 拒绝没有真实 embedding 的部署训练。仅做无 Torch 的几何
+完整的输入/输出张量契约、seed、数据 schema、训练超参数和语言文件 SHA-256。默认 CLI
+拒绝没有真实 embedding 的部署训练。仅做无 Torch 的几何
 smoke 时才显式添加 `--synthetic-language`；该产物不能部署，也不能作为真实语言闭环证据。
 当前 WSL 若无 Torch，仍可运行 `training/test/test_synthetic_geometry_train.py` 的几何、
 专家方向、真实 embedding 对齐和数据序列化测试；checkpoint round-trip 测试会明确跳过，

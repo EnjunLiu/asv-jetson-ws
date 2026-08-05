@@ -152,10 +152,42 @@ def test_checkpoint_round_trip_uses_existing_model_contract(tmp_path) -> None:
         config,
         dataset=dataset,
         history=history,
+        seed=3,
+        epochs=1,
+        batch_size=12,
+        learning_rate=0.003,
+        device="cpu",
     )
     restored, payload = load_checkpoint(checkpoint_path, device="cpu")
 
     assert payload["model_config"] == asdict(config)
+    assert payload["schema_version"] == "synthetic_geometry_single_point_v2"
+    assert payload["contract"]["decision_inputs"] == [
+        "language",
+        "entity_geometry",
+        "previous_action",
+        "language_valid",
+        "entity_geometry_mask",
+        "previous_action_valid",
+        "policy_input_valid",
+    ]
+    assert payload["contract"]["input_shapes"]["previous_action"] == ["B", 2]
+    assert payload["contract"]["outputs"]["action"] == {
+        "shape": ["B", 2],
+        "dtype": "float32",
+        "frame": "base_link",
+        "kind": "single_step_desired_displacement_m",
+        "maximum_norm_m": 0.3,
+    }
+    assert payload["training"]["dataset_schema_version"] == (
+        "synthetic_geometry_dataset_v1"
+    )
+    assert payload["training"]["seed"] == 3
+    assert payload["training"]["dataset_seed"] == 3
+    assert payload["training"]["epochs"] == 1
+    assert payload["training"]["batch_size"] == 12
+    assert payload["training"]["learning_rate"] == 0.003
+    assert payload["training"]["device"] == "cpu"
     assert restored.config == config
     assert payload["model_state_dict"]
     for name, value in model.state_dict().items():

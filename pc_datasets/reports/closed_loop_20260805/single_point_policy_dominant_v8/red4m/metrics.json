@@ -5,9 +5,9 @@
     "target_entity": "target_red",
     "desired_standoff_m": 4.0,
     "available": true,
-    "ue_log": "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/red4m/ue_live.log",
+    "ue_log": "red4m/ue_TRACK-SYNTH-RED-4m-V1.log",
     "jetson_logs": [
-      "/mnt/c/Temp/asv_vla_synthetic_closed_loop_20260805/red4m/jetson_live.log"
+      "red4m/jetson_TRACK-SYNTH-RED-4m-V1.log"
     ],
     "asv_samples": 186,
     "target_samples": 186,
