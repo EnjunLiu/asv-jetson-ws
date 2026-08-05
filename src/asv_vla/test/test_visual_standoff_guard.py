@@ -132,6 +132,36 @@ def test_lateral_sign_mismatch_does_not_replace_forward_policy_action():
     assert guarded == (0.1, -0.001)
 
 
+def test_strong_predicted_lateral_reverse_uses_radial_backstop():
+    task = _task("follow red boat keep 3m", x=5.0, y=0.4, vy=2.0)
+    observation = extract_target_observation(task)
+    assert observation is not None
+    predicted_lateral = observation.relative_y + observation.relative_velocity_y * 0.2
+    assert np.isclose(predicted_lateral, 0.8)
+
+    raw = (0.1, -0.1)
+    assert raw[0] * observation.relative_x + raw[1] * observation.relative_y > 0.0
+    guarded, reason = apply_standoff_guard(raw, task)
+
+    assert reason == GUARD_BACKSTOP
+    assert guarded == compute_standoff_step(observation, 3.0)
+
+
+def test_weak_predicted_lateral_reverse_keeps_raw_policy_action():
+    task = _task("follow red boat keep 3m", x=5.0, y=0.4, vy=1.7)
+    observation = extract_target_observation(task)
+    assert observation is not None
+    predicted_lateral = observation.relative_y + observation.relative_velocity_y * 0.2
+    assert np.isclose(predicted_lateral, 0.74)
+
+    raw = (0.1, -0.1)
+    assert raw[0] * observation.relative_x + raw[1] * observation.relative_y > 0.0
+    guarded, reason = apply_standoff_guard(raw, task)
+
+    assert reason == GUARD_POLICY_DRIVEN
+    assert guarded == raw
+
+
 def test_hold_at_standoff_is_valid_zero_point():
     task = _task("follow red boat keep 3m", x=3.05, y=0.0)
     guarded, reason = apply_standoff_guard((0.1, 0.0), task)

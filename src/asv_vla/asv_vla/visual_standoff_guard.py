@@ -38,6 +38,8 @@ BACKSTOP_DOT_THRESHOLD = 0.0
 # Retained as a keyword-compatible parameter; action magnitude alone no
 # longer activates the backstop.
 BACKSTOP_ZERO_STEP_M = 1.0e-3
+LATERAL_BACKSTOP_THRESHOLD_M = 0.75
+LATERAL_BACKSTOP_PRODUCT_THRESHOLD_M2 = -0.01
 
 # Guard outcomes returned by ``apply_standoff_guard``.
 GUARD_PASS_THROUGH = "pass_through"  # non-FOLLOW task, action unchanged
@@ -262,7 +264,9 @@ def apply_standoff_guard(
     - A FOLLOW task with a visible target keeps the policy's direct action
       (the learned policy drives the executed command) unless the action
       points away from the target (``dot(action, target_dir) < dot_threshold``,
-      i.e. > 90 deg). Only then is it replaced by the deterministic radial
+      i.e. > 90 deg), or the predicted lateral deviation is at least 0.75 m
+      and the policy lateral component points against it with product below
+      -0.01 m^2. Only then is it replaced by the deterministic radial
       standoff action (``GUARD_BACKSTOP``).
     """
 
@@ -312,7 +316,17 @@ def apply_standoff_guard(
         return None, GUARD_FAIL_CLOSED
     target_dir = (target_dir[0] / target_norm, target_dir[1] / target_norm)
     dot_value = first_step[0] * target_dir[0] + first_step[1] * target_dir[1]
-    if dot_value < dot_threshold:
+    predicted_lateral = observation.relative_y
+    if observation.velocity_valid:
+        predicted_lateral += (
+            observation.relative_velocity_y * DEFAULT_PREDICTION_HORIZON_SEC
+        )
+    lateral_backstop = (
+        abs(predicted_lateral) >= LATERAL_BACKSTOP_THRESHOLD_M
+        and first_step[1] * predicted_lateral
+        < LATERAL_BACKSTOP_PRODUCT_THRESHOLD_M2
+    )
+    if dot_value < dot_threshold or lateral_backstop:
         values = values.copy()
         values[:] = step
         return tuple(float(value) for value in values), GUARD_BACKSTOP
