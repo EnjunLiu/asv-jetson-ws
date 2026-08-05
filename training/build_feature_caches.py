@@ -29,6 +29,7 @@ from training.feature_cache import (
     hash_torch_module_state,
     hash_weight_tree,
     make_image_preprocess_config,
+    make_language_provenance,
     validate_feature_cache,
 )
 
@@ -160,8 +161,8 @@ def build_complete_feature_set(
         )
 
     instructions = read_jsonl(instructions_source)
-    if len(instructions) != 130:
-        raise ValueError(f"Day 16 requires 130 instructions, got {len(instructions)}")
+    if not instructions:
+        raise ValueError("feature-cache build requires a non-empty instruction dataset")
     language_weights_sha256 = hash_weight_tree(language_model_source)
     language_encoder = USVLanguageEncoder(
         str(language_model_source),
@@ -265,6 +266,11 @@ def build_complete_feature_set(
         "frame_count": total_frames,
         "sample_count": total_samples,
         "language_weights_sha256": language_weights_sha256,
+        "language_provenance": make_language_provenance(
+            instructions,
+            embedding_table_source="precomputed_language_embeddings",
+            frame_perception_enabled=image_model is not None,
+        ),
         "visual_weights_sha256": visual_weights_sha256,
         "image_perception": {
             "enabled": image_model is not None,

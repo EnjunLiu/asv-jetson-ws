@@ -478,7 +478,14 @@ def _extract_torch_image_features(
                 )
             )
         features = torch.cat((spatial.reshape(-1), torch.stack(moments)))
-    expected = _feature_dim_for_model(model_version)
+    # Language-conditioned models append the 256-D task embedding after this
+    # helper returns. Validate only the image branch here; checking the fused
+    # dimension at this stage rejects every real CUDA frame.
+    expected = (
+        BASE_FEATURE_DIM
+        if model_version == LEGACY_MODEL_VERSION
+        else FEATURE_DIM
+    )
     if tuple(features.shape) != (expected,) or not bool(torch.isfinite(features).all()):
         raise ImageEntityPerceptionError(
             "CUDA image feature vector is invalid"

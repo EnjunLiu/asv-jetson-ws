@@ -213,7 +213,7 @@ class ImageEntityPerceptionNode(Node):
             Path.home()
             / "jetson_asv_ws"
             / "models"
-            / "image_entity_color_calibrated_v1.npz"
+            / "perception_image_conditioned_130_v1.npz"
         )
         model_path = str(
             self.declare_parameter("model_path", default_model)

@@ -396,7 +396,7 @@ class SmallActionPolicy(nn.Module):
 
 DEFAULT_POLICY_MODEL_PATH = (
     "/home/jetson/jetson_asv_ws/models/"
-    "policy_sine_near_image_color_seed42.pt"
+    "policy_single_point_v3_full_seed17.pt"
 )
 
 _FLOAT_INPUT_NAMES = (

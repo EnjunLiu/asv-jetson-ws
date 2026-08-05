@@ -321,8 +321,8 @@ def load_instruction_metadata(
         if instruction_id in output:
             raise ValueError(f"duplicate instruction ID: {instruction_id}")
         output[instruction_id] = metadata
-    if len(output) != 130:
-        raise ValueError(f"expected 130 instructions, found {len(output)}")
+    if not output:
+        raise ValueError("instruction dataset must contain at least one instruction")
     return output
 
 

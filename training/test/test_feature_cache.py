@@ -32,6 +32,7 @@ from training.feature_cache import (
     encode_frame_visual,
     hash_weight_tree,
     make_image_preprocess_config,
+    make_language_provenance,
     make_cache_key,
     preprocess_camera_image,
     _predict_image_entities,
@@ -507,6 +508,35 @@ def test_build_validate_and_hit_immutable_cache(tmp_path: Path) -> None:
     )
     assert cached["cached"] is True
 
+    manifest = json.loads(
+        (cache / "manifest.json").read_text(encoding="utf-8")
+    )
+    instruction_rows = [
+        json.loads(line)
+        for line in instructions.read_text(encoding="utf-8").splitlines()
+    ]
+    assert manifest["language_provenance"] == make_language_provenance(
+        instruction_rows,
+        embedding_table_source="language_encoder",
+        frame_perception_enabled=False,
+    )
+    with np.load(cache / "frames_000.npz", allow_pickle=False) as frames:
+        np.testing.assert_array_equal(
+            frames["sample_instruction_rows"],
+            np.tile(np.arange(9, dtype=np.int16), 2),
+        )
+
+
+def test_validate_rejects_missing_language_provenance(tmp_path: Path) -> None:
+    result, *_ = _build(tmp_path, output_name="missing_provenance")
+    manifest_path = Path(result["output"]) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["language_provenance"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(FeatureCacheError, match="language_provenance"):
+        validate_feature_cache(manifest_path.parent)
+
 
 def test_precomputed_language_stage_does_not_keep_encoder(
     tmp_path: Path,
@@ -647,6 +677,21 @@ def test_image_only_cache_uses_predictions_tracker_and_not_truth_geometry(
         "velocity_filter": "ema",
         "alpha": 0.6,
         "beta": 0.85,
+    }
+    assert manifest["language_provenance"]["embedding_table_source"] == (
+        "language_encoder"
+    )
+    assert manifest["language_provenance"]["frame_perception"] == {
+        "enabled": True,
+        "embedding_source": "instructions_manifest",
+        "embedding_strategy": "first_instruction_row",
+        "instruction_row": 0,
+        "instruction_id": "instruction_00",
+    }
+    assert manifest["language_provenance"]["decision_samples"] == {
+        "embedding_source": "language_table",
+        "embedding_strategy": "per_frame_instruction_id",
+        "pairing_key": ["frame_index", "instruction_id"],
     }
 
 

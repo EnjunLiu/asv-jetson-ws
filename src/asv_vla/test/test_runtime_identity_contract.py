@@ -165,42 +165,41 @@ def test_task_features_identity_is_complete_and_contiguous() -> None:
     ) is None
 
 
-def test_closed_loop_uses_final_near_image_color_policy_candidate() -> None:
+def test_closed_loop_uses_current_single_point_cuda_artifacts() -> None:
     launch = LAUNCH.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
 
-    assert "policy_sine_near_image_color_seed42.pt" in launch
-    assert "image_entity_color_calibrated_v1.npz" in launch
+    assert "policy_single_point_v3_full_seed17.pt" in launch
+    assert "perception_image_conditioned_130_v1.npz" in launch
     assert "default_value=\"/home/jetson/jetson_asv_ws/models/policy.onnx\"" not in launch
-    assert "path: models/image_entity_color_calibrated_v1.npz" in manifest
-    assert "model_id: image_entity_color_calibrated_v1" in manifest
-    assert "path: models/policy_sine_near_image_color_seed42.pt" in manifest
-    assert "model_id: policy_sine_near_image_color_seed42" in manifest
+    assert "path: models/perception_image_conditioned_130_v1.npz" in manifest
+    assert "model_id: image_entity_ridge_language_v3" in manifest
+    assert "path: models/policy_single_point_v3_full_seed17.pt" in manifest
+    assert "model_id: policy_single_point_v3_full_seed17" in manifest
     assert (
         "artifact_sha256: "
-        "985111c7cfeaea9a927bc59b6b3d6efb2bf40df7e68996d44aa82de4b2014a3c"
+        "a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e"
     ) in manifest
     assert (
         "source_sha256: "
-        "6c4ed50d49a0ba9447a3d991cb09de130bbdbcc6eb98eca1b98c49dfd66d7685"
+        "f907d297dbcbedd10aa5bc009d4345655654db04d1e66282f68fad06abbead2c"
     ) in manifest
-    assert "validation_gate_passed: true" in manifest
-    assert "deployment_status: torch_cuda_online_passed" in manifest
-    assert "mode: online_qwen_cuda_resident" in manifest
+    assert "deployment_status: selected_for_current_closed_loop" in manifest
+    assert "scene_exec_apply_count: 450" in manifest
+    assert "mode: online_qwen_cuda_release_after_encode" in manifest
     assert "online_qwen_runtime: true" in manifest
-    assert "release_model_after_encode: false" in manifest
+    assert "release_model_after_encode: true" in manifest
     assert "first_instruction_encoding: real_qwen_cuda" in manifest
-    assert "qwen_weight_resident_after_encode: true" in manifest
+    assert "qwen_weight_resident_after_encode: false" in manifest
     assert "post_encode_embedding_online: true" in manifest
-    assert "task_switch_policy: live_instruction_update_for_calibrated_tasks" in manifest
-    assert "s2_task_switch_promised: false" in manifest
-    assert "validation_status: cuda_resident_online_pending_device_recheck;blue_visual_calibration_pending" in manifest
-    assert "policy_sine_near_image_color_seed42.pt" in readme
-    assert "image_entity_color_calibrated_v1.npz" in readme
+    assert "cached_embedding_file: false" in manifest
+    assert "cpu_fallback: false" in manifest
+    assert "policy_single_point_v3_full_seed17.pt" in readme
+    assert "perception_image_conditioned_130_v1.npz" in readme
     assert "policy_image_seed17.onnx" not in readme
     assert "policy.onnx" not in readme
-    assert "image_entity_color_calibrated_v1.npz" in PERCEPTION_NODE.read_text(
+    assert "perception_image_conditioned_130_v1.npz" in PERCEPTION_NODE.read_text(
         encoding="utf-8"
     )
     assert "device={self.device}" in PERCEPTION_NODE.read_text(encoding="utf-8")

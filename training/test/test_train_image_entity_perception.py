@@ -12,6 +12,7 @@ from training.train_image_entity_perception import (
     _acceptance_gate,
     _augment_image,
     _load_language_embeddings,
+    _load_supervision_instruction_ids,
     _metrics,
     _read_samples,
 )
@@ -113,6 +114,35 @@ def test_read_samples_requires_explicit_language_or_legacy_mode(tmp_path: Path) 
             max_abs_yaw_rad=0.1,
             max_abs_surge_velocity_mps=1.0,
         )
+
+
+def test_supervision_instruction_index_keeps_each_frame_task(tmp_path: Path) -> None:
+    samples_path = tmp_path / "RUN_001" / "samples.jsonl"
+    samples_path.parent.mkdir()
+    samples_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "source": {"frame_index": 4},
+                    "instruction": {"instruction_id": "follow_red_3m_01"},
+                }
+            )
+            for _ in range(1)
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "source": {"frame_index": 4},
+                "instruction": {"instruction_id": "follow_blue_3m_01"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _load_supervision_instruction_ids(tmp_path, "RUN_001") == {
+        4: ("follow_red_3m_01", "follow_blue_3m_01")
+    }
 
 
 def test_language_manifest_loads_id_table_and_checks_identity(tmp_path: Path) -> None:

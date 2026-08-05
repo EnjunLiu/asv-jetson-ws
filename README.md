@@ -1,18 +1,20 @@
 # ASV VLA
 
-面向 Jetson/ROS 2 的 UE5 ASV 图像条件 VLA 原型。在线闭环的输入边界是：
+面向 Jetson/ROS 2 的 UE5 ASV 单点闭环。当前在线边界是：
 
 ```text
-JPEG 图像 (/ue/camera_frame) + 任务文本 (/task/text)
-  -> 感知头：图像 + 任务嵌入 -> 结构化实体 -> 跨帧 tracker 计算相对速度
-  -> 决策头：任务嵌入 + 结构化实体 -> 一个 body-frame 期望位移点
-  -> safety_gate -> point_controller
-  -> desired_x/desired_y -> UE5 运动学执行
+camera_image_rgb + task_text
+  -> 真实 Qwen CUDA task embedding
+  -> 感知：image + task embedding -> structured_entities
+  -> temporal tracker -> entity_geometry（含相对速度和有效性）
+  -> policy：language + entity_geometry + previous_action + validity masks
+  -> 一个 body-frame [desired_x, desired_y] 米制期望位移点
+  -> safety_gate -> UE5 运动学执行
 ```
 
-`/ue/entities` 是 UE 真值通道，只能用于 recorder、replay 和 PC 离线监督；在线感知、
-tracker、visual encoder、policy 和 safety gate 不得订阅它。在线 VLA 不输出左右推进器
-指令，真实船的低层控制器属于独立工程。
+决策 policy 明确排除 `global_visual`、`entity_visual` 和 `ego`。在线节点不得订阅
+`/ue/entities`；UE Entities 只用于 recorder、PC 离线监督、回放和验证。上层不输出左右
+推进器指令，真实船的低层控制器属于独立工程。
 
 ## ROS 2 包
 
@@ -25,45 +27,69 @@ tracker、visual encoder、policy 和 safety gate 不得订阅它。在线 VLA �
 
 在线 launch 不启动 ESP32、控制管理器或推进器分配器。
 
+## 当前部署 artifact
+
+二进制不提交 Git。将 PC 产物复制到 Jetson 的隔离部署名后，按
+[`models/manifest.yaml`](models/manifest.yaml) 核对来源和 SHA-256：
+
+| 组件 | PC 来源 | Jetson 文件名 | SHA-256 |
+| --- | --- | --- | --- |
+| policy | `/mnt/c/Temp/asv_vla_retrain_20260805/policy_v3_single_point_20260805/full_seed17/best.pt` | `policy_single_point_v3_full_seed17.pt` | `f907d297dbcbedd10aa5bc009d4345655654db04d1e66282f68fad06abbead2c` |
+| perception | `/mnt/c/Temp/asv_vla_retrain_20260805/perception_image_conditioned_130_v1.npz` | `perception_image_conditioned_130_v1.npz` | `a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e` |
+
+感知 NPZ 的 metadata 是 `model_version=image_entity_ridge_language_v3`，输入为
+`(camera_image_rgb,task_embedding_float32[256])->structured_entities`，feature input
+dimension 为 `4320`，输出包含 `relative_velocity_mps` 和 `velocity_valid`。相对速度由
+跨帧 tracker 产生，不是感知模型直接输出。
+
+语言模型 canonical ID 是 `Qwen/Qwen3-Embedding-0.6B`，本地目录仍可命名为
+`Qwen3-Embedding-0.6B`。当前 8 GB Orin 闭环必须使用
+`language_release_after_encode:=true`：首次任务仍由真实 Qwen CUDA 在线编码，发布有效
+embedding 后释放 Qwen 权重以避免 OOM；这不是缓存 embedding，也不是 CPU fallback。释放
+后只能复用该次真实在线编码结果；需要新任务时应按实现支持范围处理，不能伪造新的缓存输入。
+
 ## Jetson 构建与启动
 
-以下命令中的 `<JETSON_WS>`、`<UE5_HOST_IP>` 和模型文件名是部署占位符。模型二进制
-不在 Git 中，先把它们放到 `<JETSON_WS>/models/`；路径和模型契约见
-[`models/manifest.yaml`](models/manifest.yaml)。
+Jetson 只负责 ROS 2 构建和 CUDA 在线推理，不训练 policy 或 perception。以下命令使用
+当前隔离部署名：
 
 ```bash
-cd <JETSON_WS>
+cd /home/jetson/jetson_asv_ws
 source /opt/ros/humble/setup.bash
 colcon build --merge-install --symlink-install \
   --packages-select asv_jetson_interfaces asv_ue_bridge asv_vla asv_bringup
 source install/setup.bash
 
+sha256sum models/policy_single_point_v3_full_seed17.pt
+sha256sum models/perception_image_conditioned_130_v1.npz
+
 ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=<JETSON_WS>/models/<POLICY_CHECKPOINT>.pt \
-  perception_model_path:=<JETSON_WS>/models/<PERCEPTION_MODEL>.npz \
-  language_model_path:=<JETSON_WS>/models/Qwen3-Embedding-0.6B \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_single_point_v3_full_seed17.pt \
+  perception_model_path:=/home/jetson/jetson_asv_ws/models/perception_image_conditioned_130_v1.npz \
+  language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
+  language_model_id:=Qwen/Qwen3-Embedding-0.6B \
   language_device:=cuda visual_device:=cuda policy_device:=cuda \
-  language_release_after_encode:=<true-or-false> \
+  language_release_after_encode:=true \
+  task_text:="跟随红色目标船，保持3米距离" \
   execution_address:=<UE5_HOST_IP> execution_port:=8081
 ```
 
-`vla_closed_loop.launch.py` 的默认路径分别是
-`models/policy_sine_near_image_color_seed42.pt`、
-`models/image_entity_color_calibrated_v1.npz` 和
-`models/Qwen3-Embedding-0.6B`（均相对于 `/home/jetson/jetson_asv_ws`）。
-8 GB Jetson 的最终选定日志使用了 `language_release_after_encode:=true`；这会释放
-Qwen 权重但保留真实 Qwen CUDA embedding。manifest 的部署契约字段为
-`release_model_after_encode: false`（即保留权重常驻），并标注
-`qwen_weight_resident_after_encode: true`；应按设备内存明确选择，不能改成缓存 `.npy`
-或 CPU 推理。
+必须看到真实 CUDA 链路的状态，而不是只看到进程启动：
 
-UE5 场景需另行启动，并连接 bridge 的 TCP 8080；如果使用 headless C++ 运动学执行器，
-将 `execution_address` 指向 UE5 主机的 8081 端口。UE5 工程启动参数不由本仓库定义，
-不要把不存在的 UE5 命令当作本项目命令。
+```text
+LANGUAGE_READY_VALID ... release_model=true
+POLICY_READY backend=torch_cuda inputs=task_embedding+structured_entities+previous_action output=[desired_x,desired_y]
+PERCEPTION_TRACE visible=True
+POLICY_TRACE entity_valid=True
+PERCEPTION_PERF_TRACE valid=True
+```
 
-## 采集与 PC 训练边界
+UE5 场景另行启动并连接 bridge；headless C++ 运动学执行器使用 8081。UE5 工程启动参数
+不由本仓库定义，不要把不存在的 UE5 命令当作项目命令。
 
-采集 launch 是独立运行模式，不要和在线闭环同时启动：
+## PC 训练边界
+
+采集与在线闭环是两种独立模式，不能同时占用同一 UE5/TCP 通道：
 
 ```bash
 ros2 launch asv_bringup collect.launch.py \
@@ -71,66 +97,45 @@ ros2 launch asv_bringup collect.launch.py \
   execution_address:=<UE5_HOST_IP> execution_port:=8081
 ```
 
-`collect.launch.py` 的 recorder 保存 JPEG、`UEASVState`、UE Entities、任务和身份元数据；
-expert action 只用于离线标签。PC 侧可使用 UE Entities 训练图像实体模型，并由
-相邻图像实体和时间戳计算速度，再结合冻结 Qwen 任务嵌入和结构化实体训练单点决策头。
-部署到 Jetson 后，在线输入只有图像和任务文本，不读取 UE Entities 或 ego。
+PC 训练在每个 `(run, instruction, frame)` 时刻使用一个当前帧专家
+`[desired_x, desired_y]` 点，不把一段轨迹当作 policy 输出。`previous_action` 只取同一
+run、同一 instruction 的相邻前帧；首帧是零向量且 `previous_action_valid=false`。训练时
+可使用 UE Entities 作为离线监督；部署推理不读取 Entities，也不把 ego 送入 policy。
 
-PC 数据、日志、checkpoint、感知模型和 Qwen 目录放在仓库外的 `pc_datasets/` 或部署
-目录，不提交 Git。仓库只保留源码、合同和 `models/manifest.yaml`；当前 manifest 中的
-`artifact_sha256` 用于核对外部模型，而不是模型文件本身。
+训练数据、日志、checkpoint、感知模型和 Qwen 目录放在仓库外；Jetson 不承担训练工作。
 
-## 2026-08-05 三场景结果
+## 当前第三轮闭环证据
 
-证据目录为 `pc_datasets/final_selected_best_per_scene_20260805/`。三次运行均为
-L7 / S2 / scene seed 230908、每场景 186 个样本；下表的模型是按场景选择的组合：
+当前可引用的真实证据是 L7/S2/`seed=230908`、slot `FINAL-S2-230908-V5`、
+`MaxRuntimeSeconds=120`：
 
-| 场景 | 选定 policy | 选定 perception | 最终误差 | 平均误差 | 60 s 稳定窗口在目标带内 |
-| --- | --- | --- | ---: | ---: | ---: |
-| RED 3 m | `policy_near_rgb_v8_seed42.pt` | `perception_retrained_20260805_pc_native_aug_v1.npz` | 0.389 m | 0.508 m | 60.7% |
-| BLUE 3 m | `policy_near_rgb_v7_seed23.pt` | `image_entity_color_calibrated_v7.npz` | 0.883 m | 0.801 m | 0.0% |
-| RED 4 m | `policy_near_rgb_v8_seed42.pt` | `perception_retrained_20260805_pc_native_aug_v1.npz` | 0.394 m | 0.510 m | 49.2% |
+- Jetson log：`/mnt/c/Temp/asv_vla_closed_loop_20260805/jetson_l7_s2_230908_20260805_third.log`
+- UE log：`/mnt/c/Temp/asv_vla_ue_l7_s2_230908_20260805_third.log`
+- UE `SCENE_UE_COMPLETE`：`runtime_seconds=120.01`
+- UE `SCENE_EXEC_APPLY` 最终 count：`450`
 
-三场景审计和 UE5 完成标记为 PASS；Jetson 日志观察到 10 次 `POLICY_DRIVEN`、9 次
-`STANDOFF_BACKSTOP`，没有 `TARGET_LOST` 或 `FAIL_CLOSED`。这证明上述三个指定场景在
-各自选定模型和该单一运行条件下完成了在线 CUDA 闭环，不证明一个统一模型跨颜色、距离、
-seed 或布局的泛化：选择清单明确为 `best_per_scene_composite`，
-`single_uniform_run_proof=false`。BLUE 3 m 的稳定窗口 0% 也应保留在结论中，不能写成
-三场景均稳定跟踪。
+以上日志同时包含 `LANGUAGE_READY_VALID release_model=true`、CUDA policy 的单点输入/输出
+trace、`PERCEPTION_TRACE visible=True`、`POLICY_TRACE entity_valid=True` 和
+`PERCEPTION_PERF_TRACE valid=True`。这些是当前闭环证据，不代表跨颜色、距离、seed 或
+布局的统计泛化。
 
-## 验证
+失败轮次必须保留并明确标为失败，不能作为成功证据；不能用 UE 真值、专家 publisher、
+缓存 embedding、ONNX/CPU 后端补齐失败。新分析应追加到现有结果，不能覆盖旧图或原始
+learning curves。
 
-PC 代码检查：
+## 验证与故障安全
+
+文档收尾至少检查：
 
 ```bash
 cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
-PYTHONPATH=src/asv_vla pytest -q
-python3 -m compileall -q src/asv_vla training
 git diff --check
 ```
 
-Jetson/UE5 闭环验收应从 launch 输出和 UE5 日志核对：
+CUDA 不可用、模型加载失败、任务/实体身份不匹配、数据陈旧、输入 mask 无效或 safety
+gate 拒绝时，必须输出零位移 hold，并标记 `valid=false`；不能静默回退 CPU、读取缓存
+embedding 或订阅 UE 真值。第一帧 tracker 速度无效，只有同一身份的相邻图像帧才能产生
+有效相对速度。
 
-```text
-LANGUAGE_READY_VALID ... device=cuda
-image_entity_perception ... device=cuda
-POLICY_READY backend=torch_cuda device=cuda
-POLICY_TRACE ... entity_valid=true
-SCENE_EXEC_APPLY ...
-SCENE_UE_COMPLETE ...
-```
-
-## 故障安全约束
-
-- CUDA 不可用、模型加载失败、输入消息无效、身份不匹配或数据陈旧时，必须
-  `valid=false` 并 hold；不能静默回退 CPU、缓存 embedding 或 UE 真值。
-- 第一帧没有有效速度；速度只能由相同 `run_id/scene_seed/frame_index/stamp_us` 的相邻
-  图像实体计算。
-- `safety_gate` 检查有限性、速度、曲率、碰撞余量、陈旧和身份；目标缺失或 OOD 必须
-  fail-closed，standoff guard 只能输出安全轨迹或 hold。
-- `point_controller` 和 adapter 只发布 `desired_x/desired_y`。不可执行或
-  `safe_stop` 时，UE5 收到零位移 hold；不得把零位移冒充有效推进命令。
-- 每种模式只启动一套 bridge、policy、safety gate 和 recorder/expert owner；采集与闭环
-  不得并行占用同一 UE5/TCP 通道。
-
-更多接口和不变量见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+更多消息字段和不变量见 [`docs/interfaces.md`](docs/interfaces.md) 与
+[`ARCHITECTURE.md`](ARCHITECTURE.md)。

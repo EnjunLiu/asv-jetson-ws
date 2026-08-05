@@ -44,7 +44,7 @@ def generate_launch_description():
                 EnvironmentVariable("HOME"),
                 "jetson_asv_ws",
                 "models",
-                "image_entity_color_calibrated_v1.npz",
+                "perception_image_conditioned_130_v1.npz",
             ]),
         ),
         DeclareLaunchArgument("replay_rate_hz", default_value="2.0"),

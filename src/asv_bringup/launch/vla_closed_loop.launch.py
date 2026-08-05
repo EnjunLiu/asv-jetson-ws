@@ -81,7 +81,7 @@ def generate_launch_description():
                 "model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "policy_sine_near_image_color_seed42.pt"
+                    "policy_single_point_v3_full_seed17.pt"
                 ),
             ),
             DeclareLaunchArgument("policy_device", default_value="cuda"),
@@ -89,7 +89,7 @@ def generate_launch_description():
                 "perception_model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "image_entity_color_calibrated_v1.npz"
+                    "perception_image_conditioned_130_v1.npz"
                 ),
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
@@ -106,13 +106,21 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("language_device", default_value="cuda"),
             DeclareLaunchArgument(
-                "language_model_id", default_value="Qwen3-Embedding-0.6B"
+                "language_model_id", default_value="Qwen/Qwen3-Embedding-0.6B"
             ),
             DeclareLaunchArgument(
-                "language_release_after_encode", default_value="false"
+                "language_release_after_encode", default_value="true"
             ),
             DeclareLaunchArgument(
                 "task_text", default_value="跟随红色目标船，保持3米距离"
+            ),
+            # Qwen must finish its first CUDA encode and release its model
+            # before the other CUDA model processes are constructed on Orin.
+            DeclareLaunchArgument(
+                "perception_start_delay_sec", default_value="45.0"
+            ),
+            DeclareLaunchArgument(
+                "policy_start_delay_sec", default_value="50.0"
             ),
             DeclareLaunchArgument("visual_device", default_value="cuda"),
             DeclareLaunchArgument(
@@ -159,7 +167,7 @@ def generate_launch_description():
             ),
             # ── Image-only perception (UE truth is not an input) ──
             TimerAction(
-                period=20.0,
+                period=LaunchConfiguration("perception_start_delay_sec"),
                 actions=[
                     Node(
                         package="asv_vla",
@@ -245,7 +253,7 @@ def generate_launch_description():
             ),
             # ── VLA policy inference (JetPack PyTorch, CUDA) ──
             TimerAction(
-                period=20.0,
+                period=LaunchConfiguration("policy_start_delay_sec"),
                 actions=[
                     Node(
                         package="asv_vla",

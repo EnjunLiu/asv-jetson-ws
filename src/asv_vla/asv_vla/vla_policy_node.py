@@ -425,6 +425,7 @@ class VLAPolicyNode(Node):
             self._last_gate_frame_index >= 0
             and frame_index != self._last_gate_frame_index + 1
         ):
+            self._last_gate_frame_index = frame_index
             self._clear_previous_action()
             return
         self._last_gate_frame_index = frame_index

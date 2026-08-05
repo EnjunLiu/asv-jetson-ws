@@ -193,6 +193,57 @@ def _resolve_instruction_id(
     return None
 
 
+def _load_supervision_instruction_ids(
+    supervision_root: Path,
+    run_id: str,
+) -> dict[int, tuple[str, ...]]:
+    """Index the offline instruction labels associated with each image frame."""
+
+    samples_path = Path(supervision_root) / run_id / "samples.jsonl"
+    if not samples_path.is_file():
+        raise RuntimeError(
+            f"supervision samples not found for run {run_id}: {samples_path}"
+        )
+    by_frame: dict[int, list[str]] = {}
+    seen: set[tuple[int, str]] = set()
+    try:
+        lines = samples_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read supervision samples: {exc}") from exc
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            sample = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"{samples_path}:{line_number}: invalid JSON: {exc.msg}"
+            ) from exc
+        source = sample.get("source", {})
+        instruction = sample.get("instruction", {})
+        try:
+            frame_index = int(source["frame_index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{samples_path}:{line_number}: missing frame_index"
+            ) from exc
+        instruction_id = str(instruction.get("instruction_id", "")).strip()
+        if not instruction_id:
+            raise RuntimeError(
+                f"{samples_path}:{line_number}: missing instruction_id"
+            )
+        key = (frame_index, instruction_id)
+        if key in seen:
+            raise RuntimeError(
+                f"{samples_path}:{line_number}: duplicate frame/instruction {key}"
+            )
+        seen.add(key)
+        by_frame.setdefault(frame_index, []).append(instruction_id)
+    if not by_frame:
+        raise RuntimeError(f"supervision samples are empty: {samples_path}")
+    return {frame: tuple(ids) for frame, ids in by_frame.items()}
+
+
 def _augment_image(image: Image.Image) -> Image.Image:
     """Random photometric perturbation for the training split.
 
@@ -221,6 +272,7 @@ def _read_samples(
     low_light_brightness: float = 1.04,
     low_light_contrast: float = 1.03,
     language_table: dict[str, Any] | None = None,
+    supervision_root: Path | None = None,
     legacy_image_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str], int, int, int]:
     if language_table is None and not legacy_image_only:
@@ -241,6 +293,11 @@ def _read_samples(
             continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         run_id = str(manifest.get("run_id", episode.name))
+        supervision_by_frame = (
+            _load_supervision_instruction_ids(supervision_root, run_id)
+            if language_table is not None and supervision_root is not None
+            else None
+        )
         print(f"read_samples episode={episode.name} augment={augment}", flush=True)
         frame_paths = sorted((episode / "frames").glob("*.json"))
         for frame_path in frame_paths:
@@ -273,16 +330,35 @@ def _read_samples(
             if not distances or min(distances) > max_primary_distance_m:
                 skipped_far += 1
                 continue
-            language_embedding = None
-            instruction_id = None
+            instruction_ids: tuple[str | None, ...]
             if language_table is not None:
-                instruction_id = _resolve_instruction_id(record, manifest, language_table)
-                if instruction_id is None:
-                    raise RuntimeError(
-                        f"{frame_path}: no language embedding for instruction_id "
-                        "or task text; refusing to generate a fallback"
+                if supervision_by_frame is not None:
+                    indexed_ids = supervision_by_frame.get(int(record["frame_index"]))
+                    if not indexed_ids:
+                        raise RuntimeError(
+                            f"{frame_path}: supervision has no instruction rows"
+                        )
+                    unknown = sorted(
+                        set(indexed_ids) - set(language_table["by_id"])
                     )
-                language_embedding = language_table["by_id"][instruction_id]
+                    if unknown:
+                        raise RuntimeError(
+                            f"{frame_path}: supervision references unknown instruction IDs: "
+                            f"{unknown[:5]}"
+                        )
+                    instruction_ids = tuple(indexed_ids)
+                else:
+                    instruction_id = _resolve_instruction_id(
+                        record, manifest, language_table
+                    )
+                    if instruction_id is None:
+                        raise RuntimeError(
+                            f"{frame_path}: no language embedding for instruction_id "
+                            "or task text; refusing to generate a fallback"
+                        )
+                    instruction_ids = (instruction_id,)
+            else:
+                instruction_ids = (None,)
             image_path = episode / str(record["camera"]["image_path"])
             try:
                 with Image.open(image_path) as image:
@@ -296,12 +372,6 @@ def _read_samples(
                     if augment:
                         image = _augment_image(image)
                     image_features = extract_image_features(image)
-                    if language_embedding is not None:
-                        features.append(
-                            np.concatenate((image_features, language_embedding))
-                        )
-                    else:
-                        features.append(image_features)
             except (OSError, KeyError, ValueError) as exc:
                 raise RuntimeError(f"cannot read {frame_path}: {exc}") from exc
             by_id = {
@@ -329,8 +399,17 @@ def _read_samples(
                 output[offset + 1 : offset + 4] = np.asarray(
                     (x, y, z), dtype=np.float32
                 ) / POSITION_SCALE_M
-            targets.append(output)
-            run_ids.append(run_id)
+            for instruction_id in instruction_ids:
+                if instruction_id is None:
+                    features.append(image_features)
+                else:
+                    features.append(
+                        np.concatenate(
+                            (image_features, language_table["by_id"][instruction_id])
+                        )
+                    )
+                targets.append(output.copy())
+                run_ids.append(run_id)
     if not features:
         raise RuntimeError(f"no episode frames found under {root}")
     return (
@@ -469,6 +548,7 @@ def train(
     brightness_augmentation: bool = False,
     language_embeddings: Path | None = None,
     language_manifest: Path | None = None,
+    supervision_root: Path | None = None,
     language_model_id: str = "",
     language_weights_sha256: str = "",
     legacy_image_only: bool = False,
@@ -500,6 +580,20 @@ def train(
             "LANGUAGE_EMBEDDINGS_REQUIRED: pass --language-embeddings and "
             "--language-manifest, or explicitly pass --legacy-image-only"
         )
+    supervision_source = (
+        None
+        if supervision_root is None
+        else Path(supervision_root).expanduser().resolve()
+    )
+    if language_table is not None and supervision_source is None:
+        candidate = root.parent / "day10_supervised"
+        if candidate.is_dir():
+            supervision_source = candidate
+        else:
+            raise RuntimeError(
+                "SUPERVISION_ROOT_REQUIRED: language-conditioned perception "
+                "training needs per-frame instruction labels"
+            )
     if max_primary_distance_m <= 0.0:
         raise ValueError("max_primary_distance_m must be positive")
     if ridge <= 0.0:
@@ -534,6 +628,7 @@ def train(
         low_light_brightness=low_light_brightness,
         low_light_contrast=low_light_contrast,
         language_table=language_table,
+        supervision_root=supervision_source,
         legacy_image_only=legacy_image_only,
     )
     (
@@ -554,6 +649,7 @@ def train(
         low_light_brightness=low_light_brightness,
         low_light_contrast=low_light_contrast,
         language_table=language_table,
+        supervision_root=supervision_source,
         legacy_image_only=legacy_image_only,
     )
     unique_runs = sorted(set(run_ids))
@@ -598,6 +694,12 @@ def train(
         "language_weights_sha256": language_table["weights_sha256"] if language_table else "",
         "language_manifest": language_table["manifest_path"] if language_table else "",
         "language_embeddings": language_table["embeddings_path"] if language_table else "",
+        "supervision_root": str(supervision_source) if supervision_source else "",
+        "language_sample_source": (
+            "offline_supervision_samples_per_frame"
+            if language_table is not None
+            else "single_image_sample"
+        ),
         "legacy_image_only": legacy_image_only,
         "label_source": "frame_record_v1.entities",
         "velocity_output": False,
@@ -706,6 +808,11 @@ def main() -> None:
         type=Path,
         help="manifest mapping instruction_id to the precomputed embeddings",
     )
+    parser.add_argument(
+        "--supervision-root",
+        type=Path,
+        help="root containing one samples.jsonl directory per episode Run",
+    )
     parser.add_argument("--language-model-id", default="")
     parser.add_argument("--language-weights-sha256", default="")
     parser.add_argument(
@@ -732,6 +839,7 @@ def main() -> None:
         brightness_augmentation=args.brightness_augmentation,
         language_embeddings=args.language_embeddings,
         language_manifest=args.language_manifest,
+        supervision_root=args.supervision_root,
         language_model_id=args.language_model_id,
         language_weights_sha256=args.language_weights_sha256,
         legacy_image_only=args.legacy_image_only,

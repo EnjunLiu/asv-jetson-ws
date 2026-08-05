@@ -15,7 +15,7 @@ pc_datasets/
 ├── registry/       # Run/Scene-Seed 分组注册表
 ├── features/       # 冻结语言/结构化实体特征与感知审计数据
 ├── checkpoints/    # 训练模型和 summary.json
-├── models/         # image_entity_color_calibrated_v1.npz/json、Qwen
+├── models/         # perception_image_conditioned_130_v1.npz、policy、Qwen
 └── reports/        # 训练与验证报告
 ```
 
@@ -45,10 +45,14 @@ Windows 自动化入口为 `tools/ue5/collect.ps1`，其默认计划也指向同
 1. `training.dataset_registry` 扫描每个 Run，检查帧数、身份、质量和监督完整性。
 2. `training.make_group_splits` 按 Run/Scene Seed 分组，避免相邻帧泄漏到验证集。
 3. `training.feature_cache` 在 PC CUDA 上冻结 Qwen 和图像感知/结构化实体特征。
+   启用帧级图像感知时固定使用 instructions manifest 第 0 行的语言 embedding；这个
+   选择记录在每个 cache 的 `manifest.json` 和汇总的 `feature_set_manifest.json` 中。
    相对速度只使用相邻帧 tracker 结果；不能从单张图像标签直接伪造速度。
 4. `training.train` 训练单步二维期望位移策略；每个样本是某个
    `(Run, instruction, frame)` 时刻的专家点 `[desired_x, desired_y]`，不是整条专家
-   轨迹。决策头接收 `language + entity_geometry + previous_action` 及有效性 mask；
+   轨迹。决策样本仍按每帧 `instruction_id` 从语言表配对；这与帧级感知使用第 0 行
+   embedding 是两个独立策略。决策头接收 `language + entity_geometry + previous_action`
+   及有效性 mask；
    `previous_action` 只从同一 Run、同一 instruction 的相邻前帧专家点生成，首帧或前帧
    STOP 使用零值并置无效。策略不接收全局视觉 token、实体 crop token、ego、颜色真值、
    实体 ID 或左右推力。缓存中的视觉/ego 数组只用于感知审计，不会进入决策头。
@@ -82,10 +86,12 @@ Jetson 内存紧张时，feature-cache 允许分阶段加载 Qwen 后释放 CUDA
 
 部署模型由 `models/manifest.yaml` 指定：
 
-- `image_entity_color_calibrated_v1.npz`：JPEG -> 近距离图像几何；约 5 m 外 fail-closed；
-- `policy_sine_near_image_color_seed42.pt`：Torch CUDA，输入为任务嵌入、结构化实体、上一
+- `perception_image_conditioned_130_v1.npz`：JPEG + task embedding -> 结构化实体；相对
+  速度由 temporal tracker 计算，模型不直接从单帧输出速度；
+- `policy_single_point_v3_full_seed17.pt`：Torch CUDA，输入为任务嵌入、结构化实体、上一
   个放行动作及有效性 mask，输出一个 `[desired_x, desired_y]` body-frame 单步位移；
-- `Qwen3-Embedding-0.6B`：真实 CUDA 语言编码，默认常驻，可显式释放权重但不允许 `.npy`。
+- `Qwen3-Embedding-0.6B`：真实 CUDA 语言编码；当前 Jetson 闭环使用
+  `language_release_after_encode=true`，释放权重但保留真实 embedding，不允许 `.npy` 或 CPU fallback。
 
 在线链路永远是：
 

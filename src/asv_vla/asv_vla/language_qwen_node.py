@@ -35,7 +35,10 @@ from .language_encoder import (
 
 EMBEDDING_DIM = 256
 DEFAULT_MODEL_PATH = "/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B"
-DEFAULT_MODEL_ID = "Qwen3-Embedding-0.6B"
+# Match the identifier embedded in the PC-trained perception checkpoints.
+# The local directory name remains the short ``Qwen3-Embedding-0.6B`` name;
+# the published model identity is the canonical Hugging Face identifier.
+DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 
 LANGUAGE_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,

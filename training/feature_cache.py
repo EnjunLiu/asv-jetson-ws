@@ -84,6 +84,11 @@ DEFAULT_IMAGE_PREPROCESS_CONTRAST = LOW_LIGHT_PREPROCESS_CONTRAST
 # training caches and Jetson inference.
 ZERO_EGO_IN_CACHE = False
 LANGUAGE_FEATURE_DIM = 256
+LANGUAGE_PROVENANCE_SCHEMA_VERSION = "language_embedding_provenance_v1"
+FRAME_PERCEPTION_LANGUAGE_SOURCE = "instructions_manifest"
+FRAME_PERCEPTION_LANGUAGE_STRATEGY = "first_instruction_row"
+DECISION_SAMPLE_LANGUAGE_SOURCE = "language_table"
+DECISION_SAMPLE_LANGUAGE_STRATEGY = "per_frame_instruction_id"
 COLOR_PRIVILEGE_COLUMNS = (14, 15)
 FRAME_SHARD_NAME = "frames_000.npz"
 LANGUAGE_FILE_NAME = "language.npz"
@@ -313,6 +318,126 @@ def _json_digest(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def make_language_provenance(
+    instructions: list[dict[str, Any]],
+    *,
+    embedding_table_source: str,
+    frame_perception_enabled: bool,
+) -> dict[str, Any]:
+    """Describe the distinct language rows consumed by cache consumers."""
+
+    if not instructions:
+        raise FeatureCacheError("instruction dataset is empty")
+    instruction_id = str(instructions[0].get("instruction_id", "")).strip()
+    if not instruction_id:
+        raise FeatureCacheError(
+            "instruction dataset contains an empty first instruction ID"
+        )
+    embedding_table_source = str(embedding_table_source).strip()
+    if not embedding_table_source:
+        raise FeatureCacheError("language embedding table source must not be empty")
+    frame_perception_enabled = bool(frame_perception_enabled)
+    return {
+        "schema_version": LANGUAGE_PROVENANCE_SCHEMA_VERSION,
+        "embedding_table_source": embedding_table_source,
+        "frame_perception": {
+            "enabled": frame_perception_enabled,
+            "embedding_source": (
+                FRAME_PERCEPTION_LANGUAGE_SOURCE
+                if frame_perception_enabled
+                else "not_used"
+            ),
+            "embedding_strategy": (
+                FRAME_PERCEPTION_LANGUAGE_STRATEGY
+                if frame_perception_enabled
+                else "not_applicable"
+            ),
+            "instruction_row": 0 if frame_perception_enabled else None,
+            "instruction_id": instruction_id if frame_perception_enabled else "",
+        },
+        "decision_samples": {
+            "embedding_source": DECISION_SAMPLE_LANGUAGE_SOURCE,
+            "embedding_strategy": DECISION_SAMPLE_LANGUAGE_STRATEGY,
+            "pairing_key": ["frame_index", "instruction_id"],
+        },
+    }
+
+
+def _validate_language_provenance(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise FeatureCacheError("language_provenance must be an object")
+    if value.get("schema_version") != LANGUAGE_PROVENANCE_SCHEMA_VERSION:
+        raise FeatureCacheError("language provenance schema version mismatch")
+    if not str(value.get("embedding_table_source", "")).strip():
+        raise FeatureCacheError(
+            "language provenance embedding table source is missing"
+        )
+    frame_perception = value.get("frame_perception")
+    if not isinstance(frame_perception, dict):
+        raise FeatureCacheError(
+            "language_provenance.frame_perception must be an object"
+        )
+    enabled = frame_perception.get("enabled")
+    if not isinstance(enabled, bool):
+        raise FeatureCacheError(
+            "language provenance frame perception enabled must be boolean"
+        )
+    if enabled:
+        if (
+            frame_perception.get("embedding_source")
+            != FRAME_PERCEPTION_LANGUAGE_SOURCE
+        ):
+            raise FeatureCacheError(
+                "language provenance frame perception source is invalid"
+            )
+        if (
+            frame_perception.get("embedding_strategy")
+            != FRAME_PERCEPTION_LANGUAGE_STRATEGY
+        ):
+            raise FeatureCacheError(
+                "language provenance frame perception strategy is invalid"
+            )
+        if frame_perception.get("instruction_row") != 0:
+            raise FeatureCacheError(
+                "language provenance frame perception must use instruction row 0"
+            )
+        if not str(frame_perception.get("instruction_id", "")).strip():
+            raise FeatureCacheError(
+                "language provenance frame perception instruction ID is missing"
+            )
+    elif frame_perception != {
+        "enabled": False,
+        "embedding_source": "not_used",
+        "embedding_strategy": "not_applicable",
+        "instruction_row": None,
+        "instruction_id": "",
+    }:
+        raise FeatureCacheError(
+            "language provenance disabled frame perception metadata is invalid"
+        )
+    decision_samples = value.get("decision_samples")
+    if not isinstance(decision_samples, dict):
+        raise FeatureCacheError(
+            "language_provenance.decision_samples must be an object"
+        )
+    if (
+        decision_samples.get("embedding_source")
+        != DECISION_SAMPLE_LANGUAGE_SOURCE
+    ):
+        raise FeatureCacheError("language provenance decision source is invalid")
+    if (
+        decision_samples.get("embedding_strategy")
+        != DECISION_SAMPLE_LANGUAGE_STRATEGY
+    ):
+        raise FeatureCacheError(
+            "language provenance decision strategy is invalid"
+        )
+    if decision_samples.get("pairing_key") != ["frame_index", "instruction_id"]:
+        raise FeatureCacheError(
+            "language provenance decision pairing key is invalid"
+        )
+
+
 def _entity_objects(record: dict[str, Any]) -> list[SimpleNamespace]:
     output: list[SimpleNamespace] = []
     for item in record["entities"]["items"]:
@@ -375,6 +500,7 @@ def _predict_image_entities(
     episode_dir: Path,
     image_model: Any,
     tracker: TemporalEntityTracker,
+    task_embedding: object | None = None,
     image_preprocess: ImagePreprocessConfig | None = None,
 ) -> tuple[Any, ...]:
     camera = record.get("camera", {})
@@ -397,20 +523,26 @@ def _predict_image_entities(
                 or parameter.kind is inspect.Parameter.VAR_KEYWORD
                 for parameter in parameters
             )
-            if supports_color_reference:
-                predictions = predict(
-                    feature_image,
-                    color_image=color_image,
-                )
-            elif getattr(image_model, "model_version", "") in (
+            supports_task_embedding = any(
+                parameter.name == "task_embedding"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            if not supports_color_reference and getattr(
+                image_model, "model_version", ""
+            ) in (
                 COLOR_CALIBRATED_MODEL_VERSION,
                 COLOR_CALIBRATED_MODEL_VERSION_V2,
             ):
                 raise ImageEntityPerceptionError(
                     "calibrated perception model lacks original-RGB color contract"
                 )
-            else:
-                predictions = predict(feature_image)
+            predict_kwargs: dict[str, Any] = {}
+            if supports_color_reference:
+                predict_kwargs["color_image"] = color_image
+            if supports_task_embedding and task_embedding is not None:
+                predict_kwargs["task_embedding"] = task_embedding
+            predictions = predict(feature_image, **predict_kwargs)
         except (OSError, InvalidImageError):
             predictions = ()
         except ImageEntityPerceptionError as exc:
@@ -573,6 +705,7 @@ def make_cache_key(
     feature_schema_version: str = FEATURE_CACHE_SCHEMA_VERSION,
     image_perception: dict[str, Any] | None = None,
     image_preprocess: dict[str, Any] | None = None,
+    language_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not source_frames:
         raise FeatureCacheError("source_frames must not be empty")
@@ -599,6 +732,8 @@ def make_cache_key(
         key["image_perception"] = image_perception
     if image_preprocess is not None:
         key["image_preprocess"] = image_preprocess
+    if language_provenance is not None:
+        key["language_provenance"] = language_provenance
     return key
 
 
@@ -819,6 +954,25 @@ def build_feature_cache(
         raise FeatureCacheError("episode contains multiple run_ids")
     run_id = next(iter(run_ids))
     sources = _frame_sources(records, episode)
+    instructions = read_jsonl(instructions_source)
+    if not instructions:
+        raise FeatureCacheError("instruction dataset is empty")
+    instruction_ids = [
+        str(item.get("instruction_id", "")).strip() for item in instructions
+    ]
+    if any(not value for value in instruction_ids):
+        raise FeatureCacheError("instruction dataset contains an empty ID")
+    if len(instruction_ids) != len(set(instruction_ids)):
+        raise FeatureCacheError("instruction dataset contains duplicate IDs")
+    language_provenance = make_language_provenance(
+        instructions,
+        embedding_table_source=(
+            "precomputed_language_embeddings"
+            if precomputed_language_embeddings is not None
+            else "language_encoder"
+        ),
+        frame_perception_enabled=image_model is not None,
+    )
     image_preprocess = make_image_preprocess_config(
         enabled=image_preprocess_enabled,
         gamma=image_preprocess_gamma,
@@ -837,6 +991,7 @@ def build_feature_cache(
         preprocess_version=preprocess_version,
         image_perception=(image_perception if image_model is not None else None),
         image_preprocess=image_preprocess_manifest,
+        language_provenance=language_provenance,
     )
     cache_key_sha256 = _json_digest(cache_key)
     output = output_base / run_id
@@ -858,6 +1013,7 @@ def build_feature_cache(
             image_perception=(
                 image_perception if image_model is not None else None
             ),
+            language_provenance=language_provenance,
         )
         legacy_compatible = (
             not image_preprocess.enabled
@@ -877,14 +1033,6 @@ def build_feature_cache(
             **report,
         }
 
-    instructions = read_jsonl(instructions_source)
-    if not instructions:
-        raise FeatureCacheError("instruction dataset is empty")
-    instruction_ids = [str(item.get("instruction_id", "")).strip() for item in instructions]
-    if any(not value for value in instruction_ids):
-        raise FeatureCacheError("instruction dataset contains an empty ID")
-    if len(instruction_ids) != len(set(instruction_ids)):
-        raise FeatureCacheError("instruction dataset contains duplicate IDs")
     if precomputed_language_embeddings is None:
         if language_encoder is None:
             raise FeatureCacheError(
@@ -946,6 +1094,7 @@ def build_feature_cache(
                 episode,
                 image_model,
                 tracker,
+                task_embedding=language_array[0],
                 image_preprocess=image_preprocess,
             )
             if image_model is not None and tracker is not None
@@ -1085,6 +1234,7 @@ def build_feature_cache(
             "perception_model_version": image_perception["model_version"],
             "perception_model_enabled": bool(image_perception["enabled"]),
             "image_preprocess": image_preprocess_manifest,
+            "language_provenance": language_provenance,
         }
         write_json_atomic(temporary / QUALITY_FILE_NAME, quality_report)
         manifest = {
@@ -1109,6 +1259,7 @@ def build_feature_cache(
             },
             "preprocess_version": preprocess_version,
             "image_preprocess": image_preprocess_manifest,
+            "language_provenance": language_provenance,
             "git_sha": git_sha,
             "source": {
                 "episode_manifest_sha256": _sha256_file(
@@ -1171,6 +1322,7 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         raise FeatureCacheError(f"cache metadata is unreadable: {exc}") from exc
     if manifest.get("schema_version") != FEATURE_CACHE_SCHEMA_VERSION:
         raise FeatureCacheError("feature cache schema version mismatch")
+    _validate_language_provenance(manifest.get("language_provenance"))
     if "image_preprocess" in manifest:
         _validate_image_preprocess_manifest(manifest["image_preprocess"])
     if _json_digest(manifest.get("cache_key")) != manifest.get(
@@ -1329,7 +1481,9 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
                 "previous expert action does not match the adjacent "
                 "same-instruction sample"
             )
-    if not np.array_equal(previous_action_valid.astype(np.bool_), expected_previous_valid):
+    if not np.array_equal(
+        previous_action_valid.astype(np.bool_), expected_previous_valid
+    ):
         raise FeatureCacheError(
             "previous_action_valid does not match adjacent same-task labels"
         )
@@ -1337,6 +1491,21 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         raise FeatureCacheError("frame indices are not unique")
     if len(np.unique(instruction_ids)) != instruction_count:
         raise FeatureCacheError("instruction IDs are not unique")
+    frame_perception_provenance = manifest["language_provenance"][
+        "frame_perception"
+    ]
+    if frame_perception_provenance["enabled"]:
+        provenance_instruction_id = str(
+            frame_perception_provenance["instruction_id"]
+        )
+        if (
+            not instruction_ids.size
+            or str(instruction_ids[0]) != provenance_instruction_id
+        ):
+            raise FeatureCacheError(
+                "language provenance first instruction ID does not match "
+                "language cache"
+            )
     if not bool(quality.get("passed")):
         raise FeatureCacheError("quality report did not pass")
     return {
@@ -1345,6 +1514,7 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         "instruction_count": instruction_count,
         "sample_count": sample_count,
         "cache_key_sha256": manifest["cache_key_sha256"],
+        "language_provenance": manifest["language_provenance"],
     }
 
 

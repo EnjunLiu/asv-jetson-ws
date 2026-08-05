@@ -101,6 +101,7 @@ def test_embedding_helper_enforces_fixed_finite_contract():
 def test_qwen_node_contract_is_fail_closed_and_cuda_explicit():
     source = NODE.read_text(encoding="utf-8")
     encoder_source = ENCODER.read_text(encoding="utf-8")
+    assert 'DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"' in source
     assert "USVLanguageEncoder" in source
     assert 'device=self.device' in source
     assert "LanguageEncoderError" in source
@@ -139,10 +140,15 @@ def test_launch_uses_real_qwen_cuda_without_cached_stub_backend():
     assert "demo_instruction_embedding.npy" not in launch
     assert 'LaunchConfiguration("language_model_path")' in launch
     assert 'LaunchConfiguration("language_device")' in launch
+    assert '"language_model_id", default_value="Qwen/Qwen3-Embedding-0.6B"' in launch
     assert (
-        'DeclareLaunchArgument(\n                "language_release_after_encode", '
-        'default_value="false"\n            )'
+            'DeclareLaunchArgument(\n                "language_release_after_encode", '
+            'default_value="true"\n            )'
     ) in launch
+    assert '"perception_start_delay_sec", default_value="45.0"' in launch
+    assert '"policy_start_delay_sec", default_value="50.0"' in launch
+    assert 'period=LaunchConfiguration("perception_start_delay_sec")' in launch
+    assert 'period=LaunchConfiguration("policy_start_delay_sec")' in launch
     assert 'LaunchConfiguration("language_release_after_encode")' in launch
 
 

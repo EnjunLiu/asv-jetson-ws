@@ -27,6 +27,7 @@ from asv_vla.image_entity_perception import (
     ImageEntityPrediction,
     calibrated_color_geometry,
     extract_image_features,
+    _extract_torch_image_features,
     parse_task_instruction,
     save_model,
     select_task_entities,
@@ -48,6 +49,19 @@ def test_image_features_are_fixed_and_finite() -> None:
     features = extract_image_features(image)
     assert features.shape == (FEATURE_DIM,)
     assert np.all(np.isfinite(features))
+
+
+def test_language_conditioned_torch_features_stop_before_embedding_concat() -> None:
+    torch = pytest.importorskip("torch")
+    features = _extract_torch_image_features(
+        Image.new("RGB", (1280, 720), (12, 30, 60)),
+        torch,
+        device="cpu",
+        model_version=MODEL_VERSION,
+    )
+
+    assert tuple(features.shape) == (FEATURE_DIM,)
+    assert bool(torch.isfinite(features).all())
 
 
 def test_image_features_accept_rgb_arrays_and_include_moments() -> None:
