@@ -29,6 +29,7 @@ from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, MAX_DISPLACEMENT_
 from .visual_standoff_guard import (
     GUARD_BACKSTOP,
     GUARD_FAIL_CLOSED,
+    GUARD_HOLD,
     GUARD_PASS_THROUGH,
     GUARD_POLICY_DRIVEN,
     apply_standoff_guard,
@@ -48,6 +49,7 @@ SYNC_FAIL_PUBLISH_PERIOD_SEC = 1.0
 POLICY_MAX_STEP_M = MAX_DISPLACEMENT_M
 POLICY_MAX_ACTION_DELTA_M = 0.05
 POLICY_TRACE_LIMIT = 5
+POLICY_AUDIT_PERIOD = 100
 
 LANG_QOS = QoSProfile(
     depth=10,
@@ -303,6 +305,17 @@ class VLAPolicyNode(Node):
         self._last_sync_fail_time = 0.0
         self._frame_seq = 0
         self._policy_trace_count = 0
+        self._policy_audit_events = 0
+        self._policy_driven_count = 0
+        self._backstop_count = 0
+        self._hold_count = 0
+        self._fail_closed_count = 0
+        self._policy_stop_count = 0
+        self._policy_audit_shutdown_logged = False
+        self._last_audit_guard_reason = "none"
+        self._last_audit_raw_dx, self._last_audit_raw_dy = "nan", "nan"
+        self._last_audit_guarded_dx, self._last_audit_guarded_dy = "nan", "nan"
+        self._last_audit_final_dx, self._last_audit_final_dy = "nan", "nan"
         self._inference_count = 0
         self._active_run: tuple[str, int] | None = None
         self._retired_runs: set[tuple[str, int]] = set()
@@ -440,6 +453,83 @@ class VLAPolicyNode(Node):
     def _expire_cache(self) -> None:
         self._frame_sync.expire()
 
+    @staticmethod
+    def _audit_action(action: Sequence[float] | np.ndarray | None) -> tuple[str, str]:
+        if action is None:
+            return "nan", "nan"
+        try:
+            values = np.asarray(action, dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            return "nan", "nan"
+        if values.size != ACTION_DIM or not np.all(np.isfinite(values)):
+            return "nan", "nan"
+        return f"{float(values[0]):.6f}", f"{float(values[1]):.6f}"
+
+    def _maybe_policy_audit(self, *, force: bool = False, trigger: str = "periodic") -> None:
+        events = int(self._policy_audit_events)
+        if not force and (events == 0 or events % POLICY_AUDIT_PERIOD != 0):
+            return
+        self.get_logger().info(
+            "POLICY_AUDIT "
+            f"trigger={trigger} events={events} "
+            f"policy_driven={int(self._policy_driven_count)} "
+            f"backstop={int(self._backstop_count)} "
+            f"hold={int(self._hold_count)} "
+            f"fail_closed={int(self._fail_closed_count)} "
+            f"policy_stop={int(self._policy_stop_count)} "
+            f"guard_reason={self._last_audit_guard_reason} "
+            f"raw_dx={self._last_audit_raw_dx} raw_dy={self._last_audit_raw_dy} "
+            f"guarded_dx={self._last_audit_guarded_dx} "
+            f"guarded_dy={self._last_audit_guarded_dy} "
+            f"final_dx={self._last_audit_final_dx} "
+            f"final_dy={self._last_audit_final_dy}"
+        )
+
+    def _record_guard_outcome(
+        self,
+        guard_reason: str,
+        *,
+        raw_action: Sequence[float] | np.ndarray | None = None,
+        guarded_action: Sequence[float] | np.ndarray | None = None,
+        final_action: Sequence[float] | np.ndarray | None = None,
+    ) -> None:
+        if guard_reason == GUARD_POLICY_DRIVEN:
+            self._policy_driven_count += 1
+        elif guard_reason == GUARD_BACKSTOP:
+            self._backstop_count += 1
+        elif guard_reason == GUARD_HOLD:
+            self._hold_count += 1
+        self._last_audit_guard_reason = str(guard_reason)
+        self._last_audit_raw_dx, self._last_audit_raw_dy = self._audit_action(
+            raw_action
+        )
+        self._last_audit_guarded_dx, self._last_audit_guarded_dy = self._audit_action(
+            guarded_action
+        )
+        self._last_audit_final_dx, self._last_audit_final_dy = self._audit_action(
+            final_action
+        )
+        self._policy_audit_events += 1
+        self._maybe_policy_audit()
+
+    def _record_fail_closed(
+        self,
+        *,
+        raw_action: Sequence[float] | np.ndarray | None = None,
+        reason: str = "",
+    ) -> None:
+        self._fail_closed_count += 1
+        if str(reason) == "POLICY_STOP":
+            self._policy_stop_count += 1
+        self._last_audit_guard_reason = GUARD_FAIL_CLOSED
+        self._last_audit_raw_dx, self._last_audit_raw_dy = self._audit_action(
+            raw_action
+        )
+        self._last_audit_guarded_dx, self._last_audit_guarded_dy = "nan", "nan"
+        self._last_audit_final_dx, self._last_audit_final_dy = "0.000000", "0.000000"
+        self._policy_audit_events += 1
+        self._maybe_policy_audit()
+
     def _trace_policy_decision(
         self,
         ent: TaskFeatures,
@@ -450,10 +540,16 @@ class VLAPolicyNode(Node):
         ent_valid: bool,
         guard_result: str,
         guard_reason: str,
+        raw_action: Sequence[float] | np.ndarray | None = None,
+        guarded_action: Sequence[float] | np.ndarray | None = None,
+        final_action: Sequence[float] | np.ndarray | None = None,
     ) -> None:
         if self._policy_trace_count >= POLICY_TRACE_LIMIT:
             return
         self._policy_trace_count += 1
+        raw_dx, raw_dy = self._audit_action(raw_action)
+        guarded_dx, guarded_dy = self._audit_action(guarded_action)
+        final_dx, final_dy = self._audit_action(final_action)
         self.get_logger().info(
             "POLICY_TRACE "
             f"sample={self._policy_trace_count}/{POLICY_TRACE_LIMIT} "
@@ -461,7 +557,15 @@ class VLAPolicyNode(Node):
             f"frame_index={int(ent.frame_index)} policy_valid={bool(policy_valid)} "
             f"stop={bool(stop)} lang_valid={bool(lang_valid)} "
             f"entity_valid={bool(ent_valid)} guard_result={guard_result} "
-            f"guard_reason={guard_reason}"
+            f"guard_reason={guard_reason} "
+            f"raw_dx={raw_dx} raw_dy={raw_dy} "
+            f"guarded_dx={guarded_dx} guarded_dy={guarded_dy} "
+            f"final_dx={final_dx} final_dy={final_dy} "
+            f"policy_driven={int(self._policy_driven_count)} "
+            f"backstop={int(self._backstop_count)} "
+            f"hold={int(self._hold_count)} "
+            f"fail_closed={int(self._fail_closed_count)} "
+            f"policy_stop={int(self._policy_stop_count)}"
         )
 
     def _on_language(self, message: TaskEmbedding) -> None:
@@ -558,8 +662,15 @@ class VLAPolicyNode(Node):
         message.dt = DT_SEC
         return message
 
-    def _publish_fail_closed(self, ent: TaskFeatures, reason: str) -> None:
+    def _publish_fail_closed(
+        self,
+        ent: TaskFeatures,
+        reason: str,
+        *,
+        raw_action: Sequence[float] | np.ndarray | None = None,
+    ) -> None:
         self._last_sync_fail_time = time.monotonic()
+        self._record_fail_closed(raw_action=raw_action, reason=reason)
         self._clear_control_history()
         message = self._new_output(ent)
         message.desired_x = 0.0
@@ -671,6 +782,8 @@ class VLAPolicyNode(Node):
                 ent_valid=bool(ent.valid),
                 guard_result="skipped",
                 guard_reason="POLICY_STOP" if stop else "POLICY_INVALID",
+                raw_action=action[0],
+                final_action=(0.0, 0.0),
             )
             return
 
@@ -682,7 +795,9 @@ class VLAPolicyNode(Node):
             return
         guarded, guard_reason = apply_standoff_guard(displacement, ent)
         if guarded is None:
-            self._publish_fail_closed(ent, "VISUAL_TARGET_MISSING")
+            self._publish_fail_closed(
+                ent, "VISUAL_TARGET_MISSING", raw_action=action[0]
+            )
             self._trace_policy_decision(
                 ent,
                 policy_valid=policy_valid,
@@ -691,6 +806,8 @@ class VLAPolicyNode(Node):
                 ent_valid=bool(ent.valid),
                 guard_result=GUARD_FAIL_CLOSED,
                 guard_reason=guard_reason,
+                raw_action=action[0],
+                final_action=(0.0, 0.0),
             )
             return
 
@@ -707,6 +824,12 @@ class VLAPolicyNode(Node):
             self._publish_fail_closed(ent, "POLICY_SMOOTHING_INVALID")
             return
 
+        self._record_guard_outcome(
+            guard_reason,
+            raw_action=action[0],
+            guarded_action=guarded,
+            final_action=shaped,
+        )
         message.desired_x = float(shaped[0])
         message.desired_y = float(shaped[1])
         message.safe_stop = False
@@ -720,6 +843,9 @@ class VLAPolicyNode(Node):
             ent_valid=bool(ent.valid),
             guard_result=guard_reason,
             guard_reason=guard_reason,
+            raw_action=action[0],
+            guarded_action=guarded,
+            final_action=shaped,
         )
         self._pending_actions[key] = _PendingAction(
             stamp_us=int(message.stamp_us),
@@ -778,6 +904,12 @@ class VLAPolicyNode(Node):
             ),
             "policy_input_valid": np.asarray([policy_valid], dtype=bool),
         }
+
+    def destroy_node(self) -> bool:
+        if not self._policy_audit_shutdown_logged:
+            self._policy_audit_shutdown_logged = True
+            self._maybe_policy_audit(force=True, trigger="shutdown")
+        return super().destroy_node()
 
 
 def main(args=None) -> None:

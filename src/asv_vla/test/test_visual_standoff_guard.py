@@ -7,6 +7,7 @@ import numpy as np
 from asv_vla.visual_standoff_guard import (
     GUARD_BACKSTOP,
     GUARD_FAIL_CLOSED,
+    GUARD_HOLD,
     GUARD_PASS_THROUGH,
     GUARD_POLICY_DRIVEN,
     apply_standoff_guard,
@@ -95,15 +96,22 @@ def test_policy_step_toward_target_is_kept_as_one_point():
     assert guarded == displacement
 
 
-def test_away_or_frozen_policy_step_uses_radial_backstop():
+def test_away_policy_step_uses_radial_backstop_but_frozen_step_is_kept():
     task = _task("follow red boat keep 3m", x=5.0, y=4.0)
     guarded, reason = apply_standoff_guard((-0.1, 0.0), task)
     assert reason == GUARD_BACKSTOP
     assert guarded is not None
     assert np.allclose(guarded, (0.11713032, 0.09370426))
     frozen, frozen_reason = apply_standoff_guard((0.0, 0.0), task)
-    assert frozen_reason == GUARD_BACKSTOP
-    assert frozen is not None and np.linalg.norm(frozen) > 0.0
+    assert frozen_reason == GUARD_POLICY_DRIVEN
+    assert frozen == (0.0, 0.0)
+
+
+def test_underpowered_forward_policy_step_is_kept():
+    task = _task("follow red boat keep 3m", x=5.0, y=4.0)
+    guarded, reason = apply_standoff_guard((0.001, 0.001), task)
+    assert reason == GUARD_POLICY_DRIVEN
+    assert guarded == (0.001, 0.001)
 
 
 def test_lateral_direction_is_checked_from_target_velocity():
@@ -117,10 +125,17 @@ def test_lateral_direction_is_checked_from_target_velocity():
     assert guarded == displacement
 
 
+def test_lateral_sign_mismatch_does_not_replace_forward_policy_action():
+    task = _task("follow red boat keep 3m", x=5.0, y=4.0)
+    guarded, reason = apply_standoff_guard((0.1, -0.001), task)
+    assert reason == GUARD_POLICY_DRIVEN
+    assert guarded == (0.1, -0.001)
+
+
 def test_hold_at_standoff_is_valid_zero_point():
     task = _task("follow red boat keep 3m", x=3.05, y=0.0)
-    guarded, reason = apply_standoff_guard((0.0, 0.0), task)
-    assert reason == GUARD_POLICY_DRIVEN
+    guarded, reason = apply_standoff_guard((0.1, 0.0), task)
+    assert reason == GUARD_HOLD
     assert guarded == (0.0, 0.0)
 
 

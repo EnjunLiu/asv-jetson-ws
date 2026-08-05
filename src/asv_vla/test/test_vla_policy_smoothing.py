@@ -51,6 +51,10 @@ def _load_gate_runtime():
         if isinstance(node, ast.ClassDef) and node.name == "VLAPolicyNode"
     )
     methods = {
+        "_audit_action",
+        "_maybe_policy_audit",
+        "_record_guard_outcome",
+        "_record_fail_closed",
         "_clear_previous_action",
         "_clear_control_history",
         "_remember_previous_action",
@@ -85,6 +89,11 @@ def _load_gate_runtime():
         "OrderedDict": OrderedDict,
         "dataclass": dataclass,
         "Node": object,
+        "POLICY_AUDIT_PERIOD": 100,
+        "GUARD_POLICY_DRIVEN": "policy_driven",
+        "GUARD_BACKSTOP": "backstop",
+        "GUARD_HOLD": "deadband_hold",
+        "GUARD_FAIL_CLOSED": "fail_closed",
     }
     nodes = [future_annotations, pending, *helpers, policy_class]
     ast.fix_missing_locations(policy_class)
@@ -108,6 +117,12 @@ def _policy_state():
     node._previous_action_valid = False
     node._previous_action_identity = None
     node._smooth_max_step_m = 0.15
+    node._policy_audit_events = 0
+    node._policy_driven_count = 0
+    node._backstop_count = 0
+    node._hold_count = 0
+    node._fail_closed_count = 0
+    node._policy_stop_count = 0
     return node
 
 
@@ -216,3 +231,77 @@ def test_policy_contract_has_no_visual_or_ego_decision_inputs() -> None:
     assert "POLICY_MODEL_HORIZON" not in source
     for token in ("POLICY_TRACE_LIMIT", "policy_valid=", "lang_valid=", "entity_valid="):
         assert token in source
+
+
+def test_policy_audit_contract_includes_action_stages_and_counters() -> None:
+    source = POLICY.read_text(encoding="utf-8")
+    for token in (
+        "POLICY_AUDIT",
+        "raw_dx=",
+        "raw_dy=",
+        "guarded_dx=",
+        "guarded_dy=",
+        "final_dx=",
+        "final_dy=",
+        "guard_reason=",
+        "policy_driven=",
+        "backstop=",
+        "hold=",
+        "fail_closed=",
+        "policy_stop=",
+        "trigger=\"shutdown\"",
+    ):
+        assert token in source
+
+
+def test_policy_audit_counters_are_bounded_and_keep_the_existing_api() -> None:
+    class Logger:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(message)
+
+    node = _policy_state()
+    logger = Logger()
+    node.get_logger = lambda: logger
+
+    assert node._audit_action((0.1, -0.2)) == ("0.100000", "-0.200000")
+    assert node._audit_action((float("nan"), 0.0)) == ("nan", "nan")
+    node._record_guard_outcome(
+        "policy_driven",
+        raw_action=(0.01, 0.02),
+        guarded_action=(0.01, 0.02),
+        final_action=(0.01, 0.02),
+    )
+    node._record_guard_outcome("backstop")
+    node._record_guard_outcome("deadband_hold")
+    node._record_fail_closed(reason="POLICY_STOP")
+    assert node._policy_driven_count == 1
+    assert node._backstop_count == 1
+    assert node._hold_count == 1
+    assert node._fail_closed_count == 1
+    assert node._policy_stop_count == 1
+    assert node._policy_audit_events == 4
+    assert logger.messages == []
+
+    for _ in range(95):
+        node._record_guard_outcome("policy_driven")
+    node._record_guard_outcome(
+        "policy_driven",
+        raw_action=(0.03, -0.04),
+        guarded_action=(0.05, -0.06),
+        final_action=(0.02, -0.01),
+    )
+    assert node._policy_audit_events == 100
+    assert len(logger.messages) == 1
+    assert "POLICY_AUDIT" in logger.messages[0]
+    assert "policy_driven=97" in logger.messages[0]
+    assert "backstop=1" in logger.messages[0]
+    assert "hold=1" in logger.messages[0]
+    assert "fail_closed=1" in logger.messages[0]
+    assert "policy_stop=1" in logger.messages[0]
+    assert "guard_reason=policy_driven" in logger.messages[0]
+    assert "raw_dx=0.030000 raw_dy=-0.040000" in logger.messages[0]
+    assert "guarded_dx=0.050000 guarded_dy=-0.060000" in logger.messages[0]
+    assert "final_dx=0.020000 final_dy=-0.010000" in logger.messages[0]
