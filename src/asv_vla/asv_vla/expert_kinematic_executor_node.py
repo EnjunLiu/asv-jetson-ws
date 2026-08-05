@@ -1,4 +1,4 @@
-"""Publish one UE5-only displacement from each fresh expert trajectory."""
+"""Publish one UE5-only displacement from each fresh expert action."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from asv_jetson_interfaces.msg import (
 
 from .kinematic_executor import (
     DEFAULT_MAX_STEP_M,
+    expert_source_identity,
     first_step_from_expert,
     invalid_hold,
 )
@@ -36,7 +37,7 @@ def now_us(node: Node) -> int:
 
 
 class ExpertKinematicExecutorNode(Node):
-    """Rate-owning adapter from a 20-point expert plan to one UE5 step."""
+    """Rate-owning adapter from one expert action to one UE5 setpoint."""
 
     def __init__(self) -> None:
         super().__init__("expert_kinematic_executor")
@@ -91,8 +92,8 @@ class ExpertKinematicExecutorNode(Node):
         self.latest: ExpertTrajectory | None = None
         self.start_monotonic = time.monotonic()
         self.latest_received_monotonic = 0.0
-        self.last_source_identity: tuple[str, int, int] | None = None
-        self.stale_reported_identity: tuple[str, int, int] | None = None
+        self.last_source_identity: tuple[str, int, int, int] | None = None
+        self.stale_reported_identity: tuple[str, int, int, int] | None = None
         self.sequence = 0
         self.module_state = ModuleStatus.READY
         self.input_ready = False
@@ -106,12 +107,8 @@ class ExpertKinematicExecutorNode(Node):
         )
 
     @staticmethod
-    def identity(source: ExpertTrajectory) -> tuple[str, int, int]:
-        return (
-            source.run_id,
-            int(source.scene_seed),
-            int(source.frame_index),
-        )
+    def identity(source: ExpertTrajectory) -> tuple[str, int, int, int]:
+        return expert_source_identity(source)
 
     def on_expert(self, source: ExpertTrajectory) -> None:
         self.latest = source

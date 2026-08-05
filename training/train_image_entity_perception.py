@@ -1,17 +1,22 @@
-"""Train the image-only entity geometry model from recorded UE episodes.
+"""PC-only training entry for the language-conditioned entity model.
 
 The input labels come from frame ``Entities`` only during training.  The
-resulting model consumes RGB images alone at runtime; velocity is intentionally
-not a model output and is supplied later by the temporal tracker.
+resulting model consumes a camera image and a real task embedding at runtime;
+velocity is intentionally not a model output and is supplied later by the
+temporal tracker. Do not run this module on Jetson: it is for Windows/PC data
+processing, feature construction, training and evaluation only.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import json
 import math
+import platform
 import random
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageEnhance
@@ -20,13 +25,21 @@ from asv_vla.image_entity_perception import (
     ENTITY_COUNT,
     ENTITY_IDS,
     FEATURE_DIM,
+    FUSED_FEATURE_DIM,
+    LANGUAGE_EMBEDDING_DIM,
+    MODEL_INPUT_CONTRACT,
+    MODEL_SCHEMA_VERSION,
     MODEL_VERSION,
     OUTPUT_DIM,
     POSITION_SCALE_M,
     extract_image_features,
     save_model,
 )
-from asv_vla.visual_encoder import CameraProfile, project_target_to_pixel
+from asv_vla.visual_encoder import (
+    CameraProfile,
+    enhance_low_light_image,
+    project_target_to_pixel,
+)
 
 
 CAMERA_PROFILE = CameraProfile()
@@ -36,29 +49,161 @@ ACCEPTANCE_MAX_GEOMETRY_RMSE_M = 0.5
 ACCEPTANCE_MIN_RUN_VISIBILITY_ACCURACY = 0.95
 ACCEPTANCE_MAX_RUN_GEOMETRY_RMSE_M = 0.5
 GEOMETRY_METRIC_MASK = "camera_projected_visibility_only"
+LANGUAGE_MANIFEST_SCHEMA = "task_embedding_manifest_v1"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_language_embeddings(
+    embeddings_path: Path | None,
+    manifest_path: Path | None,
+    *,
+    expected_model_id: str = "",
+    expected_weights_sha256: str = "",
+) -> dict[str, Any]:
+    """Load an explicit instruction_id -> frozen embedding table."""
+
+    if embeddings_path is None or manifest_path is None:
+        raise RuntimeError(
+            "LANGUAGE_EMBEDDINGS_REQUIRED: provide both --language-embeddings "
+            "(.npy/.npz) and --language-manifest, or use "
+            "--legacy-image-only explicitly"
+        )
+    manifest_path = Path(manifest_path).expanduser().resolve()
+    embeddings_path = Path(embeddings_path).expanduser().resolve()
+    if not manifest_path.is_file():
+        raise RuntimeError(f"language manifest not found: {manifest_path}")
+    if not embeddings_path.is_file():
+        raise RuntimeError(f"language embeddings not found: {embeddings_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read language manifest: {exc}") from exc
+    if manifest.get("schema_version") != LANGUAGE_MANIFEST_SCHEMA:
+        raise RuntimeError(
+            "LANGUAGE_MANIFEST_SCHEMA_MISMATCH: expected "
+            f"{LANGUAGE_MANIFEST_SCHEMA}"
+        )
+    model_id = str(manifest.get("model_id", "")).strip()
+    weights_sha256 = str(manifest.get("weights_sha256", "")).strip().lower()
+    if not model_id:
+        raise RuntimeError("LANGUAGE_MODEL_ID_MISSING in language manifest")
+    if len(weights_sha256) != 64 or any(
+        char not in "0123456789abcdef" for char in weights_sha256
+    ):
+        raise RuntimeError(
+            "LANGUAGE_MODEL_HASH_INVALID in language manifest; expected SHA-256"
+        )
+    if expected_model_id and expected_model_id != model_id:
+        raise RuntimeError(
+            f"LANGUAGE_MODEL_ID_MISMATCH: expected {expected_model_id!r}, "
+            f"manifest has {model_id!r}"
+        )
+    if expected_weights_sha256 and expected_weights_sha256.lower() != weights_sha256:
+        raise RuntimeError("LANGUAGE_MODEL_HASH_MISMATCH: CLI and manifest differ")
+    if "embeddings_sha256" in manifest:
+        expected_embeddings_sha256 = str(manifest["embeddings_sha256"]).lower()
+        if _sha256_file(embeddings_path) != expected_embeddings_sha256:
+            raise RuntimeError("LANGUAGE_EMBEDDINGS_FILE_HASH_MISMATCH")
+
+    ids = [str(value).strip() for value in manifest.get("instruction_ids", [])]
+    texts = [str(value) for value in manifest.get("instruction_texts", [])]
+    if not ids and isinstance(manifest.get("instructions"), list):
+        rows = manifest["instructions"]
+        ids = [str(row.get("instruction_id", "")).strip() for row in rows]
+        texts = [str(row.get("text", "")) for row in rows]
+    try:
+        loaded = np.load(embeddings_path, allow_pickle=False)
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            if "embeddings" not in loaded:
+                loaded.close()
+                raise RuntimeError("language npz is missing 'embeddings'")
+            array = np.asarray(loaded["embeddings"], dtype=np.float32)
+            if not ids and "instruction_ids" in loaded:
+                ids = [str(value).strip() for value in loaded["instruction_ids"]]
+            loaded.close()
+        else:
+            array = np.asarray(loaded, dtype=np.float32)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"cannot load language embeddings: {exc}") from exc
+    if not ids or any(not value for value in ids):
+        raise RuntimeError("LANGUAGE_INSTRUCTION_IDS_MISSING")
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("LANGUAGE_INSTRUCTION_IDS_DUPLICATED")
+    if texts and len(texts) != len(ids):
+        raise RuntimeError("LANGUAGE_INSTRUCTION_TEXTS_SHAPE_MISMATCH")
+    if array.shape != (len(ids), LANGUAGE_EMBEDDING_DIM):
+        raise RuntimeError(
+            "LANGUAGE_EMBEDDING_SHAPE_MISMATCH: got "
+            f"{array.shape}; expected ({len(ids)}, {LANGUAGE_EMBEDDING_DIM})"
+        )
+    if not np.all(np.isfinite(array)):
+        raise RuntimeError("LANGUAGE_EMBEDDINGS_NONFINITE")
+    norms = np.linalg.norm(array, axis=1)
+    if np.any(~np.isfinite(norms)) or np.any(norms <= 1.0e-12):
+        raise RuntimeError("LANGUAGE_EMBEDDINGS_ZERO_NORM")
+    text_to_id = {}
+    if texts:
+        for instruction_id, text in zip(ids, texts):
+            if text:
+                if text in text_to_id and text_to_id[text] != instruction_id:
+                    raise RuntimeError("LANGUAGE_INSTRUCTION_TEXT_AMBIGUOUS")
+                text_to_id[text] = instruction_id
+    return {
+        "by_id": {
+            instruction_id: np.ascontiguousarray(array[index], dtype=np.float32)
+            for index, instruction_id in enumerate(ids)
+        },
+        "text_to_id": text_to_id,
+        "model_id": model_id,
+        "weights_sha256": weights_sha256,
+        "manifest_path": str(manifest_path),
+        "embeddings_path": str(embeddings_path),
+    }
+
+
+def _resolve_instruction_id(
+    record: dict[str, Any], episode_manifest: dict[str, Any], table: dict[str, Any]
+) -> str | None:
+    candidates = (
+        record.get("instruction_id"),
+        record.get("task", {}).get("instruction_id"),
+        episode_manifest.get("instruction_id"),
+        episode_manifest.get("task", {}).get("instruction_id"),
+    )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value in table["by_id"]:
+            return value
+    texts = (
+        record.get("task", {}).get("text"),
+        episode_manifest.get("task_text"),
+        episode_manifest.get("task", {}).get("text"),
+    )
+    for text in texts:
+        value = table["text_to_id"].get(str(text or "").strip())
+        if value:
+            return value
+    return None
 
 
 def _augment_image(image: Image.Image) -> Image.Image:
-    """Random position/brightness perturbation for the training split.
+    """Random photometric perturbation for the training split.
 
     The online windowed render puts the blue target at geometries the
     expert-driven collections undersample (e.g. the stationary 4.5 m / +0.4 m
     startup position, where the un-augmented detector drops to ~3% frame
     visibility while the red target at image centre stays near 100%).
-    Training-time translation/brightness jitter makes the ridge robust to
-    target position and appearance instead of relying on a privileged
-    centre-position bias.
+    The augmentation must preserve image geometry because the target labels
+    are not transformed alongside the image.
     """
 
-    width, height = image.size
-    dx = random.uniform(-0.08, 0.08) * width
-    dy = random.uniform(-0.08, 0.08) * height
-    image = image.transform(
-        (width, height),
-        Image.AFFINE,
-        (1.0, 0.0, -dx, 0.0, 1.0, -dy),
-        resample=Image.BILINEAR,
-    )
     factor = random.uniform(0.88, 1.12)
     image = ImageEnhance.Brightness(image).enhance(factor)
     return image
@@ -71,7 +216,19 @@ def _read_samples(
     max_abs_yaw_rad: float,
     max_abs_surge_velocity_mps: float,
     augment: bool = False,
+    low_light: bool = False,
+    low_light_gamma: float = 0.92,
+    low_light_brightness: float = 1.04,
+    low_light_contrast: float = 1.03,
+    language_table: dict[str, Any] | None = None,
+    legacy_image_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str], int, int, int]:
+    if language_table is None and not legacy_image_only:
+        raise RuntimeError(
+            "LANGUAGE_EMBEDDINGS_REQUIRED: image-conditioned training needs "
+            "a precomputed embedding table; use legacy_image_only=True only "
+            "for an explicit old image-only artifact"
+        )
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     run_ids: list[str] = []
@@ -84,9 +241,15 @@ def _read_samples(
             continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         run_id = str(manifest.get("run_id", episode.name))
+        print(f"read_samples episode={episode.name} augment={augment}", flush=True)
         frame_paths = sorted((episode / "frames").glob("*.json"))
         for frame_path in frame_paths:
-            record = json.loads(frame_path.read_text(encoding="utf-8"))
+            try:
+                record = json.loads(frame_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # A corrupted/empty frame record from collection cannot
+                # contribute a sample; skip it instead of failing the run.
+                continue
             yaw = abs(float(record.get("ego", {}).get("rpy_ue_rad", [0.0, 0.0, 0.0])[2]))
             if yaw > max_abs_yaw_rad:
                 skipped_yaw += 1
@@ -110,12 +273,35 @@ def _read_samples(
             if not distances or min(distances) > max_primary_distance_m:
                 skipped_far += 1
                 continue
+            language_embedding = None
+            instruction_id = None
+            if language_table is not None:
+                instruction_id = _resolve_instruction_id(record, manifest, language_table)
+                if instruction_id is None:
+                    raise RuntimeError(
+                        f"{frame_path}: no language embedding for instruction_id "
+                        "or task text; refusing to generate a fallback"
+                    )
+                language_embedding = language_table["by_id"][instruction_id]
             image_path = episode / str(record["camera"]["image_path"])
             try:
                 with Image.open(image_path) as image:
+                    if low_light:
+                        image = enhance_low_light_image(
+                            image,
+                            gamma=low_light_gamma,
+                            brightness=low_light_brightness,
+                            contrast=low_light_contrast,
+                        )
                     if augment:
                         image = _augment_image(image)
-                    features.append(extract_image_features(image))
+                    image_features = extract_image_features(image)
+                    if language_embedding is not None:
+                        features.append(
+                            np.concatenate((image_features, language_embedding))
+                        )
+                    else:
+                        features.append(image_features)
             except (OSError, KeyError, ValueError) as exc:
                 raise RuntimeError(f"cannot read {frame_path}: {exc}") from exc
             by_id = {
@@ -167,12 +353,19 @@ def _ridge_fit(
     design = np.concatenate(
         [normalized, np.ones((len(normalized), 1), dtype=np.float32)], axis=1
     )
-    # Dual form avoids inverting a 4k x 4k matrix when the number of recorded
-    # frames is smaller than the pixel feature dimension.
-    kernel = design @ design.T
-    kernel.flat[:: kernel.shape[0] + 1] += float(ridge)
-    alpha = np.linalg.solve(kernel, y)
-    solution = design.T @ alpha
+    # Ridge solution, choosing the cheaper normal equation side: with the
+    # near-standoff collection the frame count (~24k) far exceeds the feature
+    # dimension, so the dual N x N form would be O(N^3); the primal
+    # (D+1) x (D+1) form is mathematically equivalent and seconds-fast.
+    if len(design) > design.shape[1]:
+        gram = design.T @ design
+        gram.flat[:: gram.shape[0] + 1] += float(ridge)
+        solution = np.linalg.solve(gram, design.T @ y)
+    else:
+        kernel = design @ design.T
+        kernel.flat[:: kernel.shape[0] + 1] += float(ridge)
+        alpha = np.linalg.solve(kernel, y)
+        solution = design.T @ alpha
     return feature_mean, feature_scale, solution[:-1], solution[-1]
 
 
@@ -269,7 +462,44 @@ def train(
     acceptance_max_geometry_rmse_m: float = ACCEPTANCE_MAX_GEOMETRY_RMSE_M,
     acceptance_min_run_visibility_accuracy: float = ACCEPTANCE_MIN_RUN_VISIBILITY_ACCURACY,
     acceptance_max_run_geometry_rmse_m: float = ACCEPTANCE_MAX_RUN_GEOMETRY_RMSE_M,
+    low_light: bool = False,
+    low_light_gamma: float = 0.92,
+    low_light_brightness: float = 1.04,
+    low_light_contrast: float = 1.03,
+    brightness_augmentation: bool = False,
+    language_embeddings: Path | None = None,
+    language_manifest: Path | None = None,
+    language_model_id: str = "",
+    language_weights_sha256: str = "",
+    legacy_image_only: bool = False,
 ) -> dict[str, object]:
+    if platform.machine().lower() in {"aarch64", "arm64"}:
+        raise RuntimeError(
+            "PC_ONLY_TRAINING: image perception data processing, feature cache, "
+            "training and evaluation must run on Windows/PC; Jetson only loads "
+            "the synchronized artifact and performs inference"
+        )
+    if language_embeddings is None and language_manifest is not None:
+        raise RuntimeError("LANGUAGE_MANIFEST_WITHOUT_EMBEDDINGS")
+    if language_embeddings is not None and language_manifest is None:
+        raise RuntimeError("LANGUAGE_EMBEDDINGS_REQUIRE_MANIFEST")
+    if legacy_image_only and language_embeddings is not None:
+        raise RuntimeError("LEGACY_MODE_CANNOT_USE_LANGUAGE_EMBEDDINGS")
+    language_table = (
+        _load_language_embeddings(
+            language_embeddings,
+            language_manifest,
+            expected_model_id=language_model_id,
+            expected_weights_sha256=language_weights_sha256,
+        )
+        if language_embeddings is not None
+        else None
+    )
+    if language_table is None and not legacy_image_only:
+        raise RuntimeError(
+            "LANGUAGE_EMBEDDINGS_REQUIRED: pass --language-embeddings and "
+            "--language-manifest, or explicitly pass --legacy-image-only"
+        )
     if max_primary_distance_m <= 0.0:
         raise ValueError("max_primary_distance_m must be positive")
     if ridge <= 0.0:
@@ -299,6 +529,12 @@ def train(
         max_abs_yaw_rad=max_abs_yaw_rad,
         max_abs_surge_velocity_mps=max_abs_surge_velocity_mps,
         augment=False,
+        low_light=low_light,
+        low_light_gamma=low_light_gamma,
+        low_light_brightness=low_light_brightness,
+        low_light_contrast=low_light_contrast,
+        language_table=language_table,
+        legacy_image_only=legacy_image_only,
     )
     (
         x_aug,
@@ -312,7 +548,13 @@ def train(
         max_primary_distance_m=max_primary_distance_m,
         max_abs_yaw_rad=max_abs_yaw_rad,
         max_abs_surge_velocity_mps=max_abs_surge_velocity_mps,
-        augment=True,
+        augment=brightness_augmentation,
+        low_light=low_light,
+        low_light_gamma=low_light_gamma,
+        low_light_brightness=low_light_brightness,
+        low_light_contrast=low_light_contrast,
+        language_table=language_table,
+        legacy_image_only=legacy_image_only,
     )
     unique_runs = sorted(set(run_ids))
     if len(unique_runs) < 2:
@@ -320,10 +562,9 @@ def train(
     validation_runs = set(unique_runs[::5] or unique_runs[-1:])
     train_mask = np.asarray([run not in validation_runs for run in run_ids])
     val_mask = ~train_mask
-    # Train on the augmented features (position/brightness jitter); the
-    # validation features stay unperturbed.
-    x_train = np.where(train_mask[:, None], x_aug, x)
-    mean, scale, weights, bias = _ridge_fit(x_train[train_mask], y[train_mask], ridge)
+    # The fixed low-light transform is the input contract. Optional random
+    # brightness jitter is separate and disabled for the calibrated run.
+    mean, scale, weights, bias = _ridge_fit(x_aug[train_mask], y[train_mask], ridge)
     prediction = ((x - mean) / scale) @ weights + bias
     run_array = np.asarray(run_ids)
     validation_by_run = {
@@ -344,11 +585,20 @@ def train(
         max_run_geometry_rmse_m=acceptance_max_run_geometry_rmse_m,
     )
     report = {
-        "model_version": MODEL_VERSION,
+        "model_version": MODEL_VERSION if not legacy_image_only else "image_entity_ridge_v2",
+        "model_schema_version": (
+            MODEL_SCHEMA_VERSION if not legacy_image_only else "image_only_legacy_schema"
+        ),
         "entity_ids": list(ENTITY_IDS),
         "input_shape": [18, 32, 7],
-        "feature_dim": FEATURE_DIM,
-        "feature_contract": "rgb_color_evidence_spatial_plus_area_centroid_moments_v2",
+        "feature_dim": FUSED_FEATURE_DIM if not legacy_image_only else FEATURE_DIM,
+        "feature_contract": MODEL_INPUT_CONTRACT if not legacy_image_only else "(camera_image_rgb)->structured_entities",
+        "language_embedding_dim": LANGUAGE_EMBEDDING_DIM if not legacy_image_only else 0,
+        "language_model_id": language_table["model_id"] if language_table else "",
+        "language_weights_sha256": language_table["weights_sha256"] if language_table else "",
+        "language_manifest": language_table["manifest_path"] if language_table else "",
+        "language_embeddings": language_table["embeddings_path"] if language_table else "",
+        "legacy_image_only": legacy_image_only,
         "label_source": "frame_record_v1.entities",
         "velocity_output": False,
         "geometry_metric_mask": GEOMETRY_METRIC_MASK,
@@ -364,6 +614,13 @@ def train(
         "skipped_yaw_frames": skipped_yaw,
         "max_abs_surge_velocity_mps": max_abs_surge_velocity_mps,
         "skipped_speed_frames": skipped_speed,
+        "low_light_preprocess": {
+            "enabled": low_light,
+            "gamma": low_light_gamma,
+            "brightness": low_light_brightness,
+            "contrast": low_light_contrast,
+        },
+        "brightness_augmentation": brightness_augmentation,
         "acceptance_gate": acceptance_gate,
         "acceptance_ready": bool(acceptance_gate["passed"]),
         "acceptance_note": (
@@ -379,7 +636,19 @@ def train(
         feature_scale=scale,
         weights=weights,
         bias=bias,
-        model_version=MODEL_VERSION,
+        model_version=MODEL_VERSION if not legacy_image_only else "image_entity_ridge_v2",
+        schema_version=(
+            MODEL_SCHEMA_VERSION if not legacy_image_only else "image_only_legacy_schema"
+        ),
+        input_contract=(
+            MODEL_INPUT_CONTRACT
+            if not legacy_image_only
+            else "(camera_image_rgb)->structured_entities"
+        ),
+        task_embedding_dim=LANGUAGE_EMBEDDING_DIM if not legacy_image_only else 0,
+        language_model_id=language_table["model_id"] if language_table else "",
+        language_weights_sha256=language_table["weights_sha256"] if language_table else "",
+        velocity_output=False,
         metadata=report,
     )
     return report
@@ -415,6 +684,35 @@ def main() -> None:
     parser.add_argument(
         "--max-abs-surge-velocity-mps", type=float, default=1.0
     )
+    parser.add_argument(
+        "--low-light", action="store_true",
+        help="apply the fixed low-light transform before feature extraction",
+    )
+    parser.add_argument("--low-light-gamma", type=float, default=0.92)
+    parser.add_argument("--low-light-brightness", type=float, default=1.04)
+    parser.add_argument("--low-light-contrast", type=float, default=1.03)
+    parser.add_argument(
+        "--brightness-augmentation",
+        action="store_true",
+        help="add random brightness jitter after the fixed low-light transform",
+    )
+    parser.add_argument(
+        "--language-embeddings",
+        type=Path,
+        help="PC-generated .npy/.npz table of float32 task embeddings",
+    )
+    parser.add_argument(
+        "--language-manifest",
+        type=Path,
+        help="manifest mapping instruction_id to the precomputed embeddings",
+    )
+    parser.add_argument("--language-model-id", default="")
+    parser.add_argument("--language-weights-sha256", default="")
+    parser.add_argument(
+        "--legacy-image-only",
+        action="store_true",
+        help="explicitly train/save the old image-only schema for migration only",
+    )
     args = parser.parse_args()
     report = train(
         args.episodes,
@@ -427,6 +725,16 @@ def main() -> None:
         acceptance_max_geometry_rmse_m=args.acceptance_max_geometry_rmse_m,
         acceptance_min_run_visibility_accuracy=args.acceptance_min_run_visibility_accuracy,
         acceptance_max_run_geometry_rmse_m=args.acceptance_max_run_geometry_rmse_m,
+        low_light=args.low_light,
+        low_light_gamma=args.low_light_gamma,
+        low_light_brightness=args.low_light_brightness,
+        low_light_contrast=args.low_light_contrast,
+        brightness_augmentation=args.brightness_augmentation,
+        language_embeddings=args.language_embeddings,
+        language_manifest=args.language_manifest,
+        language_model_id=args.language_model_id,
+        language_weights_sha256=args.language_weights_sha256,
+        legacy_image_only=args.legacy_image_only,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

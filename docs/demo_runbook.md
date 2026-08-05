@@ -1,7 +1,8 @@
 # S2 在线演示 Runbook
 
-本 Runbook 只覆盖真实 JPEG 感知、真实 Qwen CUDA、真实 ego 和学习策略在线驱动 UE5
-的近距离 S2 演示。它不启动专家、不读取 UE Entities 真值，也不启动低层推力控制器。
+本 Runbook 只覆盖真实 JPEG 感知、真实 Qwen CUDA、结构化实体 tracker 和学习策略在线
+驱动 UE5 的近距离 S2 演示。它不启动专家、不读取 UE Entities 真值，也不启动低层推力
+控制器。
 
 ## 1. Jetson
 
@@ -14,7 +15,8 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
   model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
   perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
   language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
-  language_device:=cuda language_release_after_encode:=true \
+  language_device:=cuda visual_device:=cuda policy_device:=cuda \
+  language_release_after_encode:=true \
   task_text:="跟随红色目标船，保持3米距离" \
   execution_address:=192.168.137.1 execution_port:=8081
 ```
@@ -24,8 +26,8 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
 ```text
 image_entity_perception ... device=cuda
 language_qwen: READY ... device=cuda
-LANGUAGE_READY_VALID ... release_model=false
-visual_encoder ... device=cuda
+LANGUAGE_READY_VALID ... release_model=true
+image_entity_perception ... device=cuda
 POLICY_READY backend=torch_cuda device=cuda
 ```
 
@@ -54,9 +56,10 @@ POLICY_READY backend=torch_cuda device=cuda
 - `/vla/perceived_entities` 的 `source=image_perception`，任务切换反映在
   `instruction_id` 和 `is_target`；
 - `/vla/tracked_entities` 第一帧 `velocity_valid=false`，之后才出现时序速度；
-- `POLICY_TRACE` 中 `lang_valid=true`、`vis_valid=true`、`ego_valid=true`；
+- `POLICY_TRACE` 中 `lang_valid=true`、`entity_valid=true`，输出为一个单步
+  `desired_x/desired_y`；
 - UE5 连续输出 `SCENE_EXEC_APPLY`，最终输出 `SCENE_UE_COMPLETE`；
-- 目标不可见、ego 缺失或身份不匹配时必须 hold，不能继续运动。
+- 目标不可见或身份不匹配时必须 hold，不能继续运动。
 
 ## 3. 任务切换
 
@@ -69,7 +72,7 @@ ros2 topic pub --once /task/text std_msgs/msg/String \
   "{data: '停止'}"
 ```
 
-切换后应观察 `instruction_id=stop`、零轨迹和 hold。若使用显式释放模式，任务切换
+切换后应观察 `instruction_id=stop`、零位移点和 hold。若使用显式释放模式，任务切换
 需要重启闭环；若要验收蓝色/左右跟踪，先完成对应 RGB 几何校准并更新 manifest。
 
 ## 4. 离线采集
@@ -82,8 +85,9 @@ ros2 launch asv_bringup collect.launch.py \
   execution_address:=192.168.137.1 execution_port:=8081
 ```
 
-采集器保存 JPEG、UEASVState、UE Entities、专家轨迹和身份元数据。PC 训练时 Entities
-只作为监督标签；部署策略的输入仍是图像推断 Entities、语言和真实 ego。
+采集器保存 JPEG、UEASVState、UE Entities、每帧单步专家点和身份元数据。PC 训练时
+Entities 只作为监督标签；部署策略的输入是图像推断的结构化 Entities、语言 embedding
+和上一控制帧实际通过 safety gate 的 action，不接收 ego。
 
 ## 5. 当前证据与边界
 

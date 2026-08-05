@@ -34,19 +34,135 @@ from training.dataset import (
     load_split_assignments,
     policy_inputs_from_batch,
 )
-from training.losses import PolicyLossWeights, trajectory_policy_loss
-from training.metrics import (
-    compute_policy_metrics,
-    fit_label_mean_baseline,
-    improvement_fraction,
-    predict_label_mean_baseline,
-)
-from training.model import SmallPolicyConfig, SmallTrajectoryPolicy
+from training.losses import PolicyLossWeights, action_policy_loss
+from training.model import SmallActionPolicy, SmallPolicyConfig
 
 
 TRAIN_SCHEMA_VERSION = "train_v1"
 SUMMARY_SCHEMA_VERSION = "training_summary_v1"
 CHECKPOINT_SCHEMA_VERSION = "policy_checkpoint_v1"
+PROGRESS_SCHEMA_VERSION = "training_progress_v1"
+
+
+def _improvement_fraction(policy_value: float, baseline_value: float) -> float:
+    if baseline_value <= 0.0:
+        return 0.0
+    return float((baseline_value - policy_value) / baseline_value)
+
+
+def _require_pc_training_target(execution_target: str = "pc") -> None:
+    if str(execution_target).strip().casefold() != "pc":
+        raise RuntimeError(
+            "training and evaluation are PC-only; Jetson is inference-only"
+        )
+    if Path("/etc/nv_tegra_release").is_file():
+        raise RuntimeError(
+            "training/evaluation cannot run on Jetson; use the PC training "
+            "entry point and synchronize validated artifacts"
+        )
+
+
+def _binary_stop_metrics(predicted: np.ndarray, target: np.ndarray) -> dict[str, float | int]:
+    true_positive = int(np.count_nonzero(predicted & target))
+    false_positive = int(np.count_nonzero(predicted & ~target))
+    false_negative = int(np.count_nonzero(~predicted & target))
+    precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+    recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+    f1 = 2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+    }
+
+
+def compute_action_metrics(
+    prediction: Any,
+    target: Any,
+    stop_logits: Any,
+    target_stop: Any,
+    task_labels: Iterable[str],
+    *,
+    maximum_action_m: float = 0.3,
+    stop_drift_limit_m: float = 0.10,
+) -> dict[str, Any]:
+    predicted_action = np.asarray(prediction, dtype=np.float32)
+    target_action = np.asarray(target, dtype=np.float32)
+    if predicted_action.ndim != 2 or predicted_action.shape[1:] != (2,):
+        raise ValueError(f"prediction must have shape [N,2], got {predicted_action.shape}")
+    if target_action.shape != predicted_action.shape:
+        raise ValueError("prediction and target action shapes differ")
+    logits = np.asarray(stop_logits, dtype=np.float32).reshape(-1)
+    stop_target = np.asarray(target_stop, dtype=np.bool_).reshape(-1)
+    labels = np.asarray([str(label) for label in task_labels], dtype=np.str_)
+    sample_count = predicted_action.shape[0]
+    if len(logits) != sample_count or len(stop_target) != sample_count or len(labels) != sample_count:
+        raise ValueError("action, stop, and label arrays must have the same sample count")
+    if not np.all(np.isfinite(predicted_action)) or not np.all(np.isfinite(logits)):
+        raise ValueError("prediction contains NaN or Inf")
+    if not np.all(np.isfinite(target_action)):
+        raise ValueError("target action contains NaN or Inf")
+    error = np.linalg.norm(predicted_action - target_action, axis=1)
+    predicted_stop = logits >= 0.0
+    stop_drift = np.linalg.norm(predicted_action[stop_target], axis=1)
+    action_norm = np.linalg.norm(predicted_action, axis=1)
+    per_label = {
+        label: {
+            "sample_count": int(np.count_nonzero(labels == label)),
+            "action_error_m": float(np.mean(error[labels == label])),
+        }
+        for label in sorted(set(labels.tolist()))
+    }
+    return {
+        "sample_count": sample_count,
+        "action_error_m": float(np.mean(error)) if sample_count else 0.0,
+        "stop_drift": {
+            "sample_count": int(len(stop_drift)),
+            "mean_m": float(np.mean(stop_drift)) if len(stop_drift) else 0.0,
+            "p95_m": float(np.percentile(stop_drift, 95)) if len(stop_drift) else 0.0,
+            "maximum_m": float(np.max(stop_drift)) if len(stop_drift) else 0.0,
+            "within_0_10m_rate": float(np.mean(stop_drift <= stop_drift_limit_m)) if len(stop_drift) else 0.0,
+        },
+        "stop_classification": _binary_stop_metrics(predicted_stop, stop_target),
+        "action_bound": {
+            "maximum_action_m": maximum_action_m,
+            "observed_maximum_action_m": float(np.max(action_norm)) if sample_count else 0.0,
+            "violation_count": int(np.count_nonzero(action_norm > maximum_action_m + 1.0e-6)),
+            "violation_rate": float(np.mean(action_norm > maximum_action_m + 1.0e-6)) if sample_count else 0.0,
+        },
+        "invalid_count": 0,
+        "per_label": per_label,
+    }
+
+
+def fit_label_mean_action_baseline(
+    actions: Any, task_labels: Iterable[str]
+) -> dict[str, np.ndarray]:
+    target = np.asarray(actions, dtype=np.float32)
+    if target.ndim != 2 or target.shape[1:] != (2,):
+        raise ValueError(f"actions must have shape [N,2], got {target.shape}")
+    labels = [str(label) for label in task_labels]
+    if len(labels) != len(target):
+        raise ValueError("task labels do not match action sample count")
+    return {
+        label: np.mean(target[np.asarray(labels) == label], axis=0).astype(np.float32)
+        for label in sorted(set(labels))
+    }
+
+
+def predict_label_mean_action_baseline(
+    means: Mapping[str, np.ndarray], task_labels: Iterable[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    labels = [str(label) for label in task_labels]
+    missing = sorted(set(labels) - set(means))
+    if missing:
+        raise ValueError(f"mean baseline has no labels: {missing}")
+    actions = np.stack([means[label] for label in labels]).astype(np.float32)
+    logits = np.asarray([20.0 if label.startswith("stop|") else -20.0 for label in labels], dtype=np.float32)
+    return actions, logits
 
 
 @dataclass(frozen=True)
@@ -100,6 +216,37 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def _write_progress(
+    path: Path,
+    *,
+    output_root: Path,
+    stage: str,
+    **fields: Any,
+) -> None:
+    """Publish a crash-safe progress snapshot for detached PC training."""
+    payload: dict[str, Any] = {
+        "schema_version": PROGRESS_SCHEMA_VERSION,
+        "updated_utc": datetime.now(timezone.utc).isoformat(),
+        "pid": os.getpid(),
+        "output_root": str(output_root),
+        "stage": stage,
+    }
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
 
 
 def _atomic_torch_save(path: Path, value: Mapping[str, Any]) -> None:
@@ -215,6 +362,23 @@ def _build_dataset_bundle(
     data_config = train_config.get("data")
     if not isinstance(data_config, Mapping):
         raise ValueError("data configuration is missing")
+    runtime_limit_value = data_config.get("runtime_first_step_limit_m")
+    if runtime_limit_value is None:
+        runtime_first_step_limit_m = None
+    else:
+        try:
+            runtime_first_step_limit_m = float(runtime_limit_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "data.runtime_first_step_limit_m must be finite and positive"
+            ) from exc
+        if (
+            not np.isfinite(runtime_first_step_limit_m)
+            or runtime_first_step_limit_m <= 0.0
+        ):
+            raise ValueError(
+                "data.runtime_first_step_limit_m must be finite and positive"
+            )
     caches = discover_feature_caches(feature_root)
     expected_run_count = int(data_config.get("expected_run_count", 12))
     if expected_run_count < 12:
@@ -242,6 +406,9 @@ def _build_dataset_bundle(
         instruction_swap_prob=float(
             data_config.get("instruction_swap_prob", 0.0)
         ),
+        runtime_first_step_limit_m=runtime_first_step_limit_m,
+        hold_band_m=data_config.get("hold_band_m", 0.0),
+        hold_oversample_factor=data_config.get("hold_oversample_factor", 1),
     )
     validation_base = FrozenFeatureDataset(
         caches,
@@ -249,6 +416,9 @@ def _build_dataset_bundle(
         split_assignments=assignments,
         allowed_language_splits=data_config["validation_language_splits"],
         frame_stride=stride,
+        runtime_first_step_limit_m=runtime_first_step_limit_m,
+        hold_band_m=0.0,
+        hold_oversample_factor=1,
     )
     test_dataset: AnnotatedFeatureDataset | None = None
     if include_test:
@@ -258,6 +428,9 @@ def _build_dataset_bundle(
             split_assignments=assignments,
             allowed_language_splits=data_config["test_language_splits"],
             frame_stride=stride,
+            runtime_first_step_limit_m=runtime_first_step_limit_m,
+            hold_band_m=0.0,
+            hold_oversample_factor=1,
         )
         test_dataset = AnnotatedFeatureDataset(test_base, instructions)
 
@@ -277,7 +450,11 @@ def _build_dataset_bundle(
         "run_count": len(caches),
         "split_assignments": assignments,
         "frame_stride": stride,
-        "train_raw_sample_count": len(train_base),
+        "runtime_first_step_limit_m": runtime_first_step_limit_m,
+        "hold_band_m": train_base.hold_band_m,
+        "hold_oversample_factor": train_base.hold_oversample_factor,
+        "train_raw_sample_count": train_base.raw_sample_count,
+        "train_resampled_sample_count": len(train_base),
         "validation_sample_count": len(validation_base),
         "test_sample_count": len(test_dataset) if test_dataset else None,
         "train_sampling": "one_synonym_per_frame_task_label_each_epoch",
@@ -417,14 +594,11 @@ def _model_inputs(
     if modality != "entity_only":
         raise ValueError(f"unknown modality={modality!r}")
     inputs["language"] = torch.zeros_like(inputs["language"])
-    inputs["global_visual"] = torch.zeros_like(inputs["global_visual"])
-    inputs["entity_visual"] = torch.zeros_like(inputs["entity_visual"])
-    inputs["ego"] = torch.zeros_like(inputs["ego"])
     return inputs
 
 
 def _evaluate_model(
-    model: SmallTrajectoryPolicy,
+    model: SmallActionPolicy,
     dataset: Dataset[Any],
     *,
     device: torch.device,
@@ -451,8 +625,8 @@ def _evaluate_model(
             output = model(**_model_inputs(batch, device, modality=modality))
             if not bool(torch.all(output.valid_mask)):
                 raise ValueError("evaluation dataset produced an invalid policy input")
-            predictions.append(output.trajectory.detach().cpu().numpy())
-            targets.append(batch["target_trajectory"].numpy())
+            predictions.append(output.action.detach().cpu().numpy())
+            targets.append(batch["target_action"].numpy())
             logits.append(output.stop_logit.detach().cpu().numpy())
             stops.append(batch["target_stop"].numpy())
             labels.extend(str(value) for value in batch["metadata"]["task_label"])
@@ -463,7 +637,7 @@ def _evaluate_model(
         "target_stop": np.concatenate(stops),
         "task_labels": labels,
     }
-    metrics = compute_policy_metrics(
+    metrics = compute_action_metrics(
         arrays["prediction"],
         arrays["target"],
         arrays["stop_logits"],
@@ -485,14 +659,14 @@ def _collect_targets(
         shuffle=False,
         num_workers=num_workers,
     )
-    trajectories: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
     stops: list[np.ndarray] = []
     labels: list[str] = []
     for batch in loader:
-        trajectories.append(batch["target_trajectory"].numpy())
+        actions.append(batch["target_action"].numpy())
         stops.append(batch["target_stop"].numpy())
         labels.extend(str(value) for value in batch["metadata"]["task_label"])
-    return np.concatenate(trajectories), np.concatenate(stops), labels
+    return np.concatenate(actions), np.concatenate(stops), labels
 
 
 def _environment_report(device: torch.device) -> dict[str, Any]:
@@ -524,7 +698,7 @@ def _save_curves(path: Path, history: list[dict[str, Any]]) -> None:
     draw.text((30, 15), "Day 15 training curves", fill="black")
     panels = (
         ("train_loss", (50, 60, 950, 290), "blue"),
-        ("validation_ade_m", (50, 330, 950, 560), "red"),
+        ("validation_action_error_m", (50, 330, 950, 560), "red"),
     )
     for key, (left, top, right, bottom), color in panels:
         draw.rectangle((left, top, right, bottom), outline="black")
@@ -558,7 +732,7 @@ def _save_train_csv(path: Path, history: list[dict[str, Any]]) -> None:
 
 def _checkpoint_payload(
     *,
-    model: SmallTrajectoryPolicy,
+    model: SmallActionPolicy,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     seed: int,
@@ -597,6 +771,7 @@ def _train_one(
     model_config_source: Mapping[str, Any],
     device: torch.device,
     git_sha: str,
+    progress_path: Path,
 ) -> dict[str, Any]:
     settings = _parse_settings(train_config)
     training_config = train_config.get("training")
@@ -620,6 +795,18 @@ def _train_one(
     )
     _write_json(experiment_dir / "dataset_manifest.json", bundle.manifest)
     _write_json(experiment_dir / "environment.json", _environment_report(device))
+    _write_progress(
+        progress_path,
+        output_root=progress_path.parent,
+        stage="model_initializing",
+        seed=seed,
+        modality=modality,
+        epoch_completed=0,
+        epochs_total=settings.epochs,
+        train_samples=len(bundle.train_base),
+        validation_samples=len(bundle.validation),
+        device=str(device),
+    )
     dataset_manifest_sha256 = _sha256_file(
         experiment_dir / "dataset_manifest.json"
     )
@@ -630,7 +817,7 @@ def _train_one(
         bundle.instructions,
         seed=seed,
     )
-    model = SmallTrajectoryPolicy(model_config).to(device)
+    model = SmallActionPolicy(model_config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=settings.learning_rate,
@@ -639,6 +826,18 @@ def _train_one(
     if device.type == "cuda":
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
+    _write_progress(
+        progress_path,
+        output_root=progress_path.parent,
+        stage="training",
+        seed=seed,
+        modality=modality,
+        epoch_completed=0,
+        epochs_total=settings.epochs,
+        train_samples=len(train_dataset),
+        validation_samples=len(bundle.validation),
+        device=str(device),
+    )
 
     history: list[dict[str, Any]] = []
     best_score = float("inf")
@@ -647,6 +846,17 @@ def _train_one(
     started = time.perf_counter()
     for epoch in range(settings.epochs):
         train_dataset.set_epoch(epoch)
+        _write_progress(
+            progress_path,
+            output_root=progress_path.parent,
+            stage="epoch_running",
+            seed=seed,
+            modality=modality,
+            epoch_started=epoch + 1,
+            epoch_completed=epoch,
+            epochs_total=settings.epochs,
+            device=str(device),
+        )
         if loss_weights.pairwise > 0.0:
             loader = _make_cross_run_loader(
                 train_dataset,
@@ -669,16 +879,18 @@ def _train_one(
         trained_samples = 0
         for batch in loader:
             inputs = _model_inputs(batch, device, modality=modality)
-            target_trajectory = batch["target_trajectory"].to(
+            target_action = batch["target_action"].to(
                 device, non_blocking=True
             )
             target_stop = batch["target_stop"].to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             output = model(**inputs)
-            losses = trajectory_policy_loss(
+            losses = action_policy_loss(
                 output,
-                target_trajectory,
+                target_action,
                 target_stop,
+                previous_action=inputs["previous_action"],
+                previous_action_valid=inputs["previous_action_valid"],
                 weights=loss_weights,
                 group_ids=[
                     ":".join(str(fk).split(":")[2:3])
@@ -702,10 +914,7 @@ def _train_one(
             modality=modality,
         )
         train_loss = weighted_loss / max(trained_samples, 1)
-        selection_score = float(
-            validation_metrics["ade_m"]
-            + 0.5 * validation_metrics["fde_m"]
-        )
+        selection_score = float(validation_metrics["action_error_m"])
         minimum_checkpoint_epoch = int(
             training_config.get("minimum_checkpoint_epoch", 1)
         )
@@ -721,8 +930,7 @@ def _train_one(
             {
                 "epoch": epoch,
                 "train_loss": train_loss,
-                "validation_ade_m": validation_metrics["ade_m"],
-                "validation_fde_m": validation_metrics["fde_m"],
+                "validation_action_error_m": validation_metrics["action_error_m"],
                 "validation_stop_f1": validation_metrics[
                     "stop_classification"
                 ]["f1"],
@@ -733,6 +941,8 @@ def _train_one(
                 "selection_score": selection_score,
             }
         )
+        # Keep a usable partial curve if a detached run is interrupted.
+        _save_train_csv(experiment_dir / "train.csv", history)
         if selection_eligible and selection_score < best_score - 1.0e-9:
             best_score = selection_score
             best_epoch = epoch
@@ -754,6 +964,33 @@ def _train_one(
             )
         elif best_epoch >= 0:
             epochs_without_improvement += 1
+        elapsed = time.perf_counter() - started
+        per_epoch = elapsed / (epoch + 1)
+        remaining = per_epoch * (settings.epochs - epoch - 1)
+        print(
+            f"EPOCH_PROGRESS epoch={epoch + 1}/{settings.epochs} "
+            f"seed={seed} modality={modality} "
+            f"train_loss={train_loss:.4f} "
+            f"val_action_error={validation_metrics['action_error_m']:.3f} "
+            f"best={best_score:.3f}@ep{best_epoch + 1} "
+            f"elapsed={elapsed:.0f}s remaining~{remaining:.0f}s "
+            f"patience={epochs_without_improvement}/{settings.early_stopping_patience}",
+            flush=True,
+        )
+        _write_progress(
+            progress_path,
+            output_root=progress_path.parent,
+            stage="training",
+            seed=seed,
+            modality=modality,
+            epoch_completed=epoch + 1,
+            epochs_total=settings.epochs,
+            best_epoch=best_epoch + 1 if best_epoch >= 0 else None,
+            best_score=best_score if np.isfinite(best_score) else None,
+            selection_score=selection_score,
+            elapsed_seconds=elapsed,
+            device=str(device),
+        )
         if (
             epoch + 1 >= settings.minimum_epochs
             and epochs_without_improvement >= settings.early_stopping_patience
@@ -823,6 +1060,19 @@ def _train_one(
     _write_json(experiment_dir / "metrics.json", metrics)
     _save_train_csv(experiment_dir / "train.csv", history)
     _save_curves(experiment_dir / "curves.png", history)
+    _write_progress(
+        progress_path,
+        output_root=progress_path.parent,
+        stage="seed_complete",
+        seed=seed,
+        modality=modality,
+        epoch_completed=len(history),
+        epochs_total=settings.epochs,
+        best_epoch=best_epoch + 1,
+        elapsed_seconds=duration_seconds,
+        checkpoint=str(experiment_dir / "best.pt"),
+        device=str(device),
+    )
     return metrics
 
 
@@ -844,8 +1094,8 @@ def _baseline_metrics(
         batch_size=batch_size,
         num_workers=num_workers,
     )
-    label_means = fit_label_mean_baseline(train_target, train_labels)
-    mean_prediction, mean_logits = predict_label_mean_baseline(
+    label_means = fit_label_mean_action_baseline(train_target, train_labels)
+    mean_prediction, mean_logits = predict_label_mean_action_baseline(
         label_means, labels
     )
     zero_prediction = np.zeros_like(target)
@@ -854,21 +1104,21 @@ def _baseline_metrics(
         target_stop.reshape(-1), 20.0, -20.0
     ).astype(np.float32)
     return {
-        "zero_stop": compute_policy_metrics(
+        "zero_stop": compute_action_metrics(
             zero_prediction,
             target,
             zero_logits,
             target_stop,
             labels,
         ),
-        "label_mean": compute_policy_metrics(
+        "label_mean": compute_action_metrics(
             mean_prediction,
             target,
             mean_logits,
             target_stop,
             labels,
         ),
-        "expert_upper_bound": compute_policy_metrics(
+        "expert_upper_bound": compute_action_metrics(
             target,
             target,
             expert_logits,
@@ -883,22 +1133,23 @@ def _acceptance(
     label_mean: Mapping[str, Any],
     acceptance: Mapping[str, Any],
 ) -> dict[str, Any]:
-    ade_improvement = improvement_fraction(
-        float(metrics["ade_m"]), float(label_mean["ade_m"])
+    action_improvement = _improvement_fraction(
+        float(metrics["action_error_m"]), float(label_mean["action_error_m"])
     )
-    fde_improvement = improvement_fraction(
-        float(metrics["fde_m"]), float(label_mean["fde_m"])
+    minimum_action_improvement = float(
+        acceptance.get(
+            "minimum_action_error_improvement_over_label_mean",
+            acceptance.get("minimum_ade_improvement_over_label_mean", 0.0),
+        )
     )
     checks = {
-        "ade_improvement": ade_improvement
-        >= float(acceptance["minimum_ade_improvement_over_label_mean"]),
-        "fde_improvement": fde_improvement
-        >= float(acceptance["minimum_fde_improvement_over_label_mean"]),
+        "action_error_improvement": action_improvement
+        >= minimum_action_improvement,
         "stop_drift": float(metrics["stop_drift"]["within_0_10m_rate"])
         >= float(acceptance["minimum_stop_within_0_10m_rate"]),
         "stop_f1": float(metrics["stop_classification"]["f1"])
         >= float(acceptance["minimum_stop_f1"]),
-        "speed": float(metrics["speed_constraint"]["violation_rate"])
+        "action_bound": float(metrics["action_bound"]["violation_rate"])
         <= float(acceptance["maximum_speed_violation_rate"]),
         "finite": int(metrics["invalid_count"])
         <= int(acceptance["maximum_invalid_count"]),
@@ -906,8 +1157,7 @@ def _acceptance(
     return {
         "passed": all(checks.values()),
         "checks": checks,
-        "ade_improvement_fraction": ade_improvement,
-        "fde_improvement_fraction": fde_improvement,
+        "action_error_improvement_fraction": action_improvement,
     }
 
 
@@ -916,6 +1166,7 @@ def _experiment_name(modality: str, seed: int) -> str:
 
 
 def train_validation_suite(args: argparse.Namespace) -> int:
+    _require_pc_training_target(getattr(args, "execution_target", "pc"))
     train_config_path = args.config.resolve()
     model_config_path = args.model_config.resolve()
     train_config = _read_yaml(train_config_path)
@@ -936,7 +1187,15 @@ def train_validation_suite(args: argparse.Namespace) -> int:
     if output_root.exists():
         raise ValueError(f"output root already exists: {output_root}")
     output_root.mkdir(parents=True)
+    progress_path = output_root / "progress.json"
     device = _resolve_device(args.device)
+    _write_progress(
+        progress_path,
+        output_root=output_root,
+        stage="dataset_loading",
+        command="train",
+        device=str(device),
+    )
     bundle = _build_dataset_bundle(
         feature_root=args.features.resolve(),
         split_path=args.split.resolve(),
@@ -945,6 +1204,16 @@ def train_validation_suite(args: argparse.Namespace) -> int:
         include_test=False,
     )
     _write_json(output_root / "dataset_manifest.json", bundle.manifest)
+    _write_progress(
+        progress_path,
+        output_root=output_root,
+        stage="dataset_ready",
+        command="train",
+        device=str(device),
+        run_count=bundle.manifest["run_count"],
+        train_samples=bundle.manifest["train_raw_sample_count"],
+        validation_samples=bundle.manifest["validation_sample_count"],
+    )
     train_for_baseline = EpochSynonymDataset(
         bundle.train_base,
         bundle.instructions,
@@ -957,10 +1226,28 @@ def train_validation_suite(args: argparse.Namespace) -> int:
         num_workers=settings.num_workers,
     )
     _write_json(output_root / "validation_baselines.json", baselines)
+    _write_progress(
+        progress_path,
+        output_root=output_root,
+        stage="baseline_complete",
+        command="train",
+        device=str(device),
+        validation_samples=bundle.manifest["validation_sample_count"],
+    )
 
     experiments: dict[str, Any] = {}
     for seed in seeds:
         name = _experiment_name("full", seed)
+        _write_progress(
+            progress_path,
+            output_root=output_root,
+            stage="seed_starting",
+            command="train",
+            seed=seed,
+            modality="full",
+            epochs_total=settings.epochs,
+            device=str(device),
+        )
         experiments[name] = _train_one(
             experiment_dir=output_root / name,
             modality="full",
@@ -972,9 +1259,20 @@ def train_validation_suite(args: argparse.Namespace) -> int:
             model_config_source=model_source,
             device=device,
             git_sha=args.git_sha,
+            progress_path=progress_path,
         )
     entity_seed = int(train_config["baselines"]["entity_only_seed"])
     entity_name = _experiment_name("entity_only", entity_seed)
+    _write_progress(
+        progress_path,
+        output_root=output_root,
+        stage="seed_starting",
+        command="train",
+        seed=entity_seed,
+        modality="entity_only",
+        epochs_total=settings.epochs,
+        device=str(device),
+    )
     experiments[entity_name] = _train_one(
         experiment_dir=output_root / entity_name,
         modality="entity_only",
@@ -986,6 +1284,7 @@ def train_validation_suite(args: argparse.Namespace) -> int:
         model_config_source=model_source,
         device=device,
         git_sha=args.git_sha,
+        progress_path=progress_path,
     )
 
     acceptance_config = train_config.get("acceptance")
@@ -1015,12 +1314,20 @@ def train_validation_suite(args: argparse.Namespace) -> int:
         "validation_acceptance": full_acceptance,
     }
     _write_json(output_root / "summary.json", summary)
+    _write_progress(
+        progress_path,
+        output_root=output_root,
+        stage="suite_complete",
+        command="train",
+        device=str(device),
+        validation_gate_passed=validation_gate,
+        experiment_count=len(experiments),
+    )
     status = "PASS" if validation_gate else "FAIL"
     print(
         f"VALIDATION_{status} "
         f"seeds={','.join(str(seed) for seed in seeds)} "
-        f"label_mean_ade={baselines['label_mean']['ade_m']:.6f} "
-        f"label_mean_fde={baselines['label_mean']['fde_m']:.6f}"
+        f"label_mean_action_error={baselines['label_mean']['action_error_m']:.6f}"
     )
     return 0 if validation_gate else 2
 
@@ -1031,7 +1338,7 @@ def _load_best_model(
     model_config: SmallPolicyConfig,
     device: torch.device,
     git_sha: str,
-) -> tuple[SmallTrajectoryPolicy, dict[str, Any]]:
+) -> tuple[SmallActionPolicy, dict[str, Any]]:
     checkpoint = torch.load(
         experiment_dir / "best.pt",
         map_location=device,
@@ -1041,12 +1348,13 @@ def _load_best_model(
         raise ValueError(f"{experiment_dir}: checkpoint schema mismatch")
     if checkpoint.get("git_sha") != git_sha:
         raise ValueError(f"{experiment_dir}: checkpoint Git SHA mismatch")
-    model = SmallTrajectoryPolicy(model_config).to(device)
+    model = SmallActionPolicy(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint
 
 
 def evaluate_sealed_test(args: argparse.Namespace) -> int:
+    _require_pc_training_target(getattr(args, "execution_target", "pc"))
     output_root = args.output_root.resolve()
     summary_path = output_root / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1117,8 +1425,8 @@ def evaluate_sealed_test(args: argparse.Namespace) -> int:
         for name, value in test_experiments.items()
         if value["modality"] == "full"
     }
-    full_ade = [
-        value["test"]["ade_m"]
+    full_action_error = [
+        value["test"]["action_error_m"]
         for value in test_experiments.values()
         if value["modality"] == "full"
     ]
@@ -1129,16 +1437,16 @@ def evaluate_sealed_test(args: argparse.Namespace) -> int:
         "baselines": baselines,
         "experiments": test_experiments,
         "acceptance": full_acceptance,
-        "three_seed_test_ade_mean_m": float(np.mean(full_ade)),
-        "three_seed_test_ade_std_m": float(np.std(full_ade)),
+        "three_seed_test_action_error_mean_m": float(np.mean(full_action_error)),
+        "three_seed_test_action_error_std_m": float(np.std(full_action_error)),
     }
     _write_json(summary_path, summary)
     status = "PASS" if test_gate else "FAIL"
     print(
         f"TRAINING_{status} "
-        f"test_ade_mean={np.mean(full_ade):.6f} "
-        f"test_ade_std={np.std(full_ade):.6f} "
-        f"label_mean_ade={baselines['label_mean']['ade_m']:.6f}"
+        f"test_action_error_mean={np.mean(full_action_error):.6f} "
+        f"test_action_error_std={np.std(full_action_error):.6f} "
+        f"label_mean_action_error={baselines['label_mean']['action_error_m']:.6f}"
     )
     return 0 if test_gate else 2
 
@@ -1152,6 +1460,12 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--git-sha", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--execution-target",
+        choices=("pc",),
+        default="pc",
+        help="PC-only training/evaluation; Jetson exposes inference only",
+    )
 
 
 def main() -> int:
@@ -1163,7 +1477,23 @@ def main() -> int:
     _add_common_arguments(test_parser)
     args = parser.parse_args()
     if args.command == "train":
-        return train_validation_suite(args)
+        try:
+            return train_validation_suite(args)
+        except Exception as exc:
+            progress_path = args.output_root.resolve() / "progress.json"
+            if progress_path.parent.is_dir():
+                try:
+                    _write_progress(
+                        progress_path,
+                        output_root=progress_path.parent,
+                        stage="failed",
+                        command="train",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                except OSError:
+                    pass
+            raise
     return evaluate_sealed_test(args)
 
 

@@ -1,4 +1,4 @@
-"""Losses for the Day 14 single-trajectory policy."""
+"""Losses for the single-step body-frame action policy."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from training.model import PolicyOutput
 
 @dataclass(frozen=True)
 class PolicyLossWeights:
-    waypoint: float = 1.0
-    endpoint: float = 0.5
+    action: float = 1.0
     stop: float = 0.2
     smoothness: float = 0.05
     pairwise: float = 0.0
@@ -26,25 +25,25 @@ class PolicyLossWeights:
     ) -> "PolicyLossWeights":
         if value is None:
             return cls()
-        unknown = set(value) - {
-            "waypoint",
-            "endpoint",
+        known = {
+            "action",
             "stop",
             "smoothness",
             "pairwise",
         }
+        unknown = set(value) - known
         if unknown:
             raise ValueError(f"unknown loss weight keys: {sorted(unknown)}")
-        return cls(**{key: float(item) for key, item in value.items()})
+        action = float(value.get("action", cls.action))
+        return cls(
+            action=action,
+            stop=float(value.get("stop", cls.stop)),
+            smoothness=float(value.get("smoothness", cls.smoothness)),
+            pairwise=float(value.get("pairwise", cls.pairwise)),
+        )
 
     def __post_init__(self) -> None:
-        weights = (
-            self.waypoint,
-            self.endpoint,
-            self.stop,
-            self.smoothness,
-            self.pairwise,
-        )
+        weights = (self.action, self.stop, self.smoothness, self.pairwise)
         if any(not torch.isfinite(torch.tensor(value)) for value in weights):
             raise ValueError("loss weights must be finite")
         if any(value < 0.0 for value in weights):
@@ -58,7 +57,7 @@ def _validate_finite(tensor: Tensor, name: str) -> None:
         raise ValueError(f"{name} contains NaN or Inf")
 
 
-def paired_trajectory_contrastive_loss(
+def paired_action_contrastive_loss(
     prediction: Tensor,
     target: Tensor,
     group_ids: Sequence[str],
@@ -66,14 +65,17 @@ def paired_trajectory_contrastive_loss(
     minimum_target_difference: float = 0.10,
     assignment_margin_m: float = 0.05,
 ) -> Tensor:
-    """Require same-observation outputs to change like their expert targets."""
+    """Keep paired language variants directionally consistent with labels."""
 
-    if prediction.shape != target.shape or prediction.ndim != 3:
-        raise ValueError("paired trajectories must have equal [B,H,2] shapes")
+    if prediction.shape != target.shape or prediction.ndim != 2:
+        raise ValueError("paired actions must have equal [B, 2] shapes")
+    if prediction.shape[1] != 2:
+        raise ValueError("paired actions must have action_dim=2")
     if len(group_ids) != int(prediction.shape[0]):
         raise ValueError("group_ids must match the batch size")
     if minimum_target_difference <= 0.0 or assignment_margin_m < 0.0:
         raise ValueError("pairwise thresholds are invalid")
+
     grouped: dict[str, list[int]] = {}
     for index, group_id in enumerate(group_ids):
         grouped.setdefault(str(group_id), []).append(index)
@@ -83,15 +85,10 @@ def paired_trajectory_contrastive_loss(
         if len(indices) < 2:
             continue
         pairs = torch.combinations(
-            torch.tensor(indices, device=prediction.device),
-            r=2,
+            torch.tensor(indices, device=prediction.device), r=2
         )
-        predicted_delta = (
-            prediction[pairs[:, 1]] - prediction[pairs[:, 0]]
-        ).flatten(1)
-        target_delta = (
-            target[pairs[:, 1]] - target[pairs[:, 0]]
-        ).flatten(1)
+        predicted_delta = prediction[pairs[:, 1]] - prediction[pairs[:, 0]]
+        target_delta = target[pairs[:, 1]] - target[pairs[:, 0]]
         meaningful = (
             torch.linalg.vector_norm(target_delta, dim=1)
             >= minimum_target_difference
@@ -100,22 +97,19 @@ def paired_trajectory_contrastive_loss(
             continue
         predicted_delta = predicted_delta[meaningful]
         target_delta = target_delta[meaningful]
-        cosine = functional.cosine_similarity(
-            predicted_delta,
-            target_delta,
-            dim=1,
-            eps=1.0e-6,
+        directional_losses.append(
+            1.0
+            - functional.cosine_similarity(
+                predicted_delta, target_delta, dim=1, eps=1.0e-6
+            )
         )
-        directional_losses.append(1.0 - cosine)
 
         selected_pairs = pairs[meaningful]
         left = selected_pairs[:, 0]
         right = selected_pairs[:, 1]
 
         def _error(first: Tensor, second: Tensor) -> Tensor:
-            return torch.linalg.vector_norm(
-                first - second, dim=-1
-            ).mean(dim=-1)
+            return torch.linalg.vector_norm(first - second, dim=-1)
 
         correct = _error(prediction[left], target[left]) + _error(
             prediction[right], target[right]
@@ -126,34 +120,37 @@ def paired_trajectory_contrastive_loss(
         assignment_losses.append(
             functional.relu(assignment_margin_m + correct - swapped)
         )
+
     if not directional_losses:
         return prediction.sum() * 0.0
-    directional = torch.cat(directional_losses).mean()
-    assignment = torch.cat(assignment_losses).mean()
-    loss = directional + assignment
-    _validate_finite(loss, "pairwise contrastive loss")
+    loss = torch.cat(directional_losses).mean() + torch.cat(
+        assignment_losses
+    ).mean()
+    _validate_finite(loss, "pairwise action loss")
     return loss
 
 
-def trajectory_policy_loss(
+def action_policy_loss(
     output: PolicyOutput,
-    target_trajectory: Tensor,
+    target_action: Tensor,
     target_stop: Tensor,
     *,
+    previous_action: Tensor | None = None,
+    previous_action_valid: Tensor | None = None,
+    smoothness_margin_m: float = 0.02,
     sample_valid: Tensor | None = None,
     weights: PolicyLossWeights | None = None,
     group_ids: Sequence[str] | None = None,
 ) -> dict[str, Tensor]:
-    """Compute the frozen Day 14 objective over valid samples only."""
+    """Compute SmoothL1 action loss and stop BCE over valid samples."""
 
-    if output.trajectory.ndim != 3:
-        raise ValueError("policy trajectory must have shape [B, horizon, action]")
-    batch_size, horizon, action_dim = output.trajectory.shape
-    expected_trajectory = (batch_size, horizon, action_dim)
-    if tuple(target_trajectory.shape) != expected_trajectory:
+    if output.action.ndim != 2 or output.action.shape[1] != 2:
+        raise ValueError("policy action must have shape [B, 2]")
+    batch_size = int(output.action.shape[0])
+    if tuple(target_action.shape) != (batch_size, 2):
         raise ValueError(
-            f"target trajectory shape {tuple(target_trajectory.shape)} "
-            f"does not match {expected_trajectory}"
+            f"target action shape {tuple(target_action.shape)} does not match "
+            f"{(batch_size, 2)}"
         )
     if tuple(output.stop_logit.shape) != (batch_size, 1):
         raise ValueError("stop_logit must have shape [B, 1]")
@@ -161,6 +158,19 @@ def trajectory_policy_loss(
         raise ValueError("target_stop must have shape [B] or [B, 1]")
     if tuple(output.valid_mask.shape) != (batch_size,):
         raise ValueError("output.valid_mask must have shape [B]")
+    if previous_action is not None and tuple(previous_action.shape) != (
+        batch_size,
+        2,
+    ):
+        raise ValueError("previous_action must have shape [B, 2]")
+    if previous_action_valid is not None and tuple(previous_action_valid.shape) != (
+        batch_size,
+    ):
+        raise ValueError("previous_action_valid must have shape [B]")
+    if not torch.isfinite(torch.tensor(float(smoothness_margin_m))) or float(
+        smoothness_margin_m
+    ) < 0.0:
+        raise ValueError("smoothness_margin_m must be finite and non-negative")
 
     valid = output.valid_mask
     if sample_valid is not None:
@@ -170,51 +180,63 @@ def trajectory_policy_loss(
     if not torch.any(valid):
         raise ValueError("loss batch has no valid samples")
 
-    prediction = output.trajectory[valid]
-    trajectory_target = target_trajectory.to(
+    prediction = output.action[valid]
+    action_target = target_action.to(
         device=prediction.device, dtype=prediction.dtype
     )[valid]
     stop_prediction = output.stop_logit[valid]
     stop_target = target_stop.reshape(batch_size, 1).to(
-        device=stop_prediction.device,
-        dtype=stop_prediction.dtype,
+        device=stop_prediction.device, dtype=stop_prediction.dtype
     )[valid]
-    _validate_finite(prediction, "policy trajectory")
-    _validate_finite(trajectory_target, "target trajectory")
+    _validate_finite(prediction, "policy action")
+    _validate_finite(action_target, "target action")
     _validate_finite(stop_prediction, "stop_logit")
     _validate_finite(stop_target, "target_stop")
     if torch.any((stop_target < 0.0) | (stop_target > 1.0)):
         raise ValueError("target_stop values must be in [0, 1]")
 
-    waypoint = functional.smooth_l1_loss(prediction, trajectory_target)
-    endpoint = functional.smooth_l1_loss(
-        prediction[:, -1], trajectory_target[:, -1]
-    )
+    loss_weights = weights or PolicyLossWeights()
+    action = functional.smooth_l1_loss(prediction, action_target)
     stop = functional.binary_cross_entropy_with_logits(
         stop_prediction, stop_target
     )
-    if horizon >= 3:
-        increments = prediction[:, 1:] - prediction[:, :-1]
-        smoothness = functional.smooth_l1_loss(
-            increments[:, 1:], increments[:, :-1]
+    # Penalize only action jumps larger than the expert's own frame-to-frame
+    # jump. This keeps the expert-following objective dominant while reducing
+    # closed-loop oscillation when perception jitters.
+    smoothness = prediction.sum() * 0.0
+    if previous_action is not None and previous_action_valid is not None:
+        previous = previous_action.to(
+            device=prediction.device, dtype=prediction.dtype
         )
-    else:
-        smoothness = prediction.sum() * 0.0
-
-    loss_weights = weights or PolicyLossWeights()
+        previous_valid = previous_action_valid.to(
+            device=prediction.device, dtype=torch.bool
+        )
+        history_valid = valid & previous_valid
+        if torch.any(history_valid):
+            previous_subset = previous[history_valid]
+            _validate_finite(previous_subset, "previous action")
+            predicted_jump = torch.linalg.vector_norm(
+                prediction[previous_valid[valid]], dim=-1
+            )
+            expert_jump = torch.linalg.vector_norm(
+                action_target[previous_valid[valid]] - previous_subset,
+                dim=-1,
+            )
+            smoothness = functional.relu(
+                predicted_jump - expert_jump - float(smoothness_margin_m)
+            ).square().mean()
     if loss_weights.pairwise > 0.0:
         if group_ids is None:
             raise ValueError("positive pairwise weight requires group_ids")
-        pairwise = paired_trajectory_contrastive_loss(
+        pairwise = paired_action_contrastive_loss(
             prediction,
-            trajectory_target,
+            action_target,
             [group_ids[index] for index, keep in enumerate(valid) if bool(keep)],
         )
     else:
         pairwise = prediction.sum() * 0.0
     total = (
-        loss_weights.waypoint * waypoint
-        + loss_weights.endpoint * endpoint
+        loss_weights.action * action
         + loss_weights.stop * stop
         + loss_weights.smoothness * smoothness
         + loss_weights.pairwise * pairwise
@@ -222,8 +244,7 @@ def trajectory_policy_loss(
     _validate_finite(total, "total loss")
     return {
         "total": total,
-        "waypoint": waypoint,
-        "endpoint": endpoint,
+        "action": action,
         "stop": stop,
         "smoothness": smoothness,
         "pairwise": pairwise,
@@ -233,3 +254,10 @@ def trajectory_policy_loss(
             dtype=torch.int64,
         ),
     }
+
+
+__all__ = [
+    "PolicyLossWeights",
+    "action_policy_loss",
+    "paired_action_contrastive_loss",
+]

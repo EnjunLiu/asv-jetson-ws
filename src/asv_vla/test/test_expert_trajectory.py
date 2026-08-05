@@ -13,7 +13,6 @@ from asv_vla.expert_trajectory import (
     task_from_labels,
 )
 from asv_vla.language_intervention_dataset import read_jsonl
-from asv_vla.trajectory_contract import ACTION_DIM, DT_SEC, HORIZON
 
 
 def entity(
@@ -44,10 +43,6 @@ def entity(
     )
 
 
-def endpoint(result):
-    return result.delta_p_xy[-2], result.delta_p_xy[-1]
-
-
 def test_task_labels_accept_only_frozen_follow_stop_scope():
     assert task_from_labels("follow", "color:red", "3m") == ExpertTask(
         action="follow",
@@ -68,31 +63,40 @@ def test_task_labels_accept_only_frozen_follow_stop_scope():
         task_from_labels("follow", "color:red", "5m")
 
 
-def test_stop_is_an_explicit_safe_zero_label():
-    task = task_from_labels("stop", "none", "none")
-    result = generate_expert_trajectory(task, [])
+def test_stop_is_an_explicit_safe_zero_action_without_legacy_shape():
+    result = generate_expert_trajectory(
+        task_from_labels("stop", "none", "none"), []
+    )
 
     assert result.safe_stop
     assert result.selected_entity_id == ""
-    assert result.delta_p_xy == (0.0,) * (HORIZON * ACTION_DIM)
+    assert result.expert_action == (0.0, 0.0)
+    assert len(result.expert_action) == 2
+    assert not hasattr(result, "delta_p_xy")
 
 
-def test_three_and_ten_metre_follow_labels_move_to_correct_standoff():
-    target = entity("target", x=8.0)
+def test_follow_returns_one_body_frame_action_with_speed_limit():
     near = generate_expert_trajectory(
         task_from_labels("follow", "color:red", "3m"),
-        [target],
+        [entity("target", x=8.0)],
     )
     far = generate_expert_trajectory(
         task_from_labels("follow", "color:red", "10m"),
-        [target],
+        [entity("target", x=8.0)],
+    )
+    close = generate_expert_trajectory(
+        task_from_labels("follow", "color:red", "3m"),
+        [entity("target", x=3.1)],
     )
 
-    assert endpoint(near) == pytest.approx((5.0, 0.0), abs=1.0e-6)
-    assert endpoint(far) == pytest.approx((-2.0, 0.0), abs=1.0e-6)
-    assert near.delta_p_xy != far.delta_p_xy
+    assert near.expert_action == pytest.approx((0.3, 0.0))
+    assert -0.3 <= far.expert_action[0] < 0.0
+    assert far.expert_action[1] == pytest.approx(0.0)
+    assert 0.0 < close.expert_action[0] < 0.1
+    assert close.expert_action[1] == pytest.approx(0.0)
     assert not near.safe_stop
-    assert not far.safe_stop
+    assert len(near.expert_action) == 2
+    assert math.hypot(*near.expert_action) <= 1.5 * 0.2 + 1.0e-9
 
 
 def test_color_and_bearing_selectors_choose_different_targets():
@@ -106,22 +110,14 @@ def test_color_and_bearing_selectors_choose_different_targets():
     assert select_target(entities, "bearing:left").entity_id == "red"
     assert select_target(entities, "bearing:right").entity_id == "blue"
 
-    red = generate_expert_trajectory(
-        task_from_labels("follow", "color:red", "3m"), entities
-    )
-    blue = generate_expert_trajectory(
-        task_from_labels("follow", "color:blue", "3m"), entities
-    )
     left = generate_expert_trajectory(
         task_from_labels("follow", "bearing:left", "3m"), entities
     )
     right = generate_expert_trajectory(
         task_from_labels("follow", "bearing:right", "3m"), entities
     )
-    assert endpoint(red)[1] > 0.0
-    assert endpoint(blue)[1] < 0.0
-    assert left.selected_entity_id == "red"
-    assert right.selected_entity_id == "blue"
+    assert left.expert_action[1] > 0.0
+    assert right.expert_action[1] < 0.0
 
 
 def test_bearing_selector_ignores_centerline_float_noise():
@@ -136,7 +132,7 @@ def test_bearing_selector_ignores_centerline_float_noise():
         select_target(near_center, "bearing:right")
 
 
-def test_constant_velocity_prediction_and_speed_bound_are_deterministic():
+def test_constant_velocity_prediction_and_action_are_deterministic():
     task = task_from_labels("follow", "color:red", "3m")
     static = generate_expert_trajectory(task, [entity("target", x=8.0)])
     moving_target = entity("target", x=8.0, vx=1.0)
@@ -144,27 +140,27 @@ def test_constant_velocity_prediction_and_speed_bound_are_deterministic():
     repeated = generate_expert_trajectory(task, [moving_target])
 
     assert moving == repeated
-    assert endpoint(moving)[0] > endpoint(static)[0]
-    previous = (0.0, 0.0)
-    for index in range(HORIZON):
-        current = (
-            moving.delta_p_xy[2 * index],
-            moving.delta_p_xy[2 * index + 1],
-        )
-        assert math.dist(previous, current) <= 1.5 * DT_SEC + 1.0e-9
-        previous = current
+    assert moving.expert_action[0] >= static.expert_action[0]
+    assert math.hypot(*moving.expert_action) <= 1.5 * 0.2 + 1.0e-9
+
+
+def test_target_behind_camera_is_a_deterministic_fail_closed_stop():
+    result = generate_expert_trajectory(
+        task_from_labels("follow", "color:red", "3m"),
+        [entity("behind", x=-1.0)],
+    )
+
+    assert result.safe_stop
+    assert result.expert_action == (0.0, 0.0)
+    assert "fail-closed" in result.detail
 
 
 def test_invalid_or_ambiguous_target_data_fail_closed():
     task = task_from_labels("follow", "color:red", "3m")
     with pytest.raises(ExpertTrajectoryError, match="no valid visible"):
-        generate_expert_trajectory(
-            task, [entity("hidden", visible=False)]
-        )
+        generate_expert_trajectory(task, [entity("hidden", visible=False)])
     with pytest.raises(ExpertTrajectoryError, match="NaN or Inf"):
-        generate_expert_trajectory(
-            task, [entity("nan", x=float("nan"))]
-        )
+        generate_expert_trajectory(task, [entity("nan", x=float("nan"))])
     with pytest.raises(ExpertTrajectoryError, match="duplicate"):
         generate_expert_trajectory(
             task, [entity("same", x=8.0), entity("same", x=9.0)]
@@ -173,7 +169,7 @@ def test_invalid_or_ambiguous_target_data_fail_closed():
         generate_expert_trajectory(task, [entity("target")], max_speed_mps=0)
 
 
-def test_all_labels_and_contrast_pairs_change_correctly():
+def test_all_labels_have_distinct_deterministic_single_actions():
     repository = Path(__file__).resolve().parents[3]
     instructions = read_jsonl(
         repository / "dataset/language/instructions.jsonl"
@@ -185,17 +181,16 @@ def test_all_labels_and_contrast_pairs_change_correctly():
     report = evaluate_expert_labels(instructions, pairs)
 
     assert report["passed"]
-    assert report["instruction_count"] == 90
-    assert report["changed_contrast_pair_count"] == 24
-    assert report["unique_task_label_count"] == 9
-    assert report["trajectory_shape"] == [20, 2]
+    assert report["instruction_count"] == 130
+    assert report["changed_contrast_pair_count"] == 30
+    assert report["unique_task_label_count"] == 13
+    assert report["expert_action_shape"] == [2]
 
 
-def test_expert_message_retains_full_frame_identity_and_is_registered():
+def test_expert_message_keeps_frame_identity_and_rejects_old_action_fields():
     repository = Path(__file__).resolve().parents[3]
     message_path = (
-        repository
-        / "src/asv_jetson_interfaces/msg/ExpertTrajectory.msg"
+        repository / "src/asv_jetson_interfaces/msg/ExpertTrajectory.msg"
     )
     fields = [
         line.strip()
@@ -213,5 +208,8 @@ def test_expert_message_retains_full_frame_identity_and_is_registered():
         "uint64 frame_index",
         "string frame_id",
     ]
-    assert "float32[] delta_p_xy" in fields
+    assert "float32 desired_x" in fields
+    assert "float32 desired_y" in fields
+    assert "uint16 horizon" not in fields
+    assert "float32[] delta_p_xy" not in fields
     assert '"msg/ExpertTrajectory.msg"' in cmake

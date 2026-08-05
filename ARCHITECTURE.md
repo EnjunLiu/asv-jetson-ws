@@ -5,11 +5,11 @@
 ```text
 UE5 SceneCapture JPEG ───────────────┐
 UE5 task text ───────────────────────┼─> Jetson ROS 2
-UE5 ASV_Location/Rotation/Velocity ──┘
+UE5 ASV_Location/Rotation/Velocity ──（仅录制/离线审计）
       │
       ├─ /ue/entities（真值：只录制/离线监督）
       ├─ /ue/camera_frame（在线输入）
-      └─ /ue/asv_state（在线 ego 输入）
+      └─ /ue/asv_state（仅录制/离线审计）
 
 /task/text + /ue/camera_frame
   -> image_entity_perception (image + instruction)
@@ -17,11 +17,10 @@ UE5 ASV_Location/Rotation/Velocity ──┘
   -> temporal_entity_tracker (跨帧位置差分)
   -> /vla/tracked_entities
   -> task_entity_tensor（任务相关实体的 16x16 几何/风险张量）
-  -> visual_encoder（MobileNetV3 CUDA）
   -> language_qwen（Qwen3 CUDA，默认常驻）
-  -> vla_policy（Torch CUDA + tracked entities + language + ego）
+  -> vla_policy（Torch CUDA 决策头：language + structured entities + previous action）
   -> safety_gate
-  -> trajectory_controller
+  -> point_controller（单点限幅/平滑）
   -> decision_setpoint_adapter
   -> /ue/kinematic_setpoint
   -> UE5 C++ executor
@@ -37,14 +36,17 @@ UE5 ASV_Location/Rotation/Velocity ──┘
 `velocity_valid=false`。
 
 `/ue/asv_state` 来自 UE5 当前本船的世界位置、姿态、surge velocity 和 yaw rate；
-策略只使用归一化的本船运动状态 `[surge_velocity, yaw_rate]` 作为 ego，不用目标真值
-伪造本船状态。ego 必须与图像/Entities 具有相同的 Run/Scene/Frame 身份。
+它只用于录制、专家标签审计和离线分析。决策头不接收 ego，也不从 ego 构造在线策略
+输入；它必须与图像帧保持相同的 Run/Scene/Frame 身份，供离线数据对齐检查。
 
 ## 2. 动作边界
 
-策略输出固定的 20 个 body-frame 累计位移点（`dt=0.2 s`），不是左右推力。安全门
-检查有限性、速度、曲率、碰撞余量、陈旧和身份；轨迹控制器只取安全轨迹短前缀，
-adapter 每个观测帧发送一个 `desired_x/desired_y` setpoint。UE5 仿真 executor 可以
+策略每个观测帧直接输出一个 body-frame 期望位移点（`dt=0.2 s`），不是离线轨迹也
+不是左右推力。决策头额外接收上一控制帧经安全门实际放行的
+`previous_action=[desired_x, desired_y]` 和 `previous_action_valid`，用于学习动作连续性；
+首帧、Run/scene 切换、帧不连续、上一动作无效或安全门拒绝时清零并置无效。安全门
+检查有限性、速度、碰撞余量、陈旧和身份；point controller 对相邻点做限幅和速率
+约束，adapter 每个观测帧发送一个 `desired_x/desired_y` setpoint。UE5 仿真 executor 可以
 直接设置位置和航向；真实船的底层控制器属于独立工程。
 
 最终在线链中没有 world model、候选轨迹枚举、专家 publisher 或 ONNX/CPU policy。
@@ -54,7 +56,7 @@ adapter 每个观测帧发送一个 `desired_x/desired_y` setpoint。UE5 仿真 
 
 | 包 | 责任 |
 |---|---|
-| `asv_jetson_interfaces` | CameraFrame、UEASVState、UEEntity、TaskFeatures、VisualFeatures、TaskEmbedding、SelectedTrajectory 等最终消息 |
+| `asv_jetson_interfaces` | CameraFrame、UEASVState、UEEntity、TaskFeatures、TaskEmbedding、DecisionPoint 等最终消息 |
 | `asv_ue_bridge` | TCP JSON 校验、JPEG、本船状态、真值标签发布、运动学 setpoint 输出 |
 | `asv_vla` | 图像实体模型、任务筛选、跨帧 tracker、视觉/Qwen/策略、安全门、轨迹控制、采集/回放 |
 | `asv_bringup` | `vla_closed_loop.launch.py`、`collect.launch.py`、`record_episode.launch.py`、`replay_episode.launch.py` |
@@ -67,13 +69,16 @@ adapter 每个观测帧发送一个 `desired_x/desired_y` setpoint。UE5 仿真 
 UE5 JPEG + UE Entities + UEASVState + task text
   -> PC frame records
   -> 图像实体模型训练（Entities 仅标签）
-  -> 跨帧速度和 ego 特征
-  -> 冻结视觉/Qwen 特征 + SmallTrajectoryPolicy 训练
+  -> 跨帧速度和结构化实体特征
+  -> 冻结 Qwen 任务嵌入 + 单步决策头训练
   -> Jetson strict CUDA checkpoint
 ```
 
-训练标签可以使用 UE Entities 和专家轨迹；部署时只复制模型和 Qwen 目录，在线不读取
-UE Entities。数据与模型位于仓库外的 `pc_datasets`，Git 只保存代码、manifest 和合同。
+训练标签可以使用 UE Entities 和专家执行器在每个时刻生成的单步专家点；数据集不把
+专家轨迹序列作为策略输出目标。每个样本按同一 Run、同一 instruction、相邻前一帧
+关联 `previous_expert_action`，首帧或前帧 STOP 时使用零值并置无效。部署时只复制模型
+和 Qwen 目录，在线不读取 UE Entities。数据与模型位于仓库外的 `pc_datasets`，Git 只
+保存代码、manifest 和合同。
 
 ## 5. CUDA 与内存策略
 
@@ -88,11 +93,12 @@ UE Entities。数据与模型位于仓库外的 `pc_datasets`，Git 只保存代
 
 ## 6. 验收不变量
 
-1. 在线策略订阅 `/vla/tracked_entities`、`/vla/visual_features`、
-   `/vla/language_embedding` 和 `/ue/asv_state`，不订阅 `/ue/entities`。
+1. 在线策略只订阅 `/vla/task_features` 和 `/vla/language_embedding`，不订阅
+   `/vla/visual_features`、`/ue/asv_state` 或 `/ue/entities`。
 2. `source=image_perception/temporal_tracker`，`instruction_id` 与任务一致。
 3. 第一帧速度无效，后续速度来自 tracker。
-4. ego 缺失、身份不匹配、CUDA/模型失败时必须 hold。
+4. language 与 TaskFeatures 的 Run/Scene/Frame 身份不匹配、CUDA/模型失败时必须
+   hold；策略不接收 ego。上一动作只有在相邻控制帧且确实被安全门放行时才有效。
 5. UE 日志出现连续 `SCENE_EXEC_APPLY` 和最终 `SCENE_UE_COMPLETE`。
 
 ## 7. 当前诚实边界

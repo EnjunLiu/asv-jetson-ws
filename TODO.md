@@ -105,7 +105,7 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
 ```bash
 ros2 topic echo /vla/perceived_entities --once
 ros2 topic echo /vla/tracked_entities --once
-ros2 topic echo /vla/policy_trajectory --once
+ros2 topic echo /vla/policy_point --once
 ros2 topic echo /decision/output --once
 ```
 
@@ -115,10 +115,11 @@ ros2 topic echo /decision/output --once
   当前任务一致；不出现 `/ue/entities` 作为输入来源。
 - 速度字段第一帧 `velocity_valid=false`，后续才由 tracker 填写；不是单帧图像直接
   猜速度。
-- 策略 `model_version=vla_torch_cuda_v1`、`valid=true` 时输出 20×2 body-frame
-  累计位移；控制器只取短前缀并发布 `desired_x/desired_y`。
-- `/ue/asv_state` 必须与图像/Entities 使用相同 Run/Scene/Frame 身份；ego 缺失时策略
-  必须 hold，不能填零冒充真实本船状态。
+- 策略 `model_version=vla_torch_cuda_v1`、`valid=true` 时输出当前帧一个 body-frame
+  `[desired_x, desired_y]`；决策头输入是任务指令嵌入、结构化实体信息和上一帧有效动作，
+  不输入 ego、global visual 或 entity crop。
+- `previous_action` 只来自上一帧实际通过 safety gate 的动作；首帧、任务/Run 切换、帧不连续
+  或 gate 拒绝时必须置零并标记无效。速度由时序跟踪器根据相邻图像帧估计，不能由单帧图像直接猜测。
 - `SCENE_EXEC_APPLY` 连续出现且 ASV 世界坐标变化；模型/身份/可见性失败时必须
   hold/fail-closed。
 

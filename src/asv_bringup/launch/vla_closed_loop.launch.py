@@ -7,15 +7,14 @@ Pipeline (no duplicate publishers, real Qwen language encoder):
                         v
               image_perception (image only) -> /vla/perceived_entities
               temporal_tracker -> /vla/tracked_entities
-              visual_encoder -> /vla/visual_features
               task_entity_tensor -> /vla/task_features
               Qwen CUDA encoder -> /vla/language_embedding
                         |
                         v
-                        vla_policy (PyTorch, CUDA) -> /vla/policy_trajectory
+                        vla_policy (PyTorch, CUDA) -> /vla/policy_point
                         |
                         v
-              safety_gate -> /vla/selected_trajectory
+              safety_gate -> /vla/selected_point
                         |
                         v
               trajectory_controller -> /decision/output
@@ -46,31 +45,6 @@ def generate_launch_description():
         "config",
         "ue_bridge.yaml",
     )
-    visual_parameters = [{
-        "entities_topic": "/vla/tracked_entities",
-        "device": ParameterValue(
-            LaunchConfiguration("visual_device"), value_type=str
-        ),
-        "use_sim_time": ParameterValue(
-            LaunchConfiguration("use_sim_time"), value_type=bool
-        ),
-    }]
-    # Staggered CUDA startup: Qwen is the largest model on the 8 GB
-    # unified-memory pool; the other CUDA models load 20 s later so the
-    # concurrent allocation peak does not OOM (NvMapMemAlloc error 12).
-    visual_encoder_node = TimerAction(
-        period=20.0,
-        actions=[
-            Node(
-                package="asv_vla",
-                executable="visual_encoder",
-                name="visual_encoder",
-                output="screen",
-                parameters=visual_parameters,
-            )
-        ],
-    )
-
     language_qwen_node = Node(
         package="asv_vla",
         executable="language_qwen",
@@ -141,6 +115,18 @@ def generate_launch_description():
                 "task_text", default_value="跟随红色目标船，保持3米距离"
             ),
             DeclareLaunchArgument("visual_device", default_value="cuda"),
+            DeclareLaunchArgument(
+                "image_preprocess_enabled", default_value="false"
+            ),
+            DeclareLaunchArgument(
+                "image_preprocess_gamma", default_value="0.92"
+            ),
+            DeclareLaunchArgument(
+                "image_preprocess_brightness", default_value="1.04"
+            ),
+            DeclareLaunchArgument(
+                "image_preprocess_contrast", default_value="1.03"
+            ),
             # ── TCP bridge (kinematic outbound) ──
             Node(
                 package="asv_ue_bridge",
@@ -184,7 +170,26 @@ def generate_launch_description():
                             "model_path": LaunchConfiguration(
                                 "perception_model_path"
                             ),
-                            "device": "cuda",
+                            "device": ParameterValue(
+                                LaunchConfiguration("visual_device"),
+                                value_type=str,
+                            ),
+                            "image_preprocess_enabled": ParameterValue(
+                                LaunchConfiguration("image_preprocess_enabled"),
+                                value_type=bool,
+                            ),
+                            "image_preprocess_gamma": ParameterValue(
+                                LaunchConfiguration("image_preprocess_gamma"),
+                                value_type=float,
+                            ),
+                            "image_preprocess_brightness": ParameterValue(
+                                LaunchConfiguration("image_preprocess_brightness"),
+                                value_type=float,
+                            ),
+                            "image_preprocess_contrast": ParameterValue(
+                                LaunchConfiguration("image_preprocess_contrast"),
+                                value_type=float,
+                            ),
                             "use_sim_time": ParameterValue(
                                 LaunchConfiguration("use_sim_time"),
                                 value_type=bool,
@@ -199,6 +204,8 @@ def generate_launch_description():
                 name="temporal_entity_tracker",
                 output="screen",
                 parameters=[{
+                    "dropout_hold_frames": 30,
+                    "dropout_hold_sec": 3.0,
                     "use_sim_time": ParameterValue(
                         LaunchConfiguration("use_sim_time"), value_type=bool
                     ),
@@ -222,8 +229,6 @@ def generate_launch_description():
                 }],
             ),
             language_qwen_node,
-            # ── Visual encoder (MobileNet, CUDA) ──
-            visual_encoder_node,
             # ── Task entity tensor ──
             Node(
                 package="asv_vla",
@@ -255,6 +260,12 @@ def generate_launch_description():
                                 "device": LaunchConfiguration(
                                     "policy_device"
                                 ),
+                                "language_release_after_encode": ParameterValue(
+                                    LaunchConfiguration(
+                                        "language_release_after_encode"
+                                    ),
+                                    value_type=bool,
+                                ),
                             },
                             {
                                 "use_sim_time": ParameterValue(
@@ -266,7 +277,7 @@ def generate_launch_description():
                     )
                 ],
             ),
-            # ── Safety gate (sole publisher of /vla/selected_trajectory) ──
+            # ── Safety gate (sole publisher of /vla/selected_point) ──
             Node(
                 package="asv_vla",
                 executable="safety_gate",
@@ -280,7 +291,7 @@ def generate_launch_description():
                     ),
                 }],
             ),
-            # ── Trajectory controller (prefix execution -> desired_x/y) ──
+            # ── Point controller (one-step execution -> desired_x/y) ──
             Node(
                 package="asv_vla",
                 executable="trajectory_controller",

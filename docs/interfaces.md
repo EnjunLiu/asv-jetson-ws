@@ -9,8 +9,7 @@ UE5 bridge 发布：
 
 - `/ue/camera_frame`：SceneCapture 的 JPEG、`run_id`、`scene_seed`、`frame_index`、
   `stamp_us`。
-- `/ue/asv_state`：实时自船状态。策略目前使用 `surge_velocity` 和 `yaw_rate`，不使用
-  UE 目标真值。
+- `/ue/asv_state`：实时自船状态，仅供录制和离线审计；决策头不接收 ego。
 - `/ue/entities`：原始实体标签和速度，仅供 `record_episode` 及离线监督；不能被在线
   VLA 节点订阅。
 
@@ -41,39 +40,51 @@ stop
 连续时会清空历史并 fail-closed。任何单帧都不会声称直接观察到速度。
 
 `task_entity_tensor` 只接受 `image_perception` 或 `temporal_tracker` 来源；传入其他来源
-会发布无效消息。它输出固定形状的 `TaskFeatures`，供 visual encoder 和 policy 使用。
+会发布无效消息。它输出固定形状的 `TaskFeatures`，作为决策头的结构化实体输入。
 
 ## 任务级多模态策略
 
 ```text
-/ue/camera_frame + /task/text + /ue/asv_state
-       |             |              |
-       v             v              v
-image perception  Qwen CUDA       ego normalization
-       |             |              |
-temporal tracker -> visual/task tensors
-                       |
-                       v
-             Torch CUDA policy checkpoint
-                       |
-                       v
-             SelectedTrajectory [H=20, 2]
+/ue/camera_frame + /task/text
+       |             |
+       v             v
+感知头：图像 + Qwen CUDA 任务嵌入
+       |
+temporal tracker -> structured TaskFeatures（相对位置/颜色/相对速度）
+       |
+       v
+决策头：Qwen 任务嵌入 + TaskFeatures
+       |
+       v
+DecisionPoint [desired_x, desired_y]
 ```
 
 语言向量为 256-D、有限、L2 归一化的真实 Qwen3-Embedding-0.6B 输出。在线默认权重
 常驻 CUDA 并支持新的 `/task/text`；若显式设置 `language_release_after_encode=true`，
 只释放 Qwen 权重而保留已编码向量，不能改用 `.npy` 或 CPU stub。
 
-策略输入的实体、视觉、语言、ego 和身份必须全部匹配同一
-`run_id/scene_seed/frame_index`。策略输出为一条 20 点二维位移序列
-`[dx0,dy0,...,dx19,dy19]`（米，`base_link`，`dt=0.2 s`）。缺失 CUDA 模型、身份或
-有效输入时，输出固定零轨迹并 `valid=false/safe_stop=true`。
+决策头输入是以下七项：
+
+- `language`：任务指令的 256-D Qwen embedding；
+- `entity_geometry`：感知头/跨帧 tracker 输出的固定 `16 x 16` 结构化几何，包含
+  颜色槽位、相对位置、相对速度等信息；
+- `previous_action`：上一控制帧实际通过 safety gate 的 `[desired_x, desired_y]`；
+- `language_valid`、`entity_geometry_mask`、`previous_action_valid`、`policy_input_valid`。
+
+图像由感知头消费，ego 不进入决策头。`TaskFeatures` 和逐帧输出必须匹配同一
+`run_id/scene_seed/frame_index`；语言 embedding 是任务级消息，与 TaskFeatures 通过
+instruction 文本/可用的 `instruction_id` 匹配，不把 Qwen 编码时刻当成相机帧。混帧或
+任务不匹配时直接 fail-closed。策略输出一个二维点（米，`base_link`，`dt=0.2 s`），而
+不是轨迹序列。首帧、Run/scene 切换、
+帧不连续、上一动作无效或 gate 拒绝时，`previous_action` 为零且
+`previous_action_valid=false`。缺失 CUDA 模型、身份或有效输入时，输出零位移并
+`valid=false/safe_stop=true`。
 
 ## 执行边界
 
 ```text
-/vla/policy_trajectory
-        -> /vla/selected_trajectory (safety gate 唯一发布者)
+/vla/policy_point
+        -> /vla/selected_point (safety gate 唯一发布者)
         -> /decision/output (desired_x, desired_y)
         -> /ue/kinematic_setpoint
         -> UE5 C++ executor:8081
@@ -89,11 +100,15 @@ UE `Entities` 与离线 `ExpertTrajectory` 只用于收集图像监督和训练�
 
 ```text
 JPEG + Entities + Run metadata -> PC dataset -> frozen model checkpoint
-JPEG + task + ego             -> Jetson online inference -> desired_x/y
+JPEG + task                   -> Jetson online inference -> desired_x/y
 ```
 
-专家轨迹不能发布到 `/vla/selected_trajectory`，不能直接连接执行器。速度标签可用于
-训练/验证 tracker，但在线速度必须来自连续感知帧。
+每个 `(Run, instruction, frame)` 都是一个独立的单步专家样本，专家字段只有当前帧的
+`desired_x/desired_y`、STOP/valid 和身份元数据；它不是一条要由策略回归的离线轨迹。
+训练 cache 另外按同一 Run、同一 instruction、相邻前帧保存
+`previous_expert_action`，用于动作平滑损失。专家 action 不能发布到
+`/vla/selected_point`，不能直接连接执行器。速度标签可用于训练/验证 tracker，但在线
+速度必须来自连续感知帧。
 
 ## 失败闭环
 

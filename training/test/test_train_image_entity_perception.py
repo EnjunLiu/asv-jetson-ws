@@ -2,18 +2,51 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import hashlib
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from training.train_image_entity_perception import (
     _acceptance_gate,
+    _augment_image,
+    _load_language_embeddings,
     _metrics,
     _read_samples,
 )
+from asv_vla.image_entity_perception import LANGUAGE_EMBEDDING_DIM
 
 
 ENTITY_IDS = ("target_red", "target_blue", "target_left", "target_right")
+
+
+def test_augment_image_preserves_pixel_geometry(monkeypatch) -> None:
+    image = Image.fromarray(
+        np.asarray(
+            [
+                [[255, 0, 0], [0, 255, 0], [0, 0, 255]],
+                [[10, 20, 30], [40, 50, 60], [70, 80, 90]],
+            ],
+            dtype=np.uint8,
+        ),
+        mode="RGB",
+    )
+    calls: list[tuple[float, float]] = []
+
+    def fixed_brightness(lower: float, upper: float) -> float:
+        calls.append((lower, upper))
+        return 1.0
+
+    monkeypatch.setattr(
+        "training.train_image_entity_perception.random.uniform",
+        fixed_brightness,
+    )
+
+    augmented = _augment_image(image)
+
+    assert calls == [(0.88, 1.12)]
+    np.testing.assert_array_equal(np.asarray(augmented), np.asarray(image))
 
 
 def _write_frame(
@@ -62,6 +95,7 @@ def test_read_samples_skips_excessive_surge_velocity(tmp_path: Path) -> None:
             max_primary_distance_m=5.0,
             max_abs_yaw_rad=0.1,
             max_abs_surge_velocity_mps=1.0,
+            legacy_image_only=True,
         )
     )
 
@@ -69,6 +103,51 @@ def test_read_samples_skips_excessive_surge_velocity(tmp_path: Path) -> None:
     assert skipped_far == 0
     assert skipped_yaw == 0
     assert skipped_speed == 1
+
+
+def test_read_samples_requires_explicit_language_or_legacy_mode(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="LANGUAGE_EMBEDDINGS_REQUIRED"):
+        _read_samples(
+            tmp_path,
+            max_primary_distance_m=5.0,
+            max_abs_yaw_rad=0.1,
+            max_abs_surge_velocity_mps=1.0,
+        )
+
+
+def test_language_manifest_loads_id_table_and_checks_identity(tmp_path: Path) -> None:
+    embeddings_path = tmp_path / "language.npy"
+    values = np.zeros((2, LANGUAGE_EMBEDDING_DIM), dtype=np.float32)
+    values[:, 0] = (1.0, -1.0)
+    np.save(embeddings_path, values)
+    manifest_path = tmp_path / "language_manifest.json"
+    weights_hash = "b" * 64
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "task_embedding_manifest_v1",
+                "model_id": "Qwen3-Embedding-0.6B",
+                "weights_sha256": weights_hash,
+                "embeddings_sha256": hashlib.sha256(
+                    embeddings_path.read_bytes()
+                ).hexdigest(),
+                "instruction_ids": ["follow_red", "follow_blue"],
+                "instruction_texts": ["follow red", "follow blue"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    table = _load_language_embeddings(embeddings_path, manifest_path)
+
+    assert table["model_id"] == "Qwen3-Embedding-0.6B"
+    assert table["by_id"]["follow_red"].shape == (LANGUAGE_EMBEDDING_DIM,)
+    with pytest.raises(RuntimeError, match="LANGUAGE_MODEL_ID_MISMATCH"):
+        _load_language_embeddings(
+            embeddings_path,
+            manifest_path,
+            expected_model_id="different-model",
+        )
 
 
 def test_metrics_excludes_geometry_for_camera_invisible_slots() -> None:

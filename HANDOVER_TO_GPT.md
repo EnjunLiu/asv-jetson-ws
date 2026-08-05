@@ -1,128 +1,140 @@
-# 交接文档（2026-08-02 晚，给新任务窗口）
+# 交接文档（2026-08-05，单步闭环重构）
 
-> 本文档是**当前唯一**的交接入口。目标：UE5 S2 近距离正弦跟踪——相机图像+任务指令
-> 进 Jetson，在线推断目标并输出二维期望位移，UE5 执行。**红色完整周期已验证，
-> 蓝色跟随是进行中的主线**（数据/感知/缓存已就绪，策略重训中途）。
+> 本文档保留上一轮三场景实验的历史证据；当前实现契约以本节和
+> `ARCHITECTURE.md`、`docs/interfaces.md` 为准。用户已拍板将 VLA 拆成感知头和
+> 决策头，并直接在线闭环输出单个期望位移点。
 
-## 1. 最终在线边界（已固化）
+## 当前活动契约
 
-```
-UE5 SceneCapture JPEG + /task/text + /ue/asv_state
-  -> image_entity_perception（只读 JPEG，CUDA；不读 /ue/entities）
-  -> temporal_entity_tracker（跨帧速度，首帧 velocity_valid=false）
-  -> MobileNet CUDA + TaskFeatures + Qwen3-Embedding CUDA
-  -> policy（Torch CUDA）
-  -> safety_gate -> trajectory_controller -> decision_setpoint_adapter
-  -> /ue/kinematic_setpoint -> UE5 C++ executor :8081（SCENE_EXEC_APPLY）
+```text
+图像 + 任务 embedding
+  -> 感知头 -> 结构化实体（颜色/相对位置/相对速度）
+  -> 决策头(language + entity_geometry + previous_action + validity masks)
+  -> 一个 [desired_x, desired_y]
+  -> safety gate -> point controller -> UE5
 ```
 
-- `/ue/entities` 仅录制/离线监督，绝不出现在在线链。
-- 单帧图像不产生速度；速度只由 tracker 跨帧推断。
-- 上层只输出 `desired_x/desired_y`，不输出推力。
-- 专家轨迹只存在于采集的离线标签路径。
+- 感知头接收图像和任务 embedding；相对速度由跨帧 tracker 计算，不能从单帧图像伪造。
+- 决策头不接收 global visual、entity crop、ego 或专家/真值实体；它不输出轨迹序列。
+- 训练在 Windows PC PyTorch/CUDA 上完成。每个 `(Run, instruction, frame)` 是一个单步
+  专家点；相邻前帧的 `previous_expert_action` 只在同一 Run、同一 instruction、前帧
+  有效且非 STOP 时有效。
+- 在线 `previous_action` 只来自上一帧实际通过 safety gate 的动作。首帧、任务/Run 切换、
+  帧不连续、gate 拒绝或延迟结果无法对应时，清零并置 `previous_action_valid=false`。
+- Jetson 只做部署、推理和闭环验收，禁止运行 `training.train` 或任何训练脚本。
 
-## 2. 关键路径与文件
+## 1. 本会话完成的事（诚实清单）
 
-- 仓库：`C:\Users\LIU\Documents\jetson_ws\asv_vla`（旧名 day11_kinematic_work 为软链接）
-- ROS 包（仅 4 个）：`asv_jetson_interfaces` / `asv_ue_bridge` / `asv_vla` / `asv_bringup`
-- 在线入口：`src/asv_bringup/launch/vla_closed_loop.launch.py`（内置 CUDA 错峰启动）
-- 采集：`src/asv_bringup/launch/collect.launch.py` + `tools/ue5/collect.ps1`
-- UE5 自动化：`tools/ue5/Source/EDGE/SceneAutomationSubsystem.{h,cpp}`（S2/L6/L7/YawFixWholeRun/8081 执行器/SineDelay）
-- UE5 项目：`D:\Unreal Projects\VLA\`（模块 EDGE；install 脚本 `tools/ue5/install_ue_automation.ps1`）
-- PC 数据（不提交 Git）：`C:\Users\LIU\Documents\jetson_ws\pc_datasets\`
-- 感知模型：`pc_datasets/models/image_entity_color_calibrated_v*.npz`（v3 最新，红+蓝视角训练）
-- 策略：`pc_datasets/checkpoints/`（sine_formation_v2 已验证部署；near_rgb_v3 训练中）
-- Jetson：`jetson@192.168.137.100`（SSH 密钥 `/tmp/asv_key`），`~/jetson_asv_ws/`
-- 文档：README.md / ARCHITECTURE.md / HISTORY.md（审计）/ docs/demo_runbook.md
+### ✅ 已完成并验证
 
-## 3. 环境与依赖
+1. **在线 guard 改造为安全兜底**（`visual_standoff_guard.py`）：
+   - 跟随指令 + 目标可见 → **策略第一步原样执行**（POLICY_DRIVEN）；
+   - 策略第一步背离目标 >90° 或冻结而站距误差大 → 确定性径向步覆盖（STANDOFF_BACKSTOP）；
+   - 目标缺失 → fail-closed（VISUAL_TARGET_MISSING，不变）。
+   - 新增：**死区保持**（|站距误差|≤0.15m 时第一步归零——验证场的保持语义）。
+2. **4m 数据扩展**（无需重新采集）：
+   - `instructions.jsonl`：130 条（3m/4m/10m × 红/蓝/左/右 + stop），4m 族镜像 3m 族模板；
+   - `expert_trajectory.py`：`distances` 加 `"4m": 4.0`；`REQUIRED_LABELS` 加 4m；
+   - 24 runs 监督重生成（`tools/rebuild_supervision_v16.py` → `day10_supervised_v16/`，13000 samples/run）；
+   - 特征缓存 v6：`features_near_rgb_v6`（24 runs / 307080 samples / 16-4-4，感知=calibrated_v5）；
+   - 新注册表/拆分：`combined_v6_registry_v1.jsonl` + `combined_v6_split_v1.json`。
+3. **统一策略 v6 训练**：`checkpoints/near_rgb_v6/`（seeds 29/23/42，git-sha near-rgb-v6-24）。
+   - 红/左/右/10m/红4m 全部优秀（red 4m ADE 0.46-0.72；red 3m 0.61-0.71）；
+   - **验证门未过**（提升 19-27% vs 要求 30%）：瓶颈是**蓝色聚合**（ADE 2.0-2.6 vs 均值 2.2）。
+     根因：蓝感知几何噪声（v5 npz 蓝 RMSE 2.44m，红 0.19m）+ bluew2 验证 run 中 R4 的
+     蓝注意力不稳定（R3 蓝 ADE 0.13m，R4 3.4m——同模型同场景族，run 间不稳定）。
+   - 结论：**这是项目已知的蓝感知质量边界**（你的 v3/v4/v5 尝试均未过门），非本次回归。
+4. **感知选择**：`tools/perception_blue_check.py` 离线评估 v3/v5/v6：
+   - **v5 胜出**：红 98.8%/0.19m + 蓝 97.3%/2.44m（v3 蓝仅 41.5%，v6 红几何退化 0.67m）。
+   - v5 npz 已部署 Jetson。缓存 v6 与在线同用 v5（一致性）。
+5. **在线链路修复**（v5 栈卡死根因，全部有测试）：
+   - `entity_wait_sec` 0.25→0.5（visual_encoder 等待窗口，v5 感知 110ms 延迟下 0.25 会饿死大部分帧）；
+   - 执行步长上限 `MAX_DESIRED_M` 3.0→**0.12m**（验证场运动学包络 ≤0.15；策略的 0.3m 大步 + ~1s 延迟 → 过冲 2m → 目标冲出感知校准面积上限 → 检测死）；
+   - 策略 sync 缓存**有界化**：新增 1s 过期定时器（`expire()` 原本从未被调用，缓存无限增长）+ `on_ego` 只遍历 matchable keys（原遍历全缓存 → executor 饱和 → DDS 背压 → ENT 流滞后 25s）；
+   - **推理节流** 5Hz（`MIN_INFERENCE_INTERVAL_SEC=0.2`；三条输入流各触发推理 → 10Hz CUDA 推理占满单线程 executor）。
+6. **工具**（仓库内）：`tools/plot_track.py`（复刻 Desktop/track_*.png 绘图）、
+   `tools/run_scenario.sh`（一键三场景：Jetson launch + UE5 窗口 + 验收监控 + 证据收集）、
+   `tools/policy_contrast_check.py`（指令对比离线证据）、`tools/rebuild_supervision_v16.py`、
+   `tools/perception_blue_check.py`。
+7. 本地测试：asv_vla 192 passed + training 70 passed（2 个预存环境失败：Win symlink 权限、
+   策略契约配置漂移——与本会话无关）。陈旧测试 `test_image_entity_perception.py`（calibrated_red_geometry
+   改名）已修复。
 
-- **PC 训练**：`D:\Softwares\Python\Python313\python.exe`（有 torch+CUDA、jsonschema、sentence-transformers）；WSL python3 无 torch（跑脚本用 D python，脚本内 sys.path.insert 两个路径）
-- **Jetson**：ROS 2 Humble；`colcon build --merge-install --symlink-install --packages-select asv_jetson_interfaces asv_ue_bridge asv_vla asv_bringup`（改 src 必须重建）
-- **UE5**：5.6，`EDGEEditor` 编译入口 install_ue_automation.ps1；改 C++ 后必须重跑
-- 网络：UE5(Windows 192.168.137.1) ↔ Jetson(192.168.137.100) TCP：8080(蓝图上报) + 8081(C++ 执行器，bridge 的 execution_address/execution_port 参数)
+### ❌ 未完成（在线闭环仍断）
 
-## 4. 已验证状态（诚实清单）
+**红3m 在线闭环（v6 模型 + v5 感知 + 策略主导）每次 ~2-5 秒后断链**，症状与
+**你自己 17:35-17:55 的 v5 蓝场运行完全相同**（`/tmp/run_blue_rgb.log` valid=1 仅 7 次，
+`run_blue_probe3.log` 8 次；v1 验证场 `run_red_track.log` 1258 次）：
 
-| 项 | 状态 | 证据 |
-|---|---|---|
-| 红色 S2 完整周期跟随 | ✅ 通过 | 185s/51 次 SCENE_EXEC_APPLY，ASV 88.2m，standoff 均值 3.15m（2.4-3.3m），横向摆动被跟随；轨迹图 Desktop/track_*.png |
-| 红色感知 | ✅ | v1 校准 97.7-99.4%、RMSE 0.19-0.47m |
-| 蓝色指令 fail-closed | ✅ | 指令解析 ✓，感知无蓝 → VISUAL_TARGET_MISSING → hold |
-| 蓝色跟随 | ⏳ **进行中** | 数据已采（12 runs 跟蓝视角）、感知 v3 已训（蓝 99.7%）、v3 缓存已建（24 runs，蓝色实体 valid 100%）、**策略重训中（seed17 弱 → 换 seed29，train.py 校验已放宽）** |
-| 常驻 Qwen | ❌ 不可行 | 8GB 统一内存 OOM；**release_after_encode:=true 为默认**（错峰 20s + release） |
-| 本地测试 | ✅ | 234 passed, 6 skipped |
+- 诊断链（逐节点 trace 已确认）：感知持续工作（4 实体/110ms）→ 但红船**可见性在 ~5s 后消失**
+  （TRACK_TRACE `visible_source=0`）→ tracker/visual 空转 → 策略无有效输出 → E-STOP。
+- 几何：ASV 从 4.5m 逼近红船到 ~2.0m 后停下——**红船 RGB 校准面积上限（COLOR_AREA_MAX=0.0172）
+  在 ~2.3m 处杀死检测**（验证场最低 2.4m 存活）。
+- 根因：管道端到端延迟 ~1s（感知 110ms + 等待窗口 + 编码 + 同步）与检测范围
+  （2.4-5m）的物理矛盾：0.12m×5Hz=0.6m/s 逼近 × ~1-2s 延迟 ≈ 1-2m 过冲 → 冲过 2.4m 死区。
+- 修复尝试（按序）：步长 0.12 / 死区 0.15 / 节流 5Hz / 缓存有界 / **死区 0.45m**。
+  效果：吞吐 0→5Hz（节流正常）、ENT 滞后消除、缓存有界（13 keys）、
+  **有效跟踪从 1-5s 延长到 ~15s**（run 13：63 次有效 setpoint 连续 15 秒）。
+  仍断：接近阶段红船 RGB 检测在真距 ~2.3m 处死（近距几何估计偏低 → 死区 0.45 判据
+  被偏置骗过 → ASV 过冲到检测死区）。治本在感知近距标定（补 2-3m 样本重训）。
+- **相机流随机死亡**（~50% run）：UE5 相机发送端或 bridge 入站 ~5-10s 断流，全链路静默
+  （runs 4/8/9 模式）；另一些 run 相机正常但无效（runs 1/2/3/5/6/7 模式）。非代码相关。
 
-## 5. 命令速查（红色在线验证）
+### 下一步建议（按优先级）
+
+1. **继续闭环调参**（最快路径，PC 端无需动）：
+   - 死区 0.15→0.4m（验证场包络 2.4-3.3m ≈ ±0.45m），让保持区避开 ~2.3m 检测死区；
+   - 或步长改比例式（|误差|×k 而非常数上限），逼近时减速；
+   - 或降低延迟：entity_wait_sec 0.5→0.35、检查 task_entity_tensor 滞后。
+2. **感知近距标定**：补 2-3m 近距离红/蓝样本重训感知（治本——检测死区右移）。
+3. **UE5 相机断流**：抓 UE5 侧相机发送器日志（ObjectDeliverer）定位随机断流。
+4. 三场验证通过后：`tools/plot_track.py` 出图（脚本已就绪，日志格式已验证）。
+
+## 2. 关键命令速查
 
 ```bash
-# Jetson（先）
-cd ~/jetson_asv_ws && source /opt/ros/humble/setup.bash && source ~/microros_ws/install/setup.bash && source install/setup.bash
-ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy_sine_near_image_color_seed42.pt \
-  perception_model_path:=/home/jetson/jetson_asv_ws/models/image_entity_color_calibrated_v1.npz \
-  language_device:=cuda language_release_after_encode:=true \
-  policy_device:=cuda visual_device:=cuda \
-  task_text:="跟随红色目标船，保持3米距离" \
-  execution_address:=192.168.137.1 execution_port:=8081
+# 三场景一键运行（WSL，每场 ~7 分钟）
+MODEL=policy_near_rgb_v6_seed42.pt bash tools/run_scenario.sh TRACK-RED-3M "跟随红色目标船，保持3米距离" 3 /tmp/scene_red3m
+MODEL=policy_near_rgb_v6_seed42.pt bash tools/run_scenario.sh TRACK-BLUE-3M "跟随蓝色目标船，保持3米距离" 3 /tmp/scene_blue3m
+MODEL=policy_near_rgb_v6_seed42.pt bash tools/run_scenario.sh TRACK-RED-4M "跟随红色目标船，保持4米距离" 4 /tmp/scene_red4m
+# 证据：/tmp/scene_*/vla_*.log + jetson_*.log + topic_hz.log
 
-# Windows UE5（后启动；窗口模式必须）
-& "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" \
-  "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto \
-  -Slot=TRACK-RED -Layout=L7 -Motion=S2 -Seed=230908 -MaxRuntimeSeconds=185 \
-  -SceneExecPort=8081 -YawFixWholeRun -SineAmplitude=200 -SineDelay=40 \
-  -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+# 绘图（对每场日志）
+"/mnt/d/Softwares/Python/Python313/python.exe" tools/plot_track.py \
+  --log /tmp/scene_red3m/vla_TRACK-RED-3M.log --standoff 3 \
+  --output-prefix "C:\Users\LIU\Desktop\track_world_red3m"
+
+# 指令对比离线证据
+"/mnt/d/Softwares/Python/Python313/python.exe" tools/policy_contrast_check.py \
+  --checkpoint pc_datasets/checkpoints/near_rgb_v6/full_seed42/best.pt
+
+# 感知蓝检查
+"/mnt/d/Softwares/Python/Python313/python.exe" tools/perception_blue_check.py
 ```
 
-- `-SineDelay=40`：**必须**（UE5 启动慢 ~35s，否则目标跑出 5m 感知校准 → 死循环）
-- 验收标记：`SCENE_EXEC_APPLY` 连续、`SCENE_UE_COMPLETE`、`PERCEPTION_TRACE`、`POLICY_TRACE ... guard=STANDOFF_ADJUSTED`
+## 3. 部署状态
 
-## 6. 蓝色跟随的进行中状态（新窗口主线）
+- Jetson `~/jetson_asv_ws/`：已同步全部在线改动 + colcon 重建（asv_vla/asv_bringup/asv_ue_bridge/asv_jetson_interfaces 4 包）；
+- 模型：`policy_near_rgb_v6_seed42.pt`（seed42 最佳：ADE 0.93，red4m 0.46）+ `image_entity_color_calibrated_v5.npz`（已部署）；
+- launch 默认参数未改（运行时代入）；`models/manifest.yaml` 未更新（等门/在线验收后更新）。
 
-已完成：
-1. 蓝色采集 12 runs（`collect.ps1 -TargetAttribute color:blue`，expert 跟蓝 → 蓝船居中）
-   - 坑：remote_collect.sh 参数上限 6→7、slot_id 正则加 `^(BLUE_)?`、S2 motion 检查不适用已从代码排除（仅 S1）
-   - 坑：registry 重复（R4 重试 + latest 软链接）→ 手动清理 episode 目录/registry 行
-2. 感知 v3：`models/image_entity_color_calibrated_v3.npz`（红+蓝视角 24 runs 训练；蓝 99.7%/RMSE 1.26m、红 97.7%/0.19m）
-   - **关键修复**：`_extract_torch_image_features` resize 改为复用 `_resized_rgb`（PIL）——torch interpolate 与 PIL 数值不等价导致特征漂移（曾使蓝 logit=-6.59）
-   - 蓝色槽位**不用 RGB 校准**（水面干扰 RMSE 22.9m）→ 纯 ridge；红色保留 RGB 校准
-3. 缓存：`pc_datasets/features_near_rgb_v3/`（24 runs，16/4/4 分层 split，蓝色实体 valid=100%）
-4. 训练配置：`training/config/train_near_rgb_v3.yaml`（seeds [29,23,42]；train.py 已放宽 seeds 校验）
-5. **待完成**：策略重训（`pc_datasets/checkpoints/near_rgb_v3`）→ 部署到 Jetson → 在线蓝/红验证 + 完整周期
+## 4. 关键文件（本会话改动）
 
-重训命令（PC，D python）：
-```bash
-cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
-D:/Softwares/Python/Python313/python.exe -c "
-import sys, os
-sys.path.insert(0, r'C:\Users\LIU\Documents\jetson_ws\asv_vla\src\asv_vla')
-sys.path.insert(0, r'C:\Users\LIU\Documents\jetson_ws\asv_vla')
-os.chdir(r'C:\Users\LIU\Documents\jetson_ws\asv_vla')
-from training.train import main
-sys.argv = ['train','train','--config',r'training\config\train_near_rgb_v3.yaml',
- '--model-config',r'training\config\model_small_v3.yaml',
- '--features',r'C:\Users\LIU\Documents\jetson_ws\pc_datasets\features_near_rgb_v3',
- '--split',r'C:\Users\LIU\Documents\jetson_ws\pc_datasets\registry\combined_split_v1.json',
- '--instructions',r'dataset\language\instructions.jsonl',
- '--output-root',r'C:\Users\LIU\Documents\jetson_ws\pc_datasets\checkpoints\near_rgb_v3',
- '--git-sha','near-rgb-v3-24','--device','cuda']
-sys.exit(main())"
-```
+- `src/asv_vla/asv_vla/visual_standoff_guard.py`（策略优先 + 安全 backstop + 死区保持）
+- `src/asv_vla/asv_vla/vla_policy_node.py`（单点输出、previous action、gate pending、身份 fail-closed）
+- `src/asv_vla/asv_vla/policy_model.py`（language + structured entity + previous action 决策头）
+- `src/asv_bringup/launch/vla_closed_loop.launch.py`（visual/policy/language CUDA 参数）
+- `src/asv_vla/asv_vla/expert_trajectory.py`、`supervised_dataset.py`（每帧单步专家点）
+- `src/asv_vla/asv_vla/generate_language_interventions.py`（4m 族 + 3m↔4m 对比对）、`language_intervention_dataset.py`（距离对比对校验）
+- `evaluate_expert_labels.py`（13 标签 + canonical 实体 6.5m）、`training/build_feature_caches.py`（130）、`training/dataset.py`（130 + swap 距离正则）
+- 诊断 trace（每 50-100 帧限流，保留）：PERCEPTION_PERF_TRACE / TRACK_TRACE / ENT_IN_TRACE /
+  POLICY_TRACE；旧的 `VIS_IN_TRACE`/`EGO_TRACE` 不再是决策头输入。
+- 工具：`tools/{plot_track,run_scenario,policy_contrast_check,perception_blue_check,rebuild_supervision_v16}.py/.sh`
 
-## 7. 已知坑（务必先读）
+## 5. 已知坑（新增）
 
-1. **UE5 慢启动**：窗口模式启动 ~35s，无 SineDelay 目标跑出校准范围。
-2. **Jetson 残留进程**：每次运行前 `ps aux | grep -E "asv_vla|ue_object" | grep -v grep | awk '{print $2}' | xargs -r kill -9`，残留占显存会 OOM。
-3. **Qwen 常驻不可行**：必须 release_after_encode=true。
-4. **C++ 执行器**：headless（-RenderOffscreen）下 setpoint 不执行；**窗口模式（-windowed）必须**。
-5. **坐标**：UE5 world 是 cm；日志 SCENE_ASV_POS/TARGET_POS 是 cm，绘图要 /100。
-6. **registry 重复**：latest 软链接 + 失败重试会产生 duplicate；清理 episode 目录 + registry 行（json 解析删除 episode_valid=false 行）。
-7. **感知特征**：训练/推理必须同一 resize 路径（PIL）；改感知代码后需重训+重建缓存+重训策略（链式）。
-8. **L6 远距 registry 与近距(L7)区分**：`sine_registry` 是 L6 远距（25m，旧）；近距用 `near_red_registry`/`blue_registry`/`combined_registry`。
-
-## 8. 下一步建议（新窗口）
-
-1. 完成策略重训（near_rgb_v3，验证门三 seed 全过）
-2. 部署：v3 npz + 新 pt → Jetson models/（更新 launch 默认参数）
-3. 在线验证：红/蓝各一轮完整周期（185s，SineDelay=40），对照轨迹图方法
-4. 录制演示视频（窗口模式 + OBS）
+1. **v5 栈在线断链**（见上）——你的旧 run 日志就是证据（`/tmp/run_blue_rgb.log` 7 次 valid）。
+2. **WSL 传 PYTHONPATH 给 Windows python 无效**——训练/缓存一律用 `python.exe -c "sys.path.insert..."` 模式。
+3. **Jetson 残留进程**：kill 模式要含 `jetson_asv_ws/install|ros2 launch`（`asv_vla` 匹配不到 python3 进程）。
+4. 绘图日志坐标 cm（/100）；`SCENE_EXEC_APPLY` 日志限流（1st + 每 25 次），不是真实次数。
+5. 三场起点一致性：同一 `-Layout=L7 -Motion=S2 -Seed=230908`（-Slot 只是标签）。

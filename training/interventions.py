@@ -1,4 +1,4 @@
-"""Frozen-policy language, visual, and entity intervention evaluation."""
+"""Frozen-policy language and structured-entity intervention evaluation."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ from training.dataset import (
     load_split_assignments,
     policy_inputs_from_batch,
 )
-from training.metrics import compute_policy_metrics
-from training.model import SmallPolicyConfig, SmallTrajectoryPolicy
+from training.metrics import compute_action_metrics
+from training.model import SmallActionPolicy, SmallPolicyConfig
 from training.train import CHECKPOINT_SCHEMA_VERSION
 
 
@@ -36,15 +36,11 @@ ABLATION_VARIANTS = frozenset(
     {
         "full",
         "no_language",
-        "no_global_visual",
-        "no_entity_visual",
-        "no_all_visual",
         "no_entity_geometry",
-        "misaligned_entity_visual",
     }
 )
 FAIL_CLOSED_FAULTS = frozenset(
-    {"missing_language", "missing_image", "entity_alignment_error"}
+    {"missing_language", "missing_entity_geometry", "entity_alignment_error"}
 )
 
 
@@ -152,23 +148,6 @@ def _validate_config(config: Mapping[str, Any]) -> None:
                 raise ValueError(f"{key} must be in [0, 1]")
 
 
-def _active_entity_permutation(
-    values: Tensor,
-    visual_mask: Tensor,
-    geometry_mask: Tensor,
-) -> Tensor:
-    """Rotate active visual tokens while leaving their geometry slots fixed."""
-
-    result = values.clone()
-    active = visual_mask.to(dtype=torch.bool) & geometry_mask.to(dtype=torch.bool)
-    for batch_index in range(int(values.shape[0])):
-        indices = torch.nonzero(active[batch_index], as_tuple=False).flatten()
-        if int(indices.numel()) > 1:
-            source = torch.roll(indices, shifts=1)
-            result[batch_index, indices] = values[batch_index, source]
-    return result
-
-
 def apply_intervention(
     inputs: Mapping[str, Tensor],
     intervention: str,
@@ -180,31 +159,14 @@ def apply_intervention(
         return output
     if intervention == "no_language":
         output["language"].zero_()
-    elif intervention == "no_global_visual":
-        output["global_visual"].zero_()
-    elif intervention == "no_entity_visual":
-        output["entity_visual"].zero_()
-    elif intervention == "no_all_visual":
-        output["global_visual"].zero_()
-        output["entity_visual"].zero_()
     elif intervention == "no_entity_geometry":
         output["entity_geometry"].zero_()
-    elif intervention == "misaligned_entity_visual":
-        output["entity_visual"] = _active_entity_permutation(
-            output["entity_visual"],
-            output["entity_visual_mask"],
-            output["entity_geometry_mask"],
-        )
     elif intervention == "missing_language":
         output["language_valid"].zero_()
-    elif intervention == "missing_image":
-        output["global_visual_mask"].zero_()
+    elif intervention == "missing_entity_geometry":
+        output["entity_geometry_mask"].zero_()
+        output["policy_input_valid"].zero_()
     elif intervention == "entity_alignment_error":
-        output["entity_visual"] = _active_entity_permutation(
-            output["entity_visual"],
-            output["entity_visual_mask"],
-            output["entity_geometry_mask"],
-        )
         output["policy_input_valid"].zero_()
     else:
         raise ValueError(f"unknown intervention={intervention!r}")
@@ -229,28 +191,28 @@ def compute_pair_response(
         )
     )
     if any(value.shape != arrays[0].shape for value in arrays[1:]):
-        raise ValueError("paired trajectory arrays must have equal shapes")
-    if arrays[0].ndim != 3 or arrays[0].shape[-1] != 2:
-        raise ValueError("paired trajectories must have shape [N,H,2]")
+        raise ValueError("paired action arrays must have equal shapes")
+    if arrays[0].ndim != 2 or arrays[0].shape[-1] != 2:
+        raise ValueError("paired actions must have shape [N,2]")
     pred_left, pred_right, true_left, true_right = arrays
-    predicted_delta = (pred_right - pred_left).reshape(len(pred_left), -1)
-    target_delta = (true_right - true_left).reshape(len(pred_left), -1)
+    predicted_delta = pred_right - pred_left
+    target_delta = true_right - true_left
     target_norm = np.linalg.norm(target_delta, axis=1)
     predicted_norm = np.linalg.norm(predicted_delta, axis=1)
     usable = target_norm > 1.0e-8
     if not bool(np.any(usable)):
-        raise ValueError("paired expert trajectories never differ")
+        raise ValueError("paired expert actions never differ")
     signed_dot = np.sum(predicted_delta * target_delta, axis=1)
     direction_correct = signed_dot[usable] > 0.0
     response_ratio = predicted_norm[usable] / target_norm[usable]
 
-    def _trajectory_error(first: np.ndarray, second: np.ndarray) -> np.ndarray:
-        return np.linalg.norm(first - second, axis=-1).mean(axis=-1)
+    def _action_error(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+        return np.linalg.norm(first - second, axis=-1)
 
-    correct_cost = _trajectory_error(pred_left, true_left) + _trajectory_error(
+    correct_cost = _action_error(pred_left, true_left) + _action_error(
         pred_right, true_right
     )
-    swapped_cost = _trajectory_error(pred_left, true_right) + _trajectory_error(
+    swapped_cost = _action_error(pred_left, true_right) + _action_error(
         pred_right, true_left
     )
     assignment_correct = correct_cost[usable] < swapped_cost[usable]
@@ -289,7 +251,7 @@ def _model_inputs(batch: Mapping[str, Any], device: torch.device) -> dict[str, T
 
 
 def _predict_dataset(
-    model: SmallTrajectoryPolicy,
+    model: SmallActionPolicy,
     dataset: Dataset[Any],
     *,
     device: torch.device,
@@ -324,8 +286,8 @@ def _predict_dataset(
                 raise ValueError(
                     f"ablation {intervention} unexpectedly invalidated an input"
                 )
-            predictions.append(output.trajectory.detach().cpu().numpy())
-            targets.append(batch["target_trajectory"].numpy())
+            predictions.append(output.action.detach().cpu().numpy())
+            targets.append(batch["target_action"].numpy())
             logits.append(output.stop_logit.detach().cpu().numpy())
             target_stops.append(batch["target_stop"].numpy())
             for key in ("run_id", "frame_key", "instruction_id"):
@@ -343,7 +305,7 @@ def _predict_dataset(
 
 
 def _policy_metrics(arrays: Mapping[str, Any]) -> dict[str, Any]:
-    return compute_policy_metrics(
+    return compute_action_metrics(
         arrays["prediction"],
         arrays["target"],
         arrays["stop_logits"],
@@ -397,7 +359,7 @@ def _load_model(
     device: torch.device,
     expected_git_sha: str,
     expected_seed: int,
-) -> tuple[SmallTrajectoryPolicy, dict[str, Any]]:
+) -> tuple[SmallActionPolicy, dict[str, Any]]:
     checkpoint = torch.load(
         checkpoint_path, map_location=device, weights_only=False
     )
@@ -409,7 +371,7 @@ def _load_model(
         raise ValueError(f"{checkpoint_path}: checkpoint seed mismatch")
     if checkpoint.get("modality") != "full":
         raise ValueError(f"{checkpoint_path}: expected full model")
-    model = SmallTrajectoryPolicy(model_config).to(device)
+    model = SmallActionPolicy(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     return model, checkpoint
 
@@ -622,7 +584,7 @@ def _color_swap_rows(
 
 
 def _fail_closed_checks(
-    model: SmallTrajectoryPolicy,
+    model: SmallActionPolicy,
     dataset: Dataset[Any],
     *,
     device: torch.device,
@@ -636,12 +598,12 @@ def _fail_closed_checks(
     with torch.no_grad():
         for fault in faults:
             result = model(**apply_intervention(base, fault))
-            maximum = float(torch.max(torch.abs(result.trajectory)).cpu())
+            maximum = float(torch.max(torch.linalg.vector_norm(result.action, dim=-1)).cpu())
             all_invalid = bool(torch.all(~result.valid_mask).cpu())
             all_stop = bool(torch.all(result.stop_logit >= 0.0).cpu())
             passed = maximum <= maximum_nonzero and all_invalid and all_stop
             output[fault] = {
-                "maximum_absolute_trajectory_m": maximum,
+                "maximum_action_norm_m": maximum,
                 "all_invalid": all_invalid,
                 "all_stop_selected": all_stop,
                 "passed": passed,
@@ -651,37 +613,31 @@ def _fail_closed_checks(
 
 def _relative_degradation(ablated: float, full: float) -> float:
     if full <= 0.0:
-        raise ValueError("full-model ADE must be positive for ablation comparison")
+        raise ValueError("full-model action error must be positive for ablation comparison")
     return float((ablated - full) / full)
 
 
-def _draw_trajectory_plot(path: Path, case: Mapping[str, Any]) -> None:
+def _draw_action_plot(path: Path, case: Mapping[str, Any]) -> None:
     width = height = 640
     margin = 55
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     draw.text((15, 12), str(case["name"]), fill="black")
-    trajectories = [
+    actions = [
         ("pred A", np.asarray(case["prediction_left"]), (30, 100, 220)),
         ("pred B", np.asarray(case["prediction_right"]), (220, 60, 50)),
         ("expert A", np.asarray(case["target_left"]), (80, 160, 220)),
         ("expert B", np.asarray(case["target_right"]), (240, 150, 100)),
     ]
-    points = np.concatenate([value for _, value, _ in trajectories], axis=0)
+    points = np.stack([value.reshape(2) for _, value, _ in actions], axis=0)
     minimum = np.min(points, axis=0)
     maximum = np.max(points, axis=0)
     span = np.maximum(maximum - minimum, 1.0e-3)
-    for ordinal, (name, values, color) in enumerate(trajectories):
-        pixel_points = []
-        for x_value, y_value in values:
-            x = margin + (x_value - minimum[0]) / span[0] * (
-                width - 2 * margin
-            )
-            y = height - margin - (y_value - minimum[1]) / span[1] * (
-                height - 2 * margin
-            )
-            pixel_points.append((float(x), float(y)))
-        draw.line(pixel_points, fill=color, width=3)
+    for ordinal, (name, values, color) in enumerate(actions):
+        x_value, y_value = values.reshape(2)
+        x = margin + (x_value - minimum[0]) / span[0] * (width - 2 * margin)
+        y = height - margin - (y_value - minimum[1]) / span[1] * (height - 2 * margin)
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=color)
         draw.text((15, 35 + ordinal * 18), name, fill=color)
     image.save(path, format="PNG")
 
@@ -693,8 +649,7 @@ def _write_metrics_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "scope",
         "task_label",
         "sample_count",
-        "ade_m",
-        "fde_m",
+        "action_error_m",
     )
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -842,7 +797,7 @@ def evaluate(args: argparse.Namespace) -> int:
     batch_size = int(args.batch_size)
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=False)
-    plot_root = output_root / "trajectory_plots"
+    plot_root = output_root / "action_plots"
     plot_root.mkdir()
 
     metrics_rows: list[dict[str, Any]] = []
@@ -889,8 +844,7 @@ def evaluate(args: argparse.Namespace) -> int:
                         "scope": "per_label",
                         "task_label": label,
                         "sample_count": values["sample_count"],
-                        "ade_m": values["ade_m"],
-                        "fde_m": values["fde_m"],
+                        "action_error_m": values["action_error_m"],
                     }
                 )
             for scope, values in (
@@ -905,8 +859,7 @@ def evaluate(args: argparse.Namespace) -> int:
                         "scope": scope,
                         "task_label": "*",
                         "sample_count": values["sample_count"],
-                        "ade_m": values["ade_m"],
-                        "fde_m": values["fde_m"],
+                        "action_error_m": values["action_error_m"],
                     }
                 )
 
@@ -952,22 +905,18 @@ def evaluate(args: argparse.Namespace) -> int:
             device=device,
             faults=tuple(str(v) for v in config["fail_closed"]["faults"]),
             maximum_nonzero=float(
-                config["fail_closed"]["maximum_nonzero_trajectory_m"]
+                config["fail_closed"]["maximum_nonzero_action_m"]
             ),
         )
         full_metrics = variant_metrics["full"]
         degradations = {
             "language_overall": _relative_degradation(
-                variant_metrics["no_language"]["overall"]["ade_m"],
-                full_metrics["overall"]["ade_m"],
-            ),
-            "visual_color": _relative_degradation(
-                variant_metrics["no_all_visual"]["color"]["ade_m"],
-                full_metrics["color"]["ade_m"],
+                variant_metrics["no_language"]["overall"]["action_error_m"],
+                full_metrics["overall"]["action_error_m"],
             ),
             "entity_bearing": _relative_degradation(
-                variant_metrics["no_entity_geometry"]["bearing"]["ade_m"],
-                full_metrics["bearing"]["ade_m"],
+                variant_metrics["no_entity_geometry"]["bearing"]["action_error_m"],
+                full_metrics["bearing"]["action_error_m"],
             ),
         }
         seed_reports[str(seed)] = {
@@ -986,20 +935,16 @@ def evaluate(args: argparse.Namespace) -> int:
                 ]
             )
         )
-        for name in ("language_overall", "visual_color", "entity_bearing")
+        for name in ("language_overall", "entity_bearing")
     }
     ablation_gates = {
         "language": mean_degradations["language_overall"]
         >= float(
-            ablation_config["minimum_language_relative_ade_degradation"]
-        ),
-        "visual": mean_degradations["visual_color"]
-        >= float(
-            ablation_config["minimum_visual_color_relative_ade_degradation"]
+            ablation_config["minimum_language_relative_action_error_degradation"]
         ),
         "entity": mean_degradations["entity_bearing"]
         >= float(
-            ablation_config["minimum_entity_bearing_relative_ade_degradation"]
+            ablation_config["minimum_entity_bearing_relative_action_error_degradation"]
         ),
     }
     fail_closed_passed = all(
@@ -1027,9 +972,9 @@ def evaluate(args: argparse.Namespace) -> int:
                 json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
                 + "\n"
             )
-    maximum_plots = int(config["report"]["maximum_trajectory_plots"])
+    maximum_plots = int(config["report"]["maximum_action_plots"])
     for case in plot_cases[:maximum_plots]:
-        _draw_trajectory_plot(plot_root / f"{case['name']}.png", case)
+        _draw_action_plot(plot_root / f"{case['name']}.png", case)
     _write_metrics_csv(output_root / "metrics_by_label.csv", metrics_rows)
     _write_pairs_csv(output_root / "intervention_pairs.csv", pair_rows)
     ablation_summary = {
@@ -1067,7 +1012,7 @@ def evaluate(args: argparse.Namespace) -> int:
             "all_passed": color_swap_pass,
         },
         "ablations": {
-            "three_seed_mean_relative_ade_degradation": mean_degradations,
+            "three_seed_mean_relative_action_error_degradation": mean_degradations,
             "gates": ablation_gates,
             "all_passed": all(ablation_gates.values()),
         },
@@ -1079,7 +1024,7 @@ def evaluate(args: argparse.Namespace) -> int:
         },
         "failure_case_count": len(failures),
         "failure_case_count_written": min(len(failures), maximum_failures),
-        "trajectory_plot_count": min(len(plot_cases), maximum_plots),
+        "action_plot_count": min(len(plot_cases), maximum_plots),
         "seeds": seed_reports,
         "passed": overall_passed,
     }

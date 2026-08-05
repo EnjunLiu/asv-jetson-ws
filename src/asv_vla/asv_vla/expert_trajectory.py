@@ -6,10 +6,10 @@ from dataclasses import dataclass
 import math
 from typing import Any, Iterable
 
-from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
+from .trajectory_contract import DT_SEC
 
 
-MODEL_VERSION = "deterministic_follow_stop_expert_v1"
+MODEL_VERSION = "deterministic_follow_stop_expert_action_v2"
 DEFAULT_MAX_SPEED_MPS = 1.5
 BEARING_DEADBAND_M = 0.25
 SUPPORTED_TARGET_ATTRIBUTES = {
@@ -40,8 +40,8 @@ class ExpertTask:
 
 
 @dataclass(frozen=True)
-class ExpertTrajectoryResult:
-    delta_p_xy: tuple[float, ...]
+class ExpertActionResult:
+    expert_action: tuple[float, float]
     safe_stop: bool
     selected_entity_id: str
     detail: str
@@ -86,7 +86,7 @@ def task_from_labels(
         raise ExpertTrajectoryError(
             f"unsupported target_attribute: {target_attribute!r}"
         )
-    distances = {"3m": 3.0, "10m": 10.0}
+    distances = {"2.5m": 2.5, "3m": 3.0, "4m": 4.0, "10m": 10.0}
     if normalized_distance not in distances:
         raise ExpertTrajectoryError(
             f"unsupported distance_bucket: {distance_bucket!r}"
@@ -183,9 +183,11 @@ def _clip_step(
     max_step_m: float,
 ) -> tuple[float, float]:
     norm = math.hypot(dx, dy)
-    if norm <= max_step_m or norm <= 1.0e-12:
-        return dx, dy
-    scale = max_step_m / norm
+    if norm <= 1.0e-12:
+        return 0.0, 0.0
+    # A bounded proportional map retains distance information in one action
+    # even when the requested standoff correction exceeds one control step.
+    scale = max_step_m * math.tanh(norm / max_step_m) / norm
     return dx * scale, dy * scale
 
 
@@ -194,13 +196,13 @@ def generate_expert_trajectory(
     entities: Iterable[Any],
     *,
     max_speed_mps: float = DEFAULT_MAX_SPEED_MPS,
-) -> ExpertTrajectoryResult:
+) -> ExpertActionResult:
     if not math.isfinite(max_speed_mps) or max_speed_mps <= 0.0:
         raise ExpertTrajectoryError("max_speed_mps must be positive and finite")
 
     if task.action == "stop":
-        return ExpertTrajectoryResult(
-            delta_p_xy=(0.0,) * (HORIZON * ACTION_DIM),
+        return ExpertActionResult(
+            expert_action=(0.0, 0.0),
             safe_stop=True,
             selected_entity_id="",
             detail="STOP: deterministic zero-displacement safety label",
@@ -228,8 +230,8 @@ def generate_expert_trajectory(
         # yaw mid-run, leaving targets behind the camera in base_link).
         # Label those frames STOP instead of following the inverted
         # coordinate.
-        return ExpertTrajectoryResult(
-            delta_p_xy=(0.0,) * (HORIZON * ACTION_DIM),
+        return ExpertActionResult(
+            expert_action=(0.0, 0.0),
             safe_stop=True,
             selected_entity_id=entity_id,
             detail=(
@@ -237,44 +239,34 @@ def generate_expert_trajectory(
                 f"of the camera (x={x:.3f} m); deterministic STOP label"
             ),
         )
-    max_step_m = max_speed_mps * DT_SEC
-    previous_x = 0.0
-    previous_y = 0.0
-    waypoints: list[float] = []
-
-    for index in range(HORIZON):
-        time_sec = (index + 1) * DT_SEC
-        predicted_x = x + vx * time_sec
-        predicted_y = y + vy * time_sec
-        predicted_distance = math.hypot(predicted_x, predicted_y)
-        if predicted_distance <= 1.0e-9:
-            raise ExpertTrajectoryError(
-                f"target {entity_id!r} reaches the ASV origin"
-            )
-
-        # The desired ASV position lies on the current line of sight and keeps
-        # the requested standoff from the constant-velocity target prediction.
-        scale = (
-            predicted_distance - task.desired_distance_m
-        ) / predicted_distance
-        desired_x = predicted_x * scale
-        desired_y = predicted_y * scale
-        step_x, step_y = _clip_step(
-            desired_x - previous_x,
-            desired_y - previous_y,
-            max_step_m,
+    predicted_x = x + vx * DT_SEC
+    predicted_y = y + vy * DT_SEC
+    predicted_distance = math.hypot(predicted_x, predicted_y)
+    if predicted_distance <= 1.0e-9:
+        raise ExpertTrajectoryError(
+            f"target {entity_id!r} reaches the ASV origin"
         )
-        previous_x += step_x
-        previous_y += step_y
-        waypoints.extend((previous_x, previous_y))
 
-    if len(waypoints) != HORIZON * ACTION_DIM:
-        raise ExpertTrajectoryError("internal trajectory shape is invalid")
-    if not all(math.isfinite(value) for value in waypoints):
-        raise ExpertTrajectoryError("expert trajectory contains NaN or Inf")
+    # Return one body-frame displacement for this source frame. The desired
+    # standoff displacement is clipped by the maximum distance allowed in dt.
+    scale = (
+        predicted_distance - task.desired_distance_m
+    ) / predicted_distance
+    desired_x = predicted_x * scale
+    desired_y = predicted_y * scale
+    action_x, action_y = _clip_step(
+        desired_x,
+        desired_y,
+        max_speed_mps * DT_SEC,
+    )
+    expert_action = (action_x, action_y)
+    if len(expert_action) != 2 or not all(
+        math.isfinite(value) for value in expert_action
+    ):
+        raise ExpertTrajectoryError("expert action contains NaN or Inf")
 
-    return ExpertTrajectoryResult(
-        delta_p_xy=tuple(waypoints),
+    return ExpertActionResult(
+        expert_action=expert_action,
         safe_stop=False,
         selected_entity_id=entity_id,
         detail=(

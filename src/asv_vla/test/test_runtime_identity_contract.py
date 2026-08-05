@@ -5,12 +5,15 @@ importing generated ROS message classes, so they remain runnable before a
 ROS interface build has happened.
 """
 
+import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 INTERFACES = REPOSITORY / "src/asv_jetson_interfaces/msg"
 VLA = REPOSITORY / "src/asv_vla/asv_vla"
+POLICY = VLA / "vla_policy_node.py"
 LAUNCH = REPOSITORY / "src/asv_bringup/launch/vla_closed_loop.launch.py"
 PERCEPTION_NODE = REPOSITORY / "src/asv_vla/asv_vla/image_entity_perception_node.py"
 COLLECT_LAUNCH = REPOSITORY / "src/asv_bringup/launch/collect.launch.py"
@@ -26,7 +29,58 @@ def _fields(path: Path) -> list[str]:
     ]
 
 
-def test_decision_and_selected_messages_carry_source_identity() -> None:
+def _load_identity_guards():
+    policy = ast.parse(POLICY.read_text(encoding="utf-8"), filename=str(POLICY))
+    wanted_functions = {
+        "_identity_tuple",
+        "identity_mismatch_reason",
+        "task_features_identity_reason",
+    }
+    nodes = [
+        node
+        for node in policy.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted_functions
+    ]
+    namespace = {"Any": object, "FrameKey": object}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(POLICY), "exec"), namespace)
+    return (
+        namespace["identity_mismatch_reason"],
+        namespace["task_features_identity_reason"],
+    )
+
+
+identity_mismatch_reason, task_features_identity_reason = _load_identity_guards()
+
+
+def _language(instruction: str, *, run_id: str = "language-qwen", stamp_us: int = 900):
+    return SimpleNamespace(
+        run_id=run_id,
+        stamp_us=stamp_us,
+        instruction=instruction,
+        valid=True,
+    )
+
+
+def _features(
+    instruction: str,
+    *,
+    run_id: str = "scene-run",
+    scene_seed: int = 42,
+    frame_index: int = 0,
+    stamp_us: int = 100,
+    instruction_id: str = "",
+):
+    return SimpleNamespace(
+        run_id=run_id,
+        scene_seed=scene_seed,
+        frame_index=frame_index,
+        stamp_us=stamp_us,
+        instruction=instruction,
+        instruction_id=instruction_id,
+    )
+
+
+def test_decision_messages_carry_source_identity() -> None:
     decision_fields = _fields(INTERFACES / "DecisionOutput.msg")
     assert decision_fields[-4:] == [
         "string run_id",
@@ -35,9 +89,11 @@ def test_decision_and_selected_messages_carry_source_identity() -> None:
         "string source_model_version",
     ]
 
-    selected_fields = _fields(INTERFACES / "SelectedTrajectory.msg")
-    assert "int64 scene_seed" in selected_fields
-    assert "uint64 frame_index" in selected_fields
+    point_fields = _fields(INTERFACES / "DecisionPoint.msg")
+    assert "int64 scene_seed" in point_fields
+    assert "uint64 frame_index" in point_fields
+    assert "float32 desired_x" in point_fields
+    assert "float32 desired_y" in point_fields
 
 
 def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
@@ -57,6 +113,56 @@ def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
     assert 'executable="expert_kinematic_executor"' not in source
     assert "zero embedding" not in source.lower()
     assert "day 19" not in source.lower()
+
+
+def test_language_identity_uses_task_text_not_encoder_or_frame_stamp() -> None:
+    language = _language("follow red target", run_id="language-qwen", stamp_us=900)
+    features = _features("follow red target", stamp_us=100)
+    assert identity_mismatch_reason(language, features) is None
+    assert (
+        identity_mismatch_reason(language, _features("follow blue target"))
+        == "IDENTITY_MISMATCH"
+    )
+    assert (
+        identity_mismatch_reason(
+            language, _features("follow red target", instruction_id="other")
+        )
+        is None
+    )
+
+
+def test_task_features_identity_is_complete_and_contiguous() -> None:
+    first = _features("follow red target", frame_index=10)
+    assert task_features_identity_reason(first) is None
+    assert (
+        task_features_identity_reason(
+            _features("follow red target", frame_index=12),
+            ("scene-run", 42, 10),
+        )
+        == "IDENTITY_MISMATCH"
+    )
+    assert (
+        task_features_identity_reason(
+            _features("follow red target", run_id="", frame_index=11)
+        )
+        == "IDENTITY_MISMATCH"
+    )
+    assert (
+        task_features_identity_reason(
+            _features("follow red target", scene_seed=0, stamp_us=100)
+        )
+        == "IDENTITY_MISMATCH"
+    )
+    assert (
+        task_features_identity_reason(
+            _features("follow red target", scene_seed=42, stamp_us=0)
+        )
+        == "IDENTITY_MISMATCH"
+    )
+    assert task_features_identity_reason(
+        _features("follow red target", run_id="new-run", frame_index=0),
+        ("scene-run", 42, 10),
+    ) is None
 
 
 def test_closed_loop_uses_final_near_image_color_policy_candidate() -> None:
@@ -142,9 +248,15 @@ def test_identity_is_copied_and_mixed_frames_stop_before_inference() -> None:
     assert "output.source_model_version = str(message.model_version)" in controller
 
     policy = (VLA / "vla_policy_node.py").read_text(encoding="utf-8")
-    assert 'msg.reason = "IDENTITY_MISMATCH"' in policy
-    assert "self._pub.publish(msg)" in policy
-    assert "self._recent_trajectories.clear()" in policy
+    assert 'self._publish_fail_closed(ent, identity_reason)' in policy
+    assert 'message.reason = str(reason)' in policy
+    assert "identity_mismatch_reason(self._language, ent)" in policy
+    assert "self._pending_actions" in policy
+    assert "self._previous_action_identity" in policy
+    assert "self._previous_action if previous_action_valid else None" in policy
+    assert "self._recent_actions" not in policy
+    assert "self._frame_sync.clear()" in policy
+    assert "self._clear_control_history()" in policy
 
     safety_gate = (VLA / "safety_gate_node.py").read_text(encoding="utf-8")
     for field in ("output.scene_seed", "output.frame_index"):

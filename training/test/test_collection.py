@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from training.dataset_registry import build_registry
 from training.collection import discover_slots, load_plan, validate_slot
 
@@ -341,7 +343,13 @@ def test_latest_symlink_is_not_a_duplicate_collection_slot(
 ) -> None:
     _make_run(tmp_path)
     latest = tmp_path / "artifacts" / "day8_episode" / "latest"
-    latest.symlink_to("RUN_001", target_is_directory=True)
+    try:
+        latest.symlink_to("RUN_001", target_is_directory=True)
+    except OSError as exc:
+        # Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege.
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("directory symlink privilege is unavailable")
+        raise
 
     discovered, errors = discover_slots(tmp_path)
 

@@ -2,10 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from asv_vla.trajectory_contract import (
-    ACTION_DIM,
     DT_SEC,
     FRAME_ID,
-    HORIZON,
     SAFE_STOP_MODEL_VERSION,
     is_safe_stop,
 )
@@ -15,36 +13,31 @@ def message(**overrides):
     values = {
         "stamp_us": 1,
         "run_id": "test",
+        "scene_seed": 1,
+        "frame_index": 0,
         "frame_id": FRAME_ID,
         "model_version": SAFE_STOP_MODEL_VERSION,
         "dt": DT_SEC,
-        "horizon": HORIZON,
-        "delta_p_xy": [0.0] * (HORIZON * ACTION_DIM),
+        "desired_x": 0.0,
+        "desired_y": 0.0,
         "safe_stop": True,
-        "valid": True,
+        "valid": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def test_safe_stop_contract_accepts_well_formed_message():
+def test_safe_stop_contract_accepts_invalid_zero_point():
     assert is_safe_stop(message())
 
 
-def test_safe_stop_contract_rejects_wrong_shape():
-    assert not is_safe_stop(message(delta_p_xy=[0.0, 0.0]))
+def test_safe_stop_contract_rejects_executable_zero_point():
+    assert not is_safe_stop(message(valid=True))
 
 
-def test_safe_stop_contract_rejects_nonfinite_or_nonzero_actions():
-    assert not is_safe_stop(
-        message(delta_p_xy=[float("nan")] + [0.0] * 39)
-    )
-    assert not is_safe_stop(message(delta_p_xy=[0.01] + [0.0] * 39))
-
-
-def test_safe_stop_contract_rejects_executable_or_invalid_container():
-    assert not is_safe_stop(message(safe_stop=False))
-    assert not is_safe_stop(message(valid=False))
+def test_safe_stop_contract_rejects_nonfinite_or_nonzero_action():
+    assert not is_safe_stop(message(desired_x=float("nan")))
+    assert not is_safe_stop(message(desired_y=0.01))
 
 
 def test_safe_stop_contract_rejects_wrong_frame_or_timing():
@@ -54,40 +47,30 @@ def test_safe_stop_contract_rejects_wrong_frame_or_timing():
     assert not is_safe_stop(message(dt=0.1))
 
 
+def test_online_decision_point_message_has_scalar_displacement_fields():
+    repository = Path(__file__).resolve().parents[3]
+    interface_dir = repository / "src/asv_jetson_interfaces/msg"
+    fields = [
+        line.strip()
+        for line in (interface_dir / "DecisionPoint.msg")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert "float32 desired_x" in fields
+    assert "float32 desired_y" in fields
+    assert not any("delta_p_xy" in field for field in fields)
+    cmake = (interface_dir.parent / "CMakeLists.txt").read_text(encoding="utf-8")
+    assert '"msg/DecisionPoint.msg"' in cmake
+
+
 def test_obsolete_candidate_and_world_model_interfaces_are_removed():
     repository = Path(__file__).resolve().parents[3]
     interface_dir = repository / "src/asv_jetson_interfaces/msg"
-    cmake = (
-        repository / "src/asv_jetson_interfaces/CMakeLists.txt"
-    ).read_text(encoding="utf-8")
-
+    cmake = (repository / "src/asv_jetson_interfaces/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
     assert not (interface_dir / "TrajectoryCandidates.msg").exists()
     assert not (interface_dir / "WorldModelEvaluation.msg").exists()
     assert '"msg/TrajectoryCandidates.msg"' not in cmake
     assert '"msg/WorldModelEvaluation.msg"' not in cmake
-
-
-def test_selected_trajectory_message_matches_direct_policy_contract():
-    repository = Path(__file__).resolve().parents[3]
-    fields = [
-        line.strip()
-        for line in (
-            repository / "src/asv_jetson_interfaces/msg/SelectedTrajectory.msg"
-        ).read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    assert fields == [
-        "int64 stamp_us",
-        "string run_id",
-        "int64 scene_seed",
-        "uint64 frame_index",
-        "string frame_id",
-        "string model_version",
-        "float32 dt",
-        "uint16 horizon",
-        "float32[] delta_p_xy",
-        "bool safe_stop",
-        "bool valid",
-        "string reason",
-    ]

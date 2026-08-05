@@ -1,20 +1,28 @@
-"""VLA runtime trajectory control bridge.
+"""Online body-frame displacement controller.
 
-Rolling execution of the *prefix* (0.2–0.5 s) of the safe trajectory.
-Only publishes ``desired_x`` / ``desired_y`` — never thruster values.
+The policy and safety gate exchange one ``(desired_x, desired_y)`` command
+per frame.  This module validates the command, applies the fixed ``dt`` and
+displacement envelope, and never consumes a predicted action sequence.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Sequence
 
-from .trajectory_contract import ACTION_DIM, DT_SEC, FLOAT_TOLERANCE, HORIZON
+from .trajectory_contract import (
+    DT_SEC,
+    FLOAT_TOLERANCE,
+    MAX_DISPLACEMENT_M,
+)
 
-EXECUTE_WAYPOINTS = 1  # execute only cumulative waypoint 0 per replanning frame
-STALE_THRESHOLD_SEC = 0.6  # trajectory older than this → invalid hold
-MAX_DESIRED_M = 3.0  # maximum single-step desired displacement
+STALE_THRESHOLD_SEC = 1.0
+# A reversal can change the requested displacement by 2 * MAX_DISPLACEMENT_M.
+# Limiting that change to one envelope per control period prevents a single
+# noisy frame from flipping the kinematic setpoint instantaneously.
+MAX_RATE_MPS = MAX_DISPLACEMENT_M / DT_SEC
+# Compatibility name for callers that already imported the controller limit.
+MAX_DESIRED_M = MAX_DISPLACEMENT_M
 
 
 @dataclass(frozen=True)
@@ -25,61 +33,93 @@ class ControlCommand:
     detail: str
 
 
-def _clip(value: float, limit: float) -> float:
-    return max(-limit, min(limit, float(value)))
+def _zero(detail: str) -> ControlCommand:
+    return ControlCommand(0.0, 0.0, False, detail)
 
 
-def trajectory_to_command(
-    delta_p_xy: Sequence[float],
+def _bounded_vector(x: float, y: float, limit: float) -> tuple[float, float] | None:
+    norm = math.hypot(x, y)
+    if not math.isfinite(norm) or norm > limit + FLOAT_TOLERANCE:
+        return None
+    return x, y
+
+
+def point_to_command(
+    desired_x: float,
+    desired_y: float,
     *,
     safe_stop: bool,
     valid: bool,
     reason: str,
     stamp_us: int,
+    dt: float = DT_SEC,
     last_executed_stamp_us: int = 0,
     time_since_last_valid_sec: float = 0.0,
+    previous_desired: tuple[float, float] | None = None,
+    max_displacement_m: float = MAX_DISPLACEMENT_M,
+    max_rate_mps: float = MAX_RATE_MPS,
 ) -> ControlCommand:
-    """Convert a safety-gated trajectory to a single-step control command.
+    """Validate and rate-limit one body-frame displacement command.
 
-    Only cumulative waypoint 0 is consumed on each replanning frame.  The
-    controller does *not* average or walk the remainder of the trajectory.
+    Invalid, stale, and safe-stop inputs are always non-executable zero
+    commands.  A valid zero displacement is allowed only when ``safe_stop``
+    is false, because it represents an ordinary position hold at standoff.
     """
 
-    # Duplicate frame → no new command.
-    if stamp_us <= last_executed_stamp_us:
-        return ControlCommand(0.0, 0.0, False, "DUPLICATE_FRAME")
-
-    # Safety gate rejected → propagate invalid.
-    if not valid:
-        return ControlCommand(0.0, 0.0, False, f"REJECTED:{reason}")
-
-    # STOP from policy or safety gate.
+    if int(stamp_us) <= int(last_executed_stamp_us):
+        return _zero("DUPLICATE_FRAME")
     if safe_stop:
-        return ControlCommand(0.0, 0.0, False, f"STOP:{reason}")
-
-    # Stale trajectory.
+        return _zero(f"STOP:{reason}")
+    if not valid:
+        return _zero(f"REJECTED:{reason}")
+    if not math.isfinite(float(dt)) or abs(float(dt) - DT_SEC) > FLOAT_TOLERANCE:
+        return _zero("INVALID_DT")
+    if not math.isfinite(float(time_since_last_valid_sec)):
+        return _zero("NONFINITE_AGE")
     if time_since_last_valid_sec > STALE_THRESHOLD_SEC:
-        return ControlCommand(0.0, 0.0, False, "STALE_TRAJECTORY")
+        return _zero("STALE_DISPLACEMENT")
 
-    # Validate shape.
-    values = tuple(float(v) for v in delta_p_xy)
-    if len(values) != HORIZON * ACTION_DIM:
-        return ControlCommand(0.0, 0.0, False, "INVALID_SHAPE")
-    if not all(math.isfinite(v) for v in values):
-        return ControlCommand(0.0, 0.0, False, "NONFINITE")
+    try:
+        x = float(desired_x)
+        y = float(desired_y)
+    except (TypeError, ValueError):
+        return _zero("INVALID_DISPLACEMENT")
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return _zero("NONFINITE")
 
-    # Extract first waypoint's displacement from origin.
-    # The trajectory stores cumulative displacements; waypoint 0 = first step.
-    first_x = values[0]
-    first_y = values[1]
+    try:
+        limit = float(max_displacement_m)
+        rate = float(max_rate_mps)
+    except (TypeError, ValueError):
+        return _zero("INVALID_LIMIT")
+    if not (math.isfinite(limit) and limit > 0.0 and math.isfinite(rate) and rate > 0.0):
+        return _zero("INVALID_LIMIT")
+    bounded = _bounded_vector(x, y, limit)
+    if bounded is None:
+        return _zero("DISPLACEMENT_LIMIT")
+    x, y = bounded
 
-    step_x = first_x
-    step_y = first_y
+    detail = "EXECUTE_DISPLACEMENT"
+    if previous_desired is not None:
+        try:
+            previous_x = float(previous_desired[0])
+            previous_y = float(previous_desired[1])
+        except (TypeError, ValueError, IndexError):
+            return _zero("INVALID_PREVIOUS_DISPLACEMENT")
+        if not (math.isfinite(previous_x) and math.isfinite(previous_y)):
+            return _zero("NONFINITE_PREVIOUS_DISPLACEMENT")
+        max_delta = rate * float(dt)
+        delta_x = x - previous_x
+        delta_y = y - previous_y
+        delta_norm = math.hypot(delta_x, delta_y)
+        if delta_norm > max_delta + FLOAT_TOLERANCE:
+            scale = max_delta / delta_norm
+            x = previous_x + delta_x * scale
+            y = previous_y + delta_y * scale
+            bounded = _bounded_vector(x, y, limit)
+            if bounded is None:
+                return _zero("RATE_LIMIT_CONTROL_UNREACHABLE")
+            x, y = bounded
+            detail = "EXECUTE_DISPLACEMENT_RATE_LIMITED"
 
-    step_x = _clip(step_x, MAX_DESIRED_M)
-    step_y = _clip(step_y, MAX_DESIRED_M)
-
-    if not (math.isfinite(step_x) and math.isfinite(step_y)):
-        return ControlCommand(0.0, 0.0, False, "NONFINITE_CONTROL")
-
-    return ControlCommand(step_x, step_y, True, "EXEC_PREFIX")
+    return ControlCommand(float(x), float(y), True, detail)

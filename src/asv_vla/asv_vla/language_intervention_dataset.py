@@ -106,7 +106,10 @@ def _pair_has_expected_difference(
             str(left.get("distance_bucket", "")),
             str(right.get("distance_bucket", "")),
         }
-        return distances == {"3m", "10m"}
+        return (
+            len(distances) == 2
+            and distances <= {"3m", "4m", "10m"}
+        )
     if intervention_type == "action":
         actions = {
             str(left.get("action", "")),

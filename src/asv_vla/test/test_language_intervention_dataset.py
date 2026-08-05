@@ -24,18 +24,18 @@ def load_checked_in_dataset():
 def test_checked_in_dataset_meets_coverage_contract():
     instructions, pairs, report = load_checked_in_dataset()
 
-    assert len(instructions) == 90
-    assert len(pairs) == 24
-    assert report["conflicting_scene_count"] == 24
+    assert len(instructions) == 130
+    assert len(pairs) == 30
+    assert report["conflicting_scene_count"] == 30
     assert set(report["intent_group_counts"].values()) == {10}
     assert report["split_counts"] == {
-        "test": 18,
-        "train": 54,
-        "validation": 18,
+        "test": 26,
+        "train": 78,
+        "validation": 26,
     }
     assert report["intervention_counts"] == {
         "action": 6,
-        "distance": 6,
+        "distance": 12,
         "target_bearing": 6,
         "target_color": 6,
     }

@@ -21,11 +21,31 @@ POSITION_SCALE_M = 20.0
 VELOCITY_SCALE_MPS = 5.0
 DEFAULT_STANDOFF_M = 3.0
 DEFAULT_GUARD_MAX_STEP_M = 0.15
-DEFAULT_DEADBAND_M = 0.15
+# Hold tolerance.  The verified closed-loop envelope (2.4-3.3 m for 3 m)
+# is ~+-0.45 m around the standoff; a too-narrow 0.15 m deadband lets pipeline
+# latency push the ASV past the reliable image-detection range.
+DEFAULT_DEADBAND_M = 0.45
 DEFAULT_PREDICTION_HORIZON_SEC = 0.2
 MAX_TARGET_DISTANCE_M = 20.0
 MAX_TARGET_SPEED_MPS = 5.0
 TARGET_IDS = ("target_red", "target_blue", "target_left", "target_right")
+LATERAL_SIGNIFICANCE_M = 0.25
+
+# Backstop semantics: the learned policy drives the executed point;
+# the deterministic radial step only replaces it when the policy output is
+# unsafe, frozen, or underpowered on approach.  ``BACKSTOP_DOT_THRESHOLD`` =
+# 0.0 means any point pointing away from the target (angle > 90 deg) is
+# corrected; a point is "frozen" when its magnitude is below
+# ``BACKSTOP_ZERO_STEP_M`` while the standoff error still exceeds the deadband.
+BACKSTOP_DOT_THRESHOLD = 0.0
+BACKSTOP_ZERO_STEP_M = 1.0e-3
+BACKSTOP_PROJECTION_TOLERANCE_M = 1.0e-6
+
+# Guard outcomes returned by ``apply_standoff_guard``.
+GUARD_PASS_THROUGH = "pass_through"  # non-FOLLOW task, action unchanged
+GUARD_FAIL_CLOSED = "fail_closed"  # FOLLOW, target missing/OOD -> safe stop
+GUARD_BACKSTOP = "backstop"  # FOLLOW, policy step unsafe -> radial replacement
+GUARD_POLICY_DRIVEN = "policy_driven"  # FOLLOW, policy step kept
 
 _DISTANCE_RE = re.compile(
     r"(?<![\d.])([0-9]+(?:\.[0-9]+)?)\s*(?:m|米|meters?|metres?)",
@@ -224,37 +244,106 @@ def compute_standoff_step(
 
 
 def apply_standoff_guard(
-    trajectory: Sequence[float] | np.ndarray,
+    displacement: Sequence[float] | np.ndarray,
     task_features: Any,
     *,
-    horizon: int = 20,
-    action_dim: int = 2,
-) -> tuple[tuple[float, ...] | None, bool]:
-    """Replace only the first policy waypoint for FOLLOW image guidance.
+    dot_threshold: float = BACKSTOP_DOT_THRESHOLD,
+    zero_step_m: float = BACKSTOP_ZERO_STEP_M,
+    deadband_m: float = DEFAULT_DEADBAND_M,
+) -> tuple[tuple[float, ...] | None, str]:
+    """Apply the learned-policy-first standoff backstop.
 
-    Returns ``(trajectory, applied)``.  A FOLLOW task with a missing/OOD
-    target returns ``(None, False)`` so the caller can publish a safe stop;
-    non-FOLLOW tasks retain the finite policy trajectory unchanged.
+    Returns ``(desired_displacement, reason)`` where ``reason`` is one of
+    ``GUARD_PASS_THROUGH`` / ``GUARD_FAIL_CLOSED`` / ``GUARD_BACKSTOP`` /
+    ``GUARD_POLICY_DRIVEN``.
+
+    - Non-FOLLOW tasks retain the finite policy displacement unchanged.
+    - A FOLLOW task with a missing/OOD target returns ``(None, GUARD_FAIL_CLOSED)``
+      so the caller can publish a safe stop.
+    - A FOLLOW task with a visible target keeps the policy's direct action
+      (the learned policy drives the executed command) unless the action
+      points away from the target (``dot(action, target_dir) < dot_threshold``,
+      i.e. > 90 deg), reverses a clearly off-center target laterally, is
+      frozen while the standoff error exceeds the deadband, or is too small
+      along a nonzero approach backstop. In each case the point is
+      replaced by the deterministic radial standoff action
+      (``GUARD_BACKSTOP``).
     """
 
     try:
-        values = np.asarray(trajectory, dtype=np.float64).reshape(-1)
+        values = np.asarray(displacement, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError):
-        return None, False
-    if values.size != int(horizon) * int(action_dim) or not np.all(
-        np.isfinite(values)
-    ):
-        return None, False
+        return None, GUARD_FAIL_CLOSED
+    if values.size != 2 or not np.all(np.isfinite(values)):
+        return None, GUARD_FAIL_CLOSED
     instruction = _instruction_text(task_features, None)
     if not is_follow_instruction(instruction):
-        return tuple(float(value) for value in values), False
+        return tuple(float(value) for value in values), GUARD_PASS_THROUGH
     observation = extract_target_observation(task_features, instruction)
     if observation is None:
-        return None, False
+        return None, GUARD_FAIL_CLOSED
     desired = desired_standoff_from_instruction(instruction)
-    step = compute_standoff_step(observation, desired)
+    try:
+        base_deadband = float(deadband_m)
+    except (TypeError, ValueError):
+        return None, GUARD_FAIL_CLOSED
+    if not math.isfinite(base_deadband) or base_deadband < 0.0:
+        return None, GUARD_FAIL_CLOSED
+    error = observation.distance_m - desired
+    effective_deadband = base_deadband
+    step = compute_standoff_step(
+        observation,
+        desired,
+        deadband_m=effective_deadband,
+    )
     if step is None:
-        return None, False
-    values = values.copy()
-    values[: int(action_dim)] = step
-    return tuple(float(value) for value in values), True
+        return None, GUARD_FAIL_CLOSED
+
+    first_step = values
+    target_dir = (observation.relative_x, observation.relative_y)
+    target_norm = math.hypot(*target_dir)
+    if target_norm <= 0.0:
+        return None, GUARD_FAIL_CLOSED
+    target_dir = (target_dir[0] / target_norm, target_dir[1] / target_norm)
+    dot_value = first_step[0] * target_dir[0] + first_step[1] * target_dir[1]
+    step_norm = math.hypot(first_step[0], first_step[1])
+    predicted_lateral = observation.relative_y
+    if observation.velocity_valid:
+        predicted_lateral += (
+            observation.relative_velocity_y * DEFAULT_PREDICTION_HORIZON_SEC
+        )
+    lateral_opposite = (
+        abs(predicted_lateral) > LATERAL_SIGNIFICANCE_M
+        and first_step[1] != 0.0
+        and first_step[1] * predicted_lateral < 0.0
+    )
+    radial_step_norm = math.hypot(*step)
+    radial_projection = 0.0
+    if radial_step_norm > 0.0:
+        radial_projection = (
+            first_step[0] * step[0] + first_step[1] * step[1]
+        ) / radial_step_norm
+    underpowered_approach = (
+        error > 0.0
+        and radial_step_norm > zero_step_m
+        and step[0] * target_dir[0] + step[1] * target_dir[1] > 0.0
+        and radial_projection < radial_step_norm - BACKSTOP_PROJECTION_TOLERANCE_M
+    )
+    if (
+        dot_value < dot_threshold
+        or lateral_opposite
+        or underpowered_approach
+        or (step_norm <= zero_step_m and abs(error) > effective_deadband)
+    ):
+        values = values.copy()
+        values[:] = step
+        return tuple(float(value) for value in values), GUARD_BACKSTOP
+    if abs(error) <= effective_deadband:
+        # Standoff hold: the verified closed-loop envelope stops inside the
+        # deadband (2.4-3.3 m for 3 m).  Without this, the learned step keeps
+        # pushing through the standoff point for the pipeline-latency window
+        # and the ASV overshoots into the detection area cap.
+        values = values.copy()
+        values[:] = (0.0, 0.0)
+        return tuple(float(value) for value in values), GUARD_POLICY_DRIVEN
+    return tuple(float(value) for value in values), GUARD_POLICY_DRIVEN

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -10,17 +12,16 @@ from training.dataset import (  # noqa: E402
     EpochSynonymDataset,
     InstructionMetadata,
 )
-from training.metrics import (  # noqa: E402
-    compute_policy_metrics,
-    fit_label_mean_baseline,
-    improvement_fraction,
-    predict_label_mean_baseline,
-)
 from training.train import (  # noqa: E402
     _FrameGroupedBatchSampler,
     _acceptance,
     _checkpoint_selection_eligible,
     _checkpoint_selection_eligible_for_modality,
+    compute_action_metrics,
+    fit_label_mean_action_baseline,
+    predict_label_mean_action_baseline,
+    _improvement_fraction,
+    _write_progress,
 )
 
 
@@ -52,7 +53,7 @@ class _FakeFeatureDataset:
         metadata = self.sample_metadata(index)
         return {
             "instruction_id": metadata["instruction_id"],
-            "target_trajectory": torch.zeros(20, 2),
+            "target_action": torch.zeros(2),
             "target_stop": torch.tensor(
                 [float(metadata["target_stop"])], dtype=torch.float32
             ),
@@ -120,37 +121,35 @@ def test_frame_grouped_sampler_never_splits_an_observation() -> None:
 
 
 def test_metrics_expert_and_speed_contract() -> None:
-    target = np.zeros((2, 20, 2), dtype=np.float32)
-    target[0, :, 0] = np.arange(1, 21, dtype=np.float32) * 0.3
+    target = np.zeros((2, 2), dtype=np.float32)
+    target[0] = (0.3, 0.0)
     stop = np.asarray([False, True])
     labels = ["follow|color:red|3m", "stop|none|none"]
     logits = np.asarray([-20.0, 20.0], dtype=np.float32)
 
-    metrics = compute_policy_metrics(target, target, logits, stop, labels)
+    metrics = compute_action_metrics(target, target, logits, stop, labels)
 
-    assert metrics["ade_m"] == pytest.approx(0.0)
-    assert metrics["fde_m"] == pytest.approx(0.0)
+    assert metrics["action_error_m"] == pytest.approx(0.0)
     assert metrics["stop_classification"]["f1"] == pytest.approx(1.0)
     assert metrics["stop_drift"]["within_0_10m_rate"] == pytest.approx(1.0)
-    assert metrics["speed_constraint"]["violation_count"] == 0
-    assert metrics["aggregate_labels"]["red"]["sample_count"] == 1
-    assert metrics["aggregate_labels"]["3m"]["sample_count"] == 1
+    assert metrics["action_bound"]["violation_count"] == 0
+    assert metrics["per_label"]["follow|color:red|3m"]["sample_count"] == 1
 
 
 def test_label_mean_baseline_and_improvement() -> None:
-    trajectories = np.zeros((4, 20, 2), dtype=np.float32)
-    trajectories[1, :, 0] = 2.0
-    trajectories[2, :, 1] = 1.0
-    trajectories[3, :, 1] = 3.0
+    actions = np.zeros((4, 2), dtype=np.float32)
+    actions[1, 0] = 2.0
+    actions[2, 1] = 1.0
+    actions[3, 1] = 3.0
     labels = ["a", "a", "b", "b"]
 
-    means = fit_label_mean_baseline(trajectories, labels)
-    prediction, logits = predict_label_mean_baseline(means, ["a", "b"])
+    means = fit_label_mean_action_baseline(actions, labels)
+    prediction, logits = predict_label_mean_action_baseline(means, ["a", "b"])
 
-    assert np.allclose(prediction[0, :, 0], 1.0)
-    assert np.allclose(prediction[1, :, 1], 2.0)
+    assert np.allclose(prediction[0, 0], 1.0)
+    assert np.allclose(prediction[1, 1], 2.0)
     assert np.all(logits == -20.0)
-    assert improvement_fraction(0.7, 1.0) == pytest.approx(0.3)
+    assert _improvement_fraction(0.7, 1.0) == pytest.approx(0.3)
 
 
 def test_checkpoint_selection_requires_both_stop_gates() -> None:
@@ -178,17 +177,15 @@ def test_checkpoint_selection_requires_both_stop_gates() -> None:
 
 def test_acceptance_requires_every_frozen_gate() -> None:
     metrics = {
-        "ade_m": 0.6,
-        "fde_m": 0.6,
+        "action_error_m": 0.6,
         "stop_drift": {"within_0_10m_rate": 0.95},
         "stop_classification": {"f1": 0.95},
-        "speed_constraint": {"violation_rate": 0.0},
+        "action_bound": {"violation_rate": 0.0},
         "invalid_count": 0,
     }
-    baseline = {"ade_m": 1.0, "fde_m": 1.0}
+    baseline = {"action_error_m": 1.0}
     config = {
         "minimum_ade_improvement_over_label_mean": 0.30,
-        "minimum_fde_improvement_over_label_mean": 0.30,
         "minimum_stop_within_0_10m_rate": 0.95,
         "minimum_stop_f1": 0.95,
         "maximum_speed_violation_rate": 0.0,
@@ -200,3 +197,26 @@ def test_acceptance_requires_every_frozen_gate() -> None:
     assert result["passed"] is True
     metrics["stop_classification"]["f1"] = 0.94
     assert _acceptance(metrics, baseline, config)["passed"] is False
+
+
+def test_progress_snapshot_is_atomic_and_records_training_identity(tmp_path) -> None:
+    path = tmp_path / "progress.json"
+
+    _write_progress(
+        path,
+        output_root=tmp_path,
+        stage="epoch_running",
+        seed=29,
+        modality="full",
+        epoch_started=1,
+        epoch_completed=0,
+        epochs_total=80,
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "training_progress_v1"
+    assert payload["stage"] == "epoch_running"
+    assert payload["pid"] > 0
+    assert payload["seed"] == 29
+    assert payload["epoch_started"] == 1
+    assert not list(tmp_path.glob(".progress.json.*.tmp"))

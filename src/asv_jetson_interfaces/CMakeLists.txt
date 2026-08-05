@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/UEEntityArray.msg"
   "msg/CameraFrame.msg"
   "msg/DecisionOutput.msg"
+  "msg/DecisionPoint.msg"
   # UE5-only kinematic execution bypasses the physical controller. The
   # ObjectDeliverer bridge sends one body-frame displacement per source frame.
   "msg/UEKinematicSetpoint.msg"
@@ -19,11 +20,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VisualFeatures.msg"
   "msg/TaskFeatures.msg"
   # Offline expert labels retain the full UE frame identity because adjacent
-  # Frame_Index values may share a UE5 game-time timestamp.
+  # Frame_Index values may share a UE5 game-time timestamp. The payload is one
+  # expert_action point for the current frame.
   "msg/ExpertTrajectory.msg"
-  # The VLA policy publishes exactly one body-frame trajectory. Candidate and
-  # learned-world-model evaluation messages were intentionally removed.
-  "msg/SelectedTrajectory.msg"
   "msg/ModuleStatus.msg"
 )
 

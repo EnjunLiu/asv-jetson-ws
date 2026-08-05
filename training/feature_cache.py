@@ -1,9 +1,10 @@
 """Day 13 frozen multimodal feature cache.
 
 The cache is deliberately split into frame-level perception and sample-level
-supervision.  A camera frame is encoded once, while each compatible language
-instruction keeps its own expert trajectory row.  This avoids duplicating the
-same 576-D visual tensors roughly ninety times per frame.
+supervision. A camera frame is encoded once, while each compatible language
+instruction keeps its own single-point expert action row. The optional visual
+and ego arrays are retained only as perception audit evidence; they are never
+exposed through the policy input contract.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import gc
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -27,7 +29,16 @@ import numpy as np
 
 from asv_vla.episode import load_episode_records, write_json_atomic
 from asv_vla.frame_record import read_frame_record
-from asv_vla.image_entity_perception import ImageEntityPerceptionError
+from asv_vla.image_entity_perception import (
+    COLOR_CALIBRATED_MODEL_VERSION,
+    COLOR_CALIBRATED_MODEL_VERSION_V2,
+    ImageEntityPerceptionError,
+    LOW_LIGHT_PREPROCESS_BRIGHTNESS,
+    LOW_LIGHT_PREPROCESS_CONTRAST,
+    LOW_LIGHT_PREPROCESS_CONTRACT,
+    LOW_LIGHT_PREPROCESS_ENABLED,
+    LOW_LIGHT_PREPROCESS_GAMMA,
+)
 from asv_vla.language_encoder import USVLanguageEncoder
 from asv_vla.language_intervention_dataset import read_jsonl
 from asv_vla.task_entity_tensor import (
@@ -36,7 +47,6 @@ from asv_vla.task_entity_tensor import (
     EntityTensorResult,
     build_entity_tensor,
 )
-from asv_vla.trajectory_contract import ACTION_DIM, HORIZON
 from asv_vla.ego_features import normalize_ego
 from asv_vla.visual_encoder import (
     BACKBONE_ID,
@@ -47,6 +57,7 @@ from asv_vla.visual_encoder import (
     TargetProjectionError,
     VisualEncoderError,
     decode_camera_image,
+    enhance_low_light_image,
     make_target_crop,
 )
 from asv_vla.temporal_entity_tracker import (
@@ -56,8 +67,18 @@ from asv_vla.temporal_entity_tracker import (
 )
 
 
-FEATURE_CACHE_SCHEMA_VERSION = "feature_cache_v1"
+FEATURE_CACHE_SCHEMA_VERSION = "feature_cache_v2"
 PREPROCESS_VERSION = "camera_entity_crop_v1"
+ACTION_DIM = 2
+# This is the same fixed contract used by the online image-perception node.
+# The UE5 bridge already applies it to published JPEG bytes, so the cache keeps
+# the transform disabled by default for compatibility and enables it only when
+# explicitly requested for a new cache built from original JPEGs.
+IMAGE_PREPROCESS_CONTRACT = LOW_LIGHT_PREPROCESS_CONTRACT
+DEFAULT_IMAGE_PREPROCESS_ENABLED = LOW_LIGHT_PREPROCESS_ENABLED
+DEFAULT_IMAGE_PREPROCESS_GAMMA = LOW_LIGHT_PREPROCESS_GAMMA
+DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS = LOW_LIGHT_PREPROCESS_BRIGHTNESS
+DEFAULT_IMAGE_PREPROCESS_CONTRAST = LOW_LIGHT_PREPROCESS_CONTRAST
 # Ego is read from the synchronized UEASVState/INS message.  It is an
 # onboard modality, not UE object truth, and must remain identical in PC
 # training caches and Jetson inference.
@@ -93,6 +114,15 @@ class FeatureCacheMiss(FeatureCacheError):
     """Raised when an existing cache was built from a different cache key."""
 
 
+def _require_pc_data_pipeline() -> None:
+    """Keep feature extraction/cache generation off Jetson targets."""
+    if Path("/etc/nv_tegra_release").is_file():
+        raise FeatureCacheError(
+            "feature-cache generation is PC-only; synchronize validated cache "
+            "artifacts to Jetson for inference"
+        )
+
+
 @dataclass(frozen=True)
 class ModelFingerprint:
     model_id: str
@@ -118,6 +148,93 @@ class FrameVisualFeatures:
     entity_tokens: np.ndarray
     entity_visual_mask: np.ndarray
     detail: str
+
+
+@dataclass(frozen=True)
+class ImagePreprocessConfig:
+    """Deterministic image transform configuration recorded in each cache."""
+
+    enabled: bool = DEFAULT_IMAGE_PREPROCESS_ENABLED
+    gamma: float = DEFAULT_IMAGE_PREPROCESS_GAMMA
+    brightness: float = DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS
+    contrast: float = DEFAULT_IMAGE_PREPROCESS_CONTRAST
+
+    def __post_init__(self) -> None:
+        values = (self.gamma, self.brightness, self.contrast)
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("image preprocessing parameters must be finite")
+        if self.gamma <= 0.0:
+            raise ValueError("image preprocessing gamma must be positive")
+        if self.brightness <= 0.0:
+            raise ValueError("image preprocessing brightness must be positive")
+        if self.contrast <= 0.0:
+            raise ValueError("image preprocessing contrast must be positive")
+
+    def as_manifest(self) -> dict[str, Any]:
+        return {
+            "contract": IMAGE_PREPROCESS_CONTRACT,
+            "enabled": bool(self.enabled),
+            "gamma": float(self.gamma),
+            "brightness": float(self.brightness),
+            "contrast": float(self.contrast),
+            "implementation": (
+                "asv_vla.visual_encoder.enhance_low_light_image"
+            ),
+            "input": "decoded_original_jpeg",
+            "random_brightness_augmentation": False,
+        }
+
+
+def make_image_preprocess_config(
+    *,
+    enabled: bool = DEFAULT_IMAGE_PREPROCESS_ENABLED,
+    gamma: float = DEFAULT_IMAGE_PREPROCESS_GAMMA,
+    brightness: float = DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    contrast: float = DEFAULT_IMAGE_PREPROCESS_CONTRAST,
+) -> ImagePreprocessConfig:
+    """Build and validate the fixed cache image-preprocessing contract."""
+
+    return ImagePreprocessConfig(
+        enabled=bool(enabled),
+        gamma=float(gamma),
+        brightness=float(brightness),
+        contrast=float(contrast),
+    )
+
+
+def preprocess_camera_image(
+    image: Any,
+    config: ImagePreprocessConfig,
+) -> Any:
+    """Apply the fixed transform used by online image consumers."""
+
+    return enhance_low_light_image(
+        image,
+        enabled=config.enabled,
+        gamma=config.gamma,
+        brightness=config.brightness,
+        contrast=config.contrast,
+    )
+
+
+def _validate_image_preprocess_manifest(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise FeatureCacheError("image_preprocess manifest must be an object")
+    try:
+        expected = make_image_preprocess_config(
+            enabled=bool(value["enabled"]),
+            gamma=float(value["gamma"]),
+            brightness=float(value["brightness"]),
+            contrast=float(value["contrast"]),
+        ).as_manifest()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FeatureCacheError(
+            f"image_preprocess manifest is invalid: {exc}"
+        ) from exc
+    if value != expected:
+        raise FeatureCacheError(
+            "image_preprocess manifest does not match the fixed contract"
+        )
 
 
 def _validate_sha256(value: str, field: str) -> None:
@@ -258,16 +375,42 @@ def _predict_image_entities(
     episode_dir: Path,
     image_model: Any,
     tracker: TemporalEntityTracker,
+    image_preprocess: ImagePreprocessConfig | None = None,
 ) -> tuple[Any, ...]:
     camera = record.get("camera", {})
     image_path = episode_dir / str(camera.get("image_path", ""))
     observations: list[GeometryObservation] = []
+    preprocess = image_preprocess or make_image_preprocess_config()
     if bool(record.get("valid")) and bool(camera.get("valid")):
         try:
-            image = decode_camera_image(
+            color_image = decode_camera_image(
                 image_path.read_bytes(), str(camera.get("encoding", ""))
             )
-            predictions = image_model.predict(image)
+            feature_image = preprocess_camera_image(color_image, preprocess)
+            predict = image_model.predict
+            try:
+                parameters = inspect.signature(predict).parameters.values()
+            except (TypeError, ValueError):
+                parameters = ()
+            supports_color_reference = any(
+                parameter.name == "color_image"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            if supports_color_reference:
+                predictions = predict(
+                    feature_image,
+                    color_image=color_image,
+                )
+            elif getattr(image_model, "model_version", "") in (
+                COLOR_CALIBRATED_MODEL_VERSION,
+                COLOR_CALIBRATED_MODEL_VERSION_V2,
+            ):
+                raise ImageEntityPerceptionError(
+                    "calibrated perception model lacks original-RGB color contract"
+                )
+            else:
+                predictions = predict(feature_image)
         except (OSError, InvalidImageError):
             predictions = ()
         except ImageEntityPerceptionError as exc:
@@ -305,13 +448,15 @@ def _predict_image_entities(
 def build_policy_entity_tensor(
     entities: Iterable[Any],
 ) -> PolicyEntityTensor:
-    """Build Day 7 geometry while removing the two privileged color fields."""
+    """Build structured geometry for the decision policy.
+
+    The tensor includes position, relative velocity, visibility-by-mask,
+    target/color flags, and collision-risk features. It is the sole structured
+    observation passed to the decision head.
+    """
 
     result: EntityTensorResult = build_entity_tensor(entities)
     features = np.ascontiguousarray(result.features.copy(), dtype=np.float32)
-    features[:, COLOR_PRIVILEGE_COLUMNS[0] : COLOR_PRIVILEGE_COLUMNS[1] + 1] = 0.0
-    if np.any(features[:, 14:16] != 0.0):
-        raise FeatureCacheError("privileged entity color fields were not removed")
     return PolicyEntityTensor(
         features=features,
         mask=np.ascontiguousarray(result.mask, dtype=np.bool_),
@@ -327,6 +472,7 @@ def encode_frame_visual(
     *,
     profile: CameraProfile | None = None,
     crop_entities: Iterable[Any] | None = None,
+    image_preprocess: ImagePreprocessConfig | None = None,
 ) -> FrameVisualFeatures:
     """Encode global and per-entity images with fail-closed image semantics."""
 
@@ -337,6 +483,7 @@ def encode_frame_visual(
     )
     zeros_mask = np.zeros(MAX_ENTITIES, dtype=np.bool_)
     camera = record.get("camera", {})
+    preprocess = image_preprocess or make_image_preprocess_config()
     if not bool(record.get("valid")) or not bool(camera.get("valid")):
         return FrameVisualFeatures(
             zeros_global, False, zeros_entities, zeros_mask, "camera_invalid"
@@ -344,9 +491,12 @@ def encode_frame_visual(
 
     image_path = Path(episode_dir) / str(camera.get("image_path", ""))
     try:
-        image = decode_camera_image(
-            image_path.read_bytes(),
-            str(camera.get("encoding", "")),
+        image = preprocess_camera_image(
+            decode_camera_image(
+                image_path.read_bytes(),
+                str(camera.get("encoding", "")),
+            ),
+            preprocess,
         )
     except (OSError, InvalidImageError) as exc:
         return FrameVisualFeatures(
@@ -422,6 +572,7 @@ def make_cache_key(
     preprocess_version: str = PREPROCESS_VERSION,
     feature_schema_version: str = FEATURE_CACHE_SCHEMA_VERSION,
     image_perception: dict[str, Any] | None = None,
+    image_preprocess: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not source_frames:
         raise FeatureCacheError("source_frames must not be empty")
@@ -446,6 +597,8 @@ def make_cache_key(
     }
     if image_perception is not None:
         key["image_perception"] = image_perception
+    if image_preprocess is not None:
+        key["image_preprocess"] = image_preprocess
     return key
 
 
@@ -475,6 +628,8 @@ def _frame_sources(
                     f"{record['stamp_us']}"
                 ),
                 "frame_index": index,
+                "image_path": str(record["camera"]["image_path"]),
+                "image_encoding": str(record["camera"].get("encoding", "")),
                 "source_frame_sha256": _sha256_file(frame_path),
                 "image_sha256": _sha256_file(image_path),
             }
@@ -520,11 +675,15 @@ def _build_sample_arrays(
     frame_row_by_index: dict[int, int],
     instruction_index: dict[str, int],
     source_by_index: dict[int, dict[str, Any]],
+    policy_input_valid_by_index: dict[int, bool],
 ) -> dict[str, np.ndarray]:
+    frame_index_by_row = {
+        int(row): int(index) for index, row in frame_row_by_index.items()
+    }
     sample_ids: list[str] = []
     frame_rows: list[int] = []
     instruction_rows: list[int] = []
-    trajectories: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
     safe_stop: list[bool] = []
     selected_entity_ids: list[str] = []
     for sample in samples:
@@ -554,24 +713,57 @@ def _build_sample_arrays(
             raise FeatureCacheError(
                 f"unknown instruction_id={instruction_id!r}"
             )
-        trajectory = np.asarray(
-            sample.get("expert", {}).get("delta_p_xy"), dtype=np.float32
+        action = np.asarray(
+            sample.get("expert", {}).get("expert_action"), dtype=np.float32
         )
-        if trajectory.shape != (HORIZON, ACTION_DIM):
+        if action.shape != (ACTION_DIM,):
             raise FeatureCacheError(
-                f"sample {sample.get('sample_id')} trajectory shape "
-                f"{trajectory.shape} is invalid"
+                f"sample {sample.get('sample_id')} expert action shape "
+                f"{action.shape} is invalid; expected ({ACTION_DIM},)"
             )
-        if not np.all(np.isfinite(trajectory)):
-            raise FeatureCacheError("expert trajectory contains NaN or Inf")
+        if not np.all(np.isfinite(action)):
+            raise FeatureCacheError("expert action contains NaN or Inf")
         sample_ids.append(str(sample["sample_id"]))
         frame_rows.append(frame_row_by_index[frame_index])
         instruction_rows.append(instruction_index[instruction_id])
-        trajectories.append(trajectory)
+        actions.append(action)
         safe_stop.append(bool(sample.get("expert", {}).get("safe_stop")))
         selected_entity_ids.append(
             str(sample.get("expert", {}).get("selected_entity_id") or "")
         )
+
+    # Teacher-force only the immediately preceding expert action for the same
+    # task.  A missing frame, a frame-index gap, an invalid perception frame,
+    # or a previous STOP label starts a fresh temporal context.
+    sample_row_by_key: dict[tuple[int, int], int] = {}
+    for sample_row, (frame_row, instruction_row) in enumerate(
+        zip(frame_rows, instruction_rows)
+    ):
+        frame_index = frame_index_by_row[int(frame_row)]
+        key = (frame_index, int(instruction_row))
+        if key in sample_row_by_key:
+            raise FeatureCacheError(
+                f"duplicate supervision sample for frame/instruction key={key}"
+            )
+        sample_row_by_key[key] = sample_row
+
+    previous_actions = np.zeros((len(samples), ACTION_DIM), dtype=np.float32)
+    previous_valid = np.zeros(len(samples), dtype=np.bool_)
+    for sample_row, (frame_row, instruction_row) in enumerate(
+        zip(frame_rows, instruction_rows)
+    ):
+        current_index = frame_index_by_row[int(frame_row)]
+        previous_row = sample_row_by_key.get(
+            (current_index - 1, int(instruction_row))
+        )
+        if previous_row is None:
+            continue
+        if not policy_input_valid_by_index.get(current_index - 1, False):
+            continue
+        if safe_stop[previous_row]:
+            continue
+        previous_actions[sample_row] = actions[previous_row]
+        previous_valid[sample_row] = True
 
     return {
         "sample_ids": np.asarray(sample_ids, dtype=np.str_),
@@ -579,10 +771,12 @@ def _build_sample_arrays(
         "sample_instruction_rows": np.asarray(
             instruction_rows, dtype=np.int16
         ),
-        "expert_trajectories": np.stack(trajectories).astype(
+        "expert_actions": np.stack(actions).astype(
             np.float32, copy=False
         ),
         "expert_safe_stop": np.asarray(safe_stop, dtype=np.bool_),
+        "previous_expert_actions": previous_actions,
+        "previous_action_valid": previous_valid,
         "expert_selected_entity_ids": np.asarray(
             selected_entity_ids, dtype=np.str_
         ),
@@ -601,11 +795,17 @@ def build_feature_cache(
     visual_model: ModelFingerprint,
     git_sha: str,
     preprocess_version: str = PREPROCESS_VERSION,
+    image_preprocess_enabled: bool = DEFAULT_IMAGE_PREPROCESS_ENABLED,
+    image_preprocess_gamma: float = DEFAULT_IMAGE_PREPROCESS_GAMMA,
+    image_preprocess_brightness: float = DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    image_preprocess_contrast: float = DEFAULT_IMAGE_PREPROCESS_CONTRAST,
     precomputed_language_embeddings: np.ndarray | None = None,
     image_model: Any | None = None,
     image_model_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build or validate one Run's immutable feature cache."""
+
+    _require_pc_data_pipeline()
 
     episode = Path(episode_dir).resolve()
     supervision = Path(supervision_dir).resolve()
@@ -619,6 +819,13 @@ def build_feature_cache(
         raise FeatureCacheError("episode contains multiple run_ids")
     run_id = next(iter(run_ids))
     sources = _frame_sources(records, episode)
+    image_preprocess = make_image_preprocess_config(
+        enabled=image_preprocess_enabled,
+        gamma=image_preprocess_gamma,
+        brightness=image_preprocess_brightness,
+        contrast=image_preprocess_contrast,
+    )
+    image_preprocess_manifest = image_preprocess.as_manifest()
     image_perception = _image_perception_provenance(
         image_model, image_model_path
     )
@@ -629,6 +836,7 @@ def build_feature_cache(
         git_sha=git_sha,
         preprocess_version=preprocess_version,
         image_perception=(image_perception if image_model is not None else None),
+        image_preprocess=image_preprocess_manifest,
     )
     cache_key_sha256 = _json_digest(cache_key)
     output = output_base / run_id
@@ -640,7 +848,23 @@ def build_feature_cache(
             raise FeatureCacheMiss(
                 f"existing cache manifest is unreadable: {exc}"
             ) from exc
-        if existing.get("cache_key_sha256") != cache_key_sha256:
+        cache_key_matches = existing.get("cache_key_sha256") == cache_key_sha256
+        legacy_cache_key = make_cache_key(
+            source_frames=sources,
+            language_model=language_model,
+            visual_model=visual_model,
+            git_sha=git_sha,
+            preprocess_version=preprocess_version,
+            image_perception=(
+                image_perception if image_model is not None else None
+            ),
+        )
+        legacy_compatible = (
+            not image_preprocess.enabled
+            and "image_preprocess" not in existing
+            and existing.get("cache_key_sha256") == _json_digest(legacy_cache_key)
+        )
+        if not cache_key_matches and not legacy_compatible:
             raise FeatureCacheMiss(
                 "existing feature cache key differs; weights, preprocessing, "
                 "source frames, image bytes, git SHA, or schema changed"
@@ -717,7 +941,13 @@ def build_feature_cache(
 
     for record, source in zip(records, sources):
         tracked_entities = (
-            _predict_image_entities(record, episode, image_model, tracker)
+            _predict_image_entities(
+                record,
+                episode,
+                image_model,
+                tracker,
+                image_preprocess=image_preprocess,
+            )
             if image_model is not None and tracker is not None
             else None
         )
@@ -732,6 +962,7 @@ def build_feature_cache(
             entities,
             visual_encoder,
             crop_entities=tracked_entities,
+            image_preprocess=image_preprocess,
         )
         ego_block = record.get("ego", {})
         ego_array, finite_ego = normalize_ego(
@@ -756,8 +987,7 @@ def build_feature_cache(
         ego_valid.append(current_ego_valid)
         policy_input_valid.append(
             bool(record.get("valid"))
-            and visual.global_valid
-            and current_ego_valid
+            and bool(np.any(entities.mask))
         )
         visual_details.append(visual.detail)
 
@@ -769,6 +999,10 @@ def build_feature_cache(
     source_by_index = {
         int(item["frame_index"]): item for item in sources
     }
+    policy_input_valid_by_index = {
+        int(frame_index): bool(valid)
+        for frame_index, valid in zip(frame_indices, policy_input_valid)
+    }
     samples_path = supervision / "samples.jsonl"
     samples = _load_supervision_samples(samples_path)
     sample_arrays = _build_sample_arrays(
@@ -777,6 +1011,7 @@ def build_feature_cache(
         frame_row_by_index=frame_row_by_index,
         instruction_index=instruction_index,
         source_by_index=source_by_index,
+        policy_input_valid_by_index=policy_input_valid_by_index,
     )
 
     output_base.mkdir(parents=True, exist_ok=True)
@@ -844,11 +1079,12 @@ def build_feature_cache(
             "entity_projection_count": int(
                 np.count_nonzero(np.stack(entity_visual_mask))
             ),
-            "privileged_color_columns_zero": True,
+            "structured_entity_color_columns": True,
             "visual_details": visual_details,
             "perception_model_id": image_perception["model_id"],
             "perception_model_version": image_perception["model_version"],
             "perception_model_enabled": bool(image_perception["enabled"]),
+            "image_preprocess": image_preprocess_manifest,
         }
         write_json_atomic(temporary / QUALITY_FILE_NAME, quality_report)
         manifest = {
@@ -872,6 +1108,7 @@ def build_feature_cache(
                 "image_perception": image_perception,
             },
             "preprocess_version": preprocess_version,
+            "image_preprocess": image_preprocess_manifest,
             "git_sha": git_sha,
             "source": {
                 "episode_manifest_sha256": _sha256_file(
@@ -934,6 +1171,8 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         raise FeatureCacheError(f"cache metadata is unreadable: {exc}") from exc
     if manifest.get("schema_version") != FEATURE_CACHE_SCHEMA_VERSION:
         raise FeatureCacheError("feature cache schema version mismatch")
+    if "image_preprocess" in manifest:
+        _validate_image_preprocess_manifest(manifest["image_preprocess"])
     if _json_digest(manifest.get("cache_key")) != manifest.get(
         "cache_key_sha256"
     ):
@@ -956,7 +1195,19 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
             entity_mask = np.asarray(frames["entity_mask"])
             entity_ids = np.asarray(frames["entity_ids"])
             ego = np.asarray(frames["ego"])
-            expert = np.asarray(frames["expert_trajectories"])
+            if "expert_actions" not in frames.files:
+                raise FeatureCacheError(
+                    "feature cache is missing expert_actions [N, 2]; "
+                    "rebuild the cache"
+                )
+            expert = np.asarray(frames["expert_actions"])
+            previous_expert_actions = np.asarray(
+                frames["previous_expert_actions"]
+            )
+            previous_action_valid = np.asarray(
+                frames["previous_action_valid"]
+            )
+            expert_safe_stop = np.asarray(frames["expert_safe_stop"])
             sample_frame_rows = np.asarray(frames["sample_frame_rows"])
             sample_instruction_rows = np.asarray(
                 frames["sample_instruction_rows"]
@@ -988,7 +1239,16 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         "entity_mask": ((frame_count, MAX_ENTITIES), entity_mask.shape),
         "entity_ids": ((frame_count, MAX_ENTITIES), entity_ids.shape),
         "ego": ((frame_count, 2), ego.shape),
-        "expert": ((sample_count, HORIZON, ACTION_DIM), expert.shape),
+        "expert_actions": ((sample_count, ACTION_DIM), expert.shape),
+        "previous_expert_actions": (
+            (sample_count, ACTION_DIM),
+            previous_expert_actions.shape,
+        ),
+        "previous_action_valid": (
+            (sample_count,),
+            previous_action_valid.shape,
+        ),
+        "expert_safe_stop": ((sample_count,), expert_safe_stop.shape),
         "sample_frame_rows": ((sample_count,), sample_frame_rows.shape),
         "sample_instruction_rows": (
             (sample_count,),
@@ -1013,15 +1273,18 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         entity_features,
         ego,
         expert,
+        previous_expert_actions,
     )
     if not all(np.all(np.isfinite(array)) for array in numeric_arrays):
         raise FeatureCacheError("cache contains NaN or Inf")
-    if np.any(entity_features[:, :, 14:16] != 0.0):
-        raise FeatureCacheError("privileged entity color fields are non-zero")
     if np.any(entity_visual[~entity_visual_mask] != 0.0):
         raise FeatureCacheError("masked entity visual tokens must be zero")
     if np.any(global_visual[~global_mask] != 0.0):
         raise FeatureCacheError("invalid global visual tokens must be zero")
+    if np.any(previous_expert_actions[~previous_action_valid] != 0.0):
+        raise FeatureCacheError(
+            "invalid previous expert actions must be zero"
+        )
     if np.any(sample_frame_rows < 0) or np.any(
         sample_frame_rows >= frame_count
     ):
@@ -1030,6 +1293,46 @@ def validate_feature_cache(cache_dir: str | Path) -> dict[str, Any]:
         sample_instruction_rows >= instruction_count
     ):
         raise FeatureCacheError("sample instruction row is out of range")
+    frame_row_by_index = {
+        int(frame_index): row for row, frame_index in enumerate(frame_indices)
+    }
+    sample_row_by_key: dict[tuple[int, int], int] = {}
+    for sample_row, (frame_row, instruction_row) in enumerate(
+        zip(sample_frame_rows, sample_instruction_rows)
+    ):
+        key = (int(frame_indices[int(frame_row)]), int(instruction_row))
+        if key in sample_row_by_key:
+            raise FeatureCacheError(
+                f"duplicate sample frame/instruction key: {key}"
+            )
+        sample_row_by_key[key] = sample_row
+    expected_previous_valid = np.zeros(sample_count, dtype=np.bool_)
+    for sample_row, (frame_row, instruction_row) in enumerate(
+        zip(sample_frame_rows, sample_instruction_rows)
+    ):
+        current_frame_index = int(frame_indices[int(frame_row)])
+        previous_frame_row = frame_row_by_index.get(current_frame_index - 1)
+        previous_sample_row = sample_row_by_key.get(
+            (current_frame_index - 1, int(instruction_row))
+        )
+        if previous_frame_row is None or previous_sample_row is None:
+            continue
+        if not bool(policy_input_valid[previous_frame_row]):
+            continue
+        if bool(expert_safe_stop[previous_sample_row]):
+            continue
+        expected_previous_valid[sample_row] = True
+        if not np.array_equal(
+            previous_expert_actions[sample_row], expert[previous_sample_row]
+        ):
+            raise FeatureCacheError(
+                "previous expert action does not match the adjacent "
+                "same-instruction sample"
+            )
+    if not np.array_equal(previous_action_valid.astype(np.bool_), expected_previous_valid):
+        raise FeatureCacheError(
+            "previous_action_valid does not match adjacent same-task labels"
+        )
     if len(np.unique(frame_indices)) != frame_count:
         raise FeatureCacheError("frame indices are not unique")
     if len(np.unique(instruction_ids)) != instruction_count:
@@ -1241,6 +1544,10 @@ def _main_build(args: argparse.Namespace) -> int:
         visual_model=ModelFingerprint(args.visual_model_id, visual_sha),
         git_sha=args.git_sha,
         precomputed_language_embeddings=language_embeddings,
+        image_preprocess_enabled=args.image_preprocess_enabled,
+        image_preprocess_gamma=args.image_preprocess_gamma,
+        image_preprocess_brightness=args.image_preprocess_brightness,
+        image_preprocess_contrast=args.image_preprocess_contrast,
     )
     print(
         "FEATURE_CACHE_PASS "
@@ -1273,6 +1580,35 @@ def main() -> int:
     build.add_argument("--device", default="cuda")
     build.add_argument("--language-cache-size", type=int, default=128)
     build.add_argument("--cuda-load-attempts", type=int, default=2)
+    preprocess = build.add_mutually_exclusive_group()
+    preprocess.add_argument(
+        "--image-preprocess-enabled",
+        dest="image_preprocess_enabled",
+        action="store_true",
+        help="apply the fixed UE5-compatible transform to decoded original JPEGs",
+    )
+    preprocess.add_argument(
+        "--no-image-preprocess",
+        dest="image_preprocess_enabled",
+        action="store_false",
+        help="keep legacy raw-JPEG cache behavior (default)",
+    )
+    build.set_defaults(image_preprocess_enabled=DEFAULT_IMAGE_PREPROCESS_ENABLED)
+    build.add_argument(
+        "--image-preprocess-gamma",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_GAMMA,
+    )
+    build.add_argument(
+        "--image-preprocess-brightness",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    )
+    build.add_argument(
+        "--image-preprocess-contrast",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_CONTRAST,
+    )
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("cache", type=Path)

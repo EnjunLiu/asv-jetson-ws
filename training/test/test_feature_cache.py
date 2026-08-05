@@ -19,6 +19,9 @@ from asv_vla.language_intervention_dataset import write_jsonl
 from asv_vla.supervised_dataset import build_supervised_dataset
 from asv_vla.temporal_entity_tracker import TemporalEntityTracker
 from training.feature_cache import (
+    DEFAULT_IMAGE_PREPROCESS_CONTRAST,
+    DEFAULT_IMAGE_PREPROCESS_ENABLED,
+    DEFAULT_IMAGE_PREPROCESS_GAMMA,
     FeatureCacheError,
     FeatureCacheMiss,
     IMAGE_PERCEPTION_TRACKER_CONFIG,
@@ -28,7 +31,9 @@ from training.feature_cache import (
     compare_feature_caches,
     encode_frame_visual,
     hash_weight_tree,
+    make_image_preprocess_config,
     make_cache_key,
+    preprocess_camera_image,
     _predict_image_entities,
     validate_feature_cache,
 )
@@ -293,7 +298,7 @@ def _build_image_only(
     return result, image_model, visual
 
 
-def test_policy_entity_tensor_removes_color_privilege_and_preserves_ids(
+def test_policy_entity_tensor_preserves_image_derived_color_and_ids(
     tmp_path: Path,
 ) -> None:
     episode, _, _ = _make_sources(tmp_path)
@@ -312,7 +317,13 @@ def test_policy_entity_tensor_removes_color_privilege_and_preserves_ids(
         "target_left",
         "target_right",
     )
-    assert np.all(result.features[:, 14:16] == 0.0)
+    assert np.array_equal(
+        result.features[:4, 14:16],
+        np.asarray(
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
     assert result.mask[:4].all()
 
 
@@ -391,6 +402,63 @@ def test_cache_key_changes_for_weights_preprocess_or_source() -> None:
     assert image_key != changed_tracker_key
 
 
+def test_fixed_image_preprocess_is_reproducible_and_manifested(
+    tmp_path: Path,
+) -> None:
+    default = make_image_preprocess_config()
+    assert default.enabled is DEFAULT_IMAGE_PREPROCESS_ENABLED
+    assert default.gamma == pytest.approx(DEFAULT_IMAGE_PREPROCESS_GAMMA)
+    assert default.contrast == pytest.approx(DEFAULT_IMAGE_PREPROCESS_CONTRAST)
+    assert default.as_manifest()["random_brightness_augmentation"] is False
+
+    image = Image.new("RGB", (8, 8), (12, 24, 48))
+    bright = make_image_preprocess_config(
+        enabled=True,
+        gamma=0.65,
+        brightness=1.0,
+        contrast=1.0,
+    )
+    transformed = preprocess_camera_image(image, bright)
+    assert transformed is not image
+    assert np.asarray(transformed).mean() > np.asarray(image).mean()
+    np.testing.assert_array_equal(
+        np.asarray(transformed),
+        np.asarray(preprocess_camera_image(image, bright)),
+    )
+
+    episode, supervision, instructions = _make_sources(tmp_path, frame_count=1)
+    result = build_feature_cache(
+        episode,
+        supervision,
+        instructions,
+        tmp_path / "features",
+        language_encoder=FakeLanguageEncoder(),
+        visual_encoder=FakeVisualEncoder(),
+        language_model=ModelFingerprint("fake-language", SHA_A),
+        visual_model=ModelFingerprint("fake-visual", SHA_B),
+        git_sha="deadbeef",
+        image_preprocess_enabled=True,
+        image_preprocess_gamma=0.65,
+        image_preprocess_brightness=1.0,
+        image_preprocess_contrast=1.0,
+    )
+    manifest = json.loads(
+        (Path(result["output"]) / "manifest.json").read_text(encoding="utf-8")
+    )
+    metadata = manifest["image_preprocess"]
+    assert metadata["contract"] == (
+        "ue5_capture_gamma065_brightness100_contrast100_v2"
+    )
+    assert metadata["enabled"] is True
+    assert metadata["gamma"] == pytest.approx(0.65)
+    assert metadata["random_brightness_augmentation"] is False
+    assert metadata["input"] == "decoded_original_jpeg"
+    assert manifest["cache_key"]["image_preprocess"] == metadata
+    assert manifest["source"]["frames"][0]["image_path"].endswith(
+        ".jpg"
+    )
+
+
 def test_single_weight_file_uses_its_real_sha256(tmp_path: Path) -> None:
     weight = tmp_path / "model" / "model.safetensors"
     weight.parent.mkdir()
@@ -415,6 +483,16 @@ def test_build_validate_and_hit_immutable_cache(tmp_path: Path) -> None:
     assert language.calls == 9
     assert visual.calls == 2
     assert validate_feature_cache(cache)["passed"]
+    with np.load(cache / "frames_000.npz", allow_pickle=False) as frames:
+        previous_actions = np.asarray(frames["previous_expert_actions"])
+        previous_valid = np.asarray(frames["previous_action_valid"])
+        expert_actions = np.asarray(frames["expert_actions"])
+    assert previous_actions.shape == (18, 2)
+    assert not np.any(previous_valid[:9])
+    assert np.all(previous_valid[9:17])
+    assert not bool(previous_valid[17])
+    np.testing.assert_array_equal(previous_actions[9:17], expert_actions[:8])
+    np.testing.assert_array_equal(previous_actions[17], np.zeros(2))
 
     cached = build_feature_cache(
         episode,

@@ -1,120 +1,78 @@
-"""VLA runtime trajectory control bridge tests."""
-
-from __future__ import annotations
-
-import math
 import pytest
 
 from asv_vla.trajectory_controller import (
     MAX_DESIRED_M,
     STALE_THRESHOLD_SEC,
-    ControlCommand,
-    trajectory_to_command,
+    point_to_command,
 )
-from asv_vla.trajectory_contract import ACTION_DIM, HORIZON
+from asv_vla.trajectory_contract import DT_SEC
 
 
-def _step_trajectory(dx: float, dy: float) -> list[float]:
-    result: list[float] = []
-    for i in range(HORIZON):
-        result.extend(((i + 1) * dx, (i + 1) * dy))
-    return result
+def _command(**overrides):
+    values = dict(
+        desired_x=0.1,
+        desired_y=0.05,
+        safe_stop=False,
+        valid=True,
+        reason="PASS",
+        stamp_us=1000,
+        dt=DT_SEC,
+    )
+    values.update(overrides)
+    return point_to_command(**values)
 
 
-class TestNormalFollow:
-    def test_follow_outputs_prefix(self) -> None:
-        traj = _step_trajectory(0.1, 0.05)
-        cmd = trajectory_to_command(
-            traj, safe_stop=False, valid=True, reason="PASS", stamp_us=1000
-        )
-        assert cmd.valid is True
-        assert cmd.desired_x == pytest.approx(0.1)  # cumulative waypoint 0
-        assert cmd.desired_y == pytest.approx(0.05)
-
-    def test_clip_excessive_displacement(self) -> None:
-        traj = _step_trajectory(5.0, 0.0)
-        cmd = trajectory_to_command(
-            traj, safe_stop=False, valid=True, reason="PASS", stamp_us=1000
-        )
-        assert cmd.valid is True
-        assert abs(cmd.desired_x) <= MAX_DESIRED_M
+def test_single_point_is_executed_without_trajectory_parsing():
+    command = _command()
+    assert command.valid
+    assert command.desired_x == pytest.approx(0.1)
+    assert command.desired_y == pytest.approx(0.05)
 
 
-class TestStopAndReject:
-    def test_safe_stop_invalid(self) -> None:
-        cmd = trajectory_to_command(
-            _step_trajectory(0.1, 0.0),
-            safe_stop=True,
-            valid=True,
-            reason="POLICY_STOP",
-            stamp_us=1000,
-        )
-        assert cmd.valid is False
-        assert "STOP" in cmd.detail
-
-    def test_invalid_trajectory_rejected(self) -> None:
-        cmd = trajectory_to_command(
-            _step_trajectory(0.1, 0.0),
-            safe_stop=False,
-            valid=False,
-            reason="SPEED_LIMIT",
-            stamp_us=1000,
-        )
-        assert cmd.valid is False
-        assert "SPEED_LIMIT" in cmd.detail
+def test_displacement_norm_is_limited():
+    command = _command(desired_x=MAX_DESIRED_M, desired_y=0.01)
+    assert not command.valid
+    assert command.detail == "DISPLACEMENT_LIMIT"
 
 
-class TestDuplicateAndStale:
-    def test_duplicate_frame_rejected(self) -> None:
-        cmd = trajectory_to_command(
-            _step_trajectory(0.1, 0.0),
-            safe_stop=False,
-            valid=True,
-            reason="PASS",
-            stamp_us=1000,
-            last_executed_stamp_us=1000,
-        )
-        assert cmd.valid is False
-        assert "DUPLICATE" in cmd.detail
-
-    def test_stale_rejected(self) -> None:
-        cmd = trajectory_to_command(
-            _step_trajectory(0.1, 0.0),
-            safe_stop=False,
-            valid=True,
-            reason="PASS",
-            stamp_us=2000,
-            time_since_last_valid_sec=STALE_THRESHOLD_SEC + 0.1,
-        )
-        assert cmd.valid is False
-        assert "STALE" in cmd.detail
+def test_invalid_stop_is_zero_and_not_valid():
+    command = _command(safe_stop=True, reason="POLICY_STOP")
+    assert not command.valid
+    assert (command.desired_x, command.desired_y) == (0.0, 0.0)
 
 
-class TestBadShape:
-    def test_nan_rejected(self) -> None:
-        values = [0.0] * (HORIZON * ACTION_DIM)
-        values[0] = float("nan")
-        cmd = trajectory_to_command(
-            values, safe_stop=False, valid=True, reason="PASS", stamp_us=1000
-        )
-        assert cmd.valid is False
-
-    def test_wrong_length_rejected(self) -> None:
-        cmd = trajectory_to_command(
-            [0.0, 0.0], safe_stop=False, valid=True, reason="PASS", stamp_us=1000
-        )
-        assert cmd.valid is False
+def test_invalid_input_is_zero():
+    command = _command(valid=False, reason="NONFINITE")
+    assert not command.valid
+    assert (command.desired_x, command.desired_y) == (0.0, 0.0)
 
 
-class TestZeroTrajectory:
-    def test_zero_still_valid(self) -> None:
-        cmd = trajectory_to_command(
-            [0.0] * (HORIZON * ACTION_DIM),
-            safe_stop=False,
-            valid=True,
-            reason="PASS",
-            stamp_us=1000,
-        )
-        assert cmd.valid is True
-        assert cmd.desired_x == 0.0
-        assert cmd.desired_y == 0.0
+def test_nonfinite_and_wrong_dt_are_rejected():
+    assert not _command(desired_x=float("nan")).valid
+    assert _command(dt=0.1).detail == "INVALID_DT"
+
+
+def test_duplicate_and_stale_points_are_rejected():
+    assert _command(last_executed_stamp_us=1000).detail == "DUPLICATE_FRAME"
+    assert _command(
+        time_since_last_valid_sec=STALE_THRESHOLD_SEC + 0.1
+    ).detail == "STALE_DISPLACEMENT"
+
+
+def test_reversal_is_rate_limited():
+    command = _command(
+        desired_x=-0.15,
+        desired_y=0.0,
+        previous_desired=(0.15, 0.0),
+        stamp_us=2000,
+    )
+    assert command.valid
+    assert command.detail == "EXECUTE_DISPLACEMENT_RATE_LIMITED"
+    assert command.desired_x == pytest.approx(0.0)
+    assert command.desired_y == pytest.approx(0.0)
+
+
+def test_valid_zero_displacement_is_an_ordinary_hold():
+    command = _command(desired_x=0.0, desired_y=0.0)
+    assert command.valid
+    assert not command.detail.startswith("STOP")

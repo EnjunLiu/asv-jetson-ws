@@ -1,4 +1,4 @@
-"""Day 14 small multimodal policy with one bounded trajectory output."""
+"""Small multimodal policy with one bounded body-frame action output."""
 
 from __future__ import annotations
 
@@ -14,19 +14,16 @@ from torch import Tensor, nn
 @dataclass(frozen=True)
 class SmallPolicyConfig:
     language_dim: int = 256
-    visual_dim: int = 576
     entity_count: int = 16
     entity_geometry_dim: int = 16
-    ego_dim: int = 2
-    horizon: int = 20
     action_dim: int = 2
+    previous_action_dim: int = 2
     language_hidden: int = 128
-    visual_hidden: int = 128
     entity_geometry_hidden: int = 64
     entity_hidden: int = 192
-    ego_hidden: int = 32
+    previous_action_hidden: int = 64
     fusion_hidden: int = 256
-    maximum_step_m: float = 0.3
+    maximum_action_m: float = 0.3
     invalid_stop_logit: float = 20.0
     maximum_trainable_parameters: int = 2_000_000
     language_conditioned_entity_attention: bool = False
@@ -37,6 +34,14 @@ class SmallPolicyConfig:
         model = value.get("model", value)
         if not isinstance(model, Mapping):
             raise ValueError("model configuration must be a mapping")
+        model = dict(model)
+        if "horizon" in model:
+            raise ValueError(
+                "legacy trajectory policy config is unsupported; remove "
+                "horizon and retrain with a single [B, 2] action"
+            )
+        if "maximum_step_m" in model and "maximum_action_m" not in model:
+            model["maximum_action_m"] = model.pop("maximum_step_m")
         known = {field.name for field in cls.__dataclass_fields__.values()}
         unknown = set(model) - known
         if unknown:
@@ -46,24 +51,25 @@ class SmallPolicyConfig:
     def __post_init__(self) -> None:
         positive_ints = (
             self.language_dim,
-            self.visual_dim,
             self.entity_count,
             self.entity_geometry_dim,
-            self.ego_dim,
-            self.horizon,
             self.action_dim,
+            self.previous_action_dim,
             self.language_hidden,
-            self.visual_hidden,
             self.entity_geometry_hidden,
             self.entity_hidden,
-            self.ego_hidden,
+            self.previous_action_hidden,
             self.fusion_hidden,
             self.maximum_trainable_parameters,
         )
         if any(value <= 0 for value in positive_ints):
             raise ValueError("all dimensions and parameter limits must be positive")
-        if self.maximum_step_m <= 0.0:
-            raise ValueError("maximum_step_m must be positive")
+        if self.action_dim != 2:
+            raise ValueError("single-step body-frame action_dim must be 2")
+        if self.previous_action_dim != 2:
+            raise ValueError("previous_action_dim must be 2")
+        if self.maximum_action_m <= 0.0:
+            raise ValueError("maximum_action_m must be positive")
         if not torch.isfinite(torch.tensor(self.invalid_stop_logit)):
             raise ValueError("invalid_stop_logit must be finite")
         if self.entity_attention_mode not in {
@@ -83,15 +89,19 @@ class SmallPolicyConfig:
                 "language_conditioned_entity_attention=true"
             )
 
+    @property
+    def maximum_step_m(self) -> float:
+        """Compatibility spelling for callers that used the old bound."""
+        return self.maximum_action_m
+
 
 @dataclass(frozen=True)
 class PolicyOutput:
     """Policy tensors plus an explicit fail-closed sample-validity mask."""
 
-    trajectory: Tensor
+    action: Tensor
     stop_logit: Tensor
     valid_mask: Tensor
-    increments: Tensor
 
 
 def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
@@ -103,12 +113,14 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
     )
 
 
-class SmallTrajectoryPolicy(nn.Module):
-    """Fuse frozen cache features into one structurally bounded trajectory.
+class SmallActionPolicy(nn.Module):
+    """Fuse language and structured entity geometry into one bounded action.
 
-    Language and visual tensors are detached at the model boundary. This keeps
-    the Day 13 backbones frozen even if a caller accidentally supplies tensors
-    connected to a live encoder graph.
+    The decision head receives the task embedding, the structured output of the
+    perception/tracking head, and the previous single-step action. Image and
+    ego tensors are deliberately not accepted here; the entity tensor already
+    contains image-derived color, relative geometry, and tracked relative
+    velocity.
     """
 
     def __init__(self, config: SmallPolicyConfig | None = None) -> None:
@@ -119,13 +131,6 @@ class SmallTrajectoryPolicy(nn.Module):
         self.language_encoder = _mlp(
             cfg.language_dim, cfg.language_hidden, cfg.language_hidden
         )
-        self.global_visual_encoder = nn.Sequential(
-            nn.Linear(cfg.visual_dim, cfg.visual_hidden),
-            nn.GELU(),
-        )
-        self.entity_visual_encoder = _mlp(
-            cfg.visual_dim, cfg.visual_hidden, cfg.visual_hidden
-        )
         self.entity_geometry_encoder = _mlp(
             cfg.entity_geometry_dim,
             cfg.entity_geometry_hidden,
@@ -133,10 +138,15 @@ class SmallTrajectoryPolicy(nn.Module):
         )
         self.entity_fusion = nn.Sequential(
             nn.Linear(
-                cfg.visual_hidden + cfg.entity_geometry_hidden,
+                cfg.entity_geometry_hidden,
                 cfg.entity_hidden,
             ),
             nn.GELU(),
+        )
+        self.previous_action_encoder = _mlp(
+            cfg.previous_action_dim,
+            cfg.previous_action_hidden,
+            cfg.previous_action_hidden,
         )
         self.entity_attention = nn.Linear(cfg.entity_hidden, 1)
         if cfg.language_conditioned_entity_attention:
@@ -148,13 +158,10 @@ class SmallTrajectoryPolicy(nn.Module):
         else:
             # Keep the Day 14/15 v1 state_dict exactly loadable.
             self.entity_language_query = None
-        self.ego_encoder = _mlp(cfg.ego_dim, cfg.ego_hidden, cfg.ego_hidden)
-
+        # The validity bit is part of the decision input so a real zero action
+        # is distinguishable from the zero sentinel used at episode start.
         fusion_input_dim = (
-            cfg.language_hidden
-            + cfg.visual_hidden
-            + cfg.entity_hidden
-            + cfg.ego_hidden
+            cfg.language_hidden + cfg.entity_hidden + cfg.previous_action_hidden + 1
         )
         self.fusion = nn.Sequential(
             nn.Linear(fusion_input_dim, cfg.fusion_hidden),
@@ -163,9 +170,7 @@ class SmallTrajectoryPolicy(nn.Module):
             nn.Linear(cfg.fusion_hidden, cfg.fusion_hidden),
             nn.GELU(),
         )
-        self.trajectory_head = nn.Linear(
-            cfg.fusion_hidden, cfg.horizon * cfg.action_dim
-        )
+        self.action_head = nn.Linear(cfg.fusion_hidden, cfg.action_dim)
         self.stop_head = nn.Linear(cfg.fusion_hidden, 1)
 
         parameter_count = self.trainable_parameter_count()
@@ -221,46 +226,36 @@ class SmallTrajectoryPolicy(nn.Module):
         self,
         *,
         language: Tensor,
-        global_visual: Tensor,
-        entity_visual: Tensor,
         entity_geometry: Tensor,
-        ego: Tensor,
+        previous_action: Tensor,
         language_valid: Tensor | None = None,
-        global_visual_mask: Tensor | None = None,
-        entity_visual_mask: Tensor | None = None,
         entity_geometry_mask: Tensor | None = None,
-        ego_valid: Tensor | None = None,
+        previous_action_valid: Tensor | None = None,
         policy_input_valid: Tensor | None = None,
+        **legacy_inputs: Tensor,
     ) -> PolicyOutput:
+        if legacy_inputs:
+            raise ValueError(
+                "decision policy accepts language, entity_geometry, "
+                "previous_action, and their validity masks; "
+                f"legacy inputs are unsupported: {sorted(legacy_inputs)}"
+            )
         cfg = self.config
         if language.ndim != 2:
             raise ValueError("language must have shape [B, language_dim]")
         batch_size = int(language.shape[0])
         device = language.device
         dtype = language.dtype
-        expected_device_dtype = (
-            global_visual,
-            entity_visual,
-            entity_geometry,
-            ego,
-        )
-        if any(tensor.device != device for tensor in expected_device_dtype):
+        if (
+            entity_geometry.device != device
+            or previous_action.device != device
+        ):
             raise ValueError("all policy inputs must be on the same device")
-        if any(tensor.dtype != dtype for tensor in expected_device_dtype):
+        if entity_geometry.dtype != dtype or previous_action.dtype != dtype:
             raise ValueError("all floating policy inputs must share one dtype")
 
         self._expect_shape(
             language, (batch_size, cfg.language_dim), "language"
-        )
-        self._expect_shape(
-            global_visual,
-            (batch_size, cfg.visual_dim),
-            "global_visual",
-        )
-        self._expect_shape(
-            entity_visual,
-            (batch_size, cfg.entity_count, cfg.visual_dim),
-            "entity_visual",
         )
         self._expect_shape(
             entity_geometry,
@@ -271,25 +266,16 @@ class SmallTrajectoryPolicy(nn.Module):
             ),
             "entity_geometry",
         )
-        self._expect_shape(ego, (batch_size, cfg.ego_dim), "ego")
-
+        self._expect_shape(
+            previous_action,
+            (batch_size, cfg.previous_action_dim),
+            "previous_action",
+        )
         language_mask = self._as_mask(
             language_valid,
             batch_size=batch_size,
             device=device,
             name="language_valid",
-        )
-        global_mask = self._as_mask(
-            global_visual_mask,
-            batch_size=batch_size,
-            device=device,
-            name="global_visual_mask",
-        )
-        ego_mask = self._as_mask(
-            ego_valid,
-            batch_size=batch_size,
-            device=device,
-            name="ego_valid",
         )
         input_mask = self._as_mask(
             policy_input_valid,
@@ -298,13 +284,6 @@ class SmallTrajectoryPolicy(nn.Module):
             name="policy_input_valid",
         )
 
-        if entity_visual_mask is None:
-            entity_visual_mask = torch.ones(
-                batch_size,
-                cfg.entity_count,
-                dtype=torch.bool,
-                device=device,
-            )
         if entity_geometry_mask is None:
             entity_geometry_mask = torch.ones(
                 batch_size,
@@ -313,53 +292,40 @@ class SmallTrajectoryPolicy(nn.Module):
                 device=device,
             )
         self._expect_shape(
-            entity_visual_mask,
-            (batch_size, cfg.entity_count),
-            "entity_visual_mask",
-        )
-        self._expect_shape(
             entity_geometry_mask,
             (batch_size, cfg.entity_count),
             "entity_geometry_mask",
         )
-        visual_entity_mask = entity_visual_mask.to(
-            device=device, dtype=torch.bool
-        )
         geometry_entity_mask = entity_geometry_mask.to(
             device=device, dtype=torch.bool
         )
-
-        valid_mask = language_mask & global_mask & ego_mask & input_mask
-        geometry_entity_mask = geometry_entity_mask & valid_mask.unsqueeze(1)
-        visual_entity_mask = (
-            visual_entity_mask
-            & geometry_entity_mask
-            & valid_mask.unsqueeze(1)
+        previous_mask = self._as_mask(
+            previous_action_valid,
+            batch_size=batch_size,
+            device=device,
+            name="previous_action_valid",
         )
+
+        valid_mask = language_mask & input_mask
+        geometry_entity_mask = geometry_entity_mask & valid_mask.unsqueeze(1)
 
         language_clean = self._sanitize_masked(
-            language.detach(), language_mask, "language"
-        )
-        global_clean = self._sanitize_masked(
-            global_visual.detach(), global_mask, "global_visual"
-        )
-        entity_visual_clean = self._sanitize_masked(
-            entity_visual.detach(), visual_entity_mask, "entity_visual"
+            language.detach(), language_mask & valid_mask, "language"
         )
         entity_geometry_clean = self._sanitize_masked(
             entity_geometry, geometry_entity_mask, "entity_geometry"
         )
-        ego_clean = self._sanitize_masked(ego, ego_mask, "ego")
-
+        previous_action_clean = self._sanitize_masked(
+            previous_action.detach(), previous_mask & valid_mask, "previous_action"
+        )
         language_token = self.language_encoder(language_clean)
-        global_token = self.global_visual_encoder(global_clean)
-        entity_visual_token = self.entity_visual_encoder(entity_visual_clean)
         entity_geometry_token = self.entity_geometry_encoder(
             entity_geometry_clean
         )
         entity_token = self.entity_fusion(
-            torch.cat((entity_visual_token, entity_geometry_token), dim=-1)
+            entity_geometry_token
         )
+        previous_action_token = self.previous_action_encoder(previous_action_clean)
 
         attention_score = self.entity_attention(entity_token).squeeze(-1)
         if self.entity_language_query is not None:
@@ -385,52 +351,36 @@ class SmallTrajectoryPolicy(nn.Module):
         pooled_entity = torch.sum(
             entity_token * attention_weight.unsqueeze(-1), dim=1
         )
-        ego_token = self.ego_encoder(ego_clean)
-
         fused = self.fusion(
             torch.cat(
-                (language_token, global_token, pooled_entity, ego_token),
+                (
+                    language_token,
+                    pooled_entity,
+                    previous_action_token,
+                    previous_mask.to(dtype=dtype).unsqueeze(-1),
+                ),
                 dim=-1,
             )
         )
         stop_logit = self.stop_head(fused)
-        raw_increments = self.trajectory_head(fused).reshape(
-            batch_size, cfg.horizon, cfg.action_dim
-        )
-        raw_norm = torch.linalg.vector_norm(
-            raw_increments, dim=-1, keepdim=True
-        )
+        raw_action = self.action_head(fused)
+        raw_norm = torch.linalg.vector_norm(raw_action, dim=-1, keepdim=True)
         radial_scale = torch.where(
             raw_norm > 1.0e-6,
             torch.tanh(raw_norm) / raw_norm.clamp_min(1.0e-6),
             torch.ones_like(raw_norm),
         )
-        movement_gate = torch.sigmoid(-stop_logit).unsqueeze(1)
-        increments = (
-            raw_increments
-            * radial_scale
-            * cfg.maximum_step_m
-            * movement_gate
-        )
-        trajectory = torch.cumsum(increments, dim=1)
+        movement_gate = torch.sigmoid(-stop_logit)
+        action = raw_action * radial_scale * cfg.maximum_action_m * movement_gate
         # A positive STOP decision is an execution contract, not merely a
         # request to move less. Keep the continuous gate above for useful
         # training gradients, then make the published policy output exactly
         # stationary whenever the classifier selects STOP.
-        movement_selected = (stop_logit < 0.0).view(batch_size, 1, 1)
-        increments = torch.where(
-            movement_selected, increments, torch.zeros_like(increments)
-        )
-        trajectory = torch.where(
-            movement_selected, trajectory, torch.zeros_like(trajectory)
-        )
+        movement_selected = (stop_logit < 0.0).view(batch_size, 1)
+        action = torch.where(movement_selected, action, torch.zeros_like(action))
 
-        sample_mask = valid_mask.view(batch_size, 1, 1)
-        increments = torch.where(
-            sample_mask, increments, torch.zeros_like(increments)
-        )
-        trajectory = torch.where(
-            sample_mask, trajectory, torch.zeros_like(trajectory)
+        action = torch.where(
+            valid_mask.view(batch_size, 1), action, torch.zeros_like(action)
         )
         stop_logit = torch.where(
             valid_mask.view(batch_size, 1),
@@ -438,10 +388,9 @@ class SmallTrajectoryPolicy(nn.Module):
             torch.full_like(stop_logit, cfg.invalid_stop_logit),
         )
         return PolicyOutput(
-            trajectory=trajectory,
+            action=action,
             stop_logit=stop_logit,
             valid_mask=valid_mask,
-            increments=increments,
         )
 
 
@@ -452,17 +401,13 @@ DEFAULT_POLICY_MODEL_PATH = (
 
 _FLOAT_INPUT_NAMES = (
     "language",
-    "global_visual",
-    "entity_visual",
     "entity_geometry",
-    "ego",
+    "previous_action",
 )
 _MASK_INPUT_NAMES = (
     "language_valid",
-    "global_visual_mask",
-    "entity_visual_mask",
     "entity_geometry_mask",
-    "ego_valid",
+    "previous_action_valid",
     "policy_input_valid",
 )
 
@@ -473,9 +418,9 @@ class PolicyRuntimeError(RuntimeError):
 
 @dataclass
 class TorchPolicyRunner:
-    """A checked, inference-only instance of :class:`SmallTrajectoryPolicy`."""
+    """A checked, inference-only instance of the action policy."""
 
-    model: SmallTrajectoryPolicy
+    model: SmallActionPolicy
     config: SmallPolicyConfig
     device: torch.device
     model_path: str
@@ -520,7 +465,7 @@ class TorchPolicyRunner:
                 raise PolicyRuntimeError(
                     "policy checkpoint is missing model_state_dict"
                 )
-            model = SmallTrajectoryPolicy(config)
+            model = SmallActionPolicy(config)
             model.load_state_dict(state_dict, strict=True)
             target = torch.device("cuda")
             model.to(device=target)
@@ -577,38 +522,38 @@ class TorchPolicyRunner:
                 )
             with torch.inference_mode():
                 output: PolicyOutput = self.model(**tensors)
-            trajectory = output.trajectory.detach().to("cpu").numpy()
+            action = output.action.detach().to("cpu").numpy()
             stop_logit = output.stop_logit.detach().to("cpu").numpy()
             valid_mask = output.valid_mask.detach().to("cpu").numpy()
         except Exception as exc:
             raise PolicyRuntimeError(f"torch policy inference failed: {exc}") from exc
 
         if (
-            trajectory.ndim != 3
-            or trajectory.shape[1:] != (self.config.horizon, self.config.action_dim)
+            action.ndim != 2
+            or action.shape[1:] != (self.config.action_dim,)
             or stop_logit.ndim != 2
             or stop_logit.shape[1:] != (1,)
             or valid_mask.ndim != 1
-            or valid_mask.shape[0] != trajectory.shape[0]
+            or valid_mask.shape[0] != action.shape[0]
         ):
             raise PolicyRuntimeError(
                 "torch policy returned an invalid output shape: "
-                f"trajectory={trajectory.shape}, stop_logit={stop_logit.shape}, "
+                f"action={action.shape}, stop_logit={stop_logit.shape}, "
                 f"valid_mask={valid_mask.shape}"
             )
         if not (
-            np.all(np.isfinite(trajectory))
+            np.all(np.isfinite(action))
             and np.all(np.isfinite(stop_logit))
         ):
             raise PolicyRuntimeError("torch policy returned NaN or Inf")
-        return trajectory, stop_logit, valid_mask.astype(bool, copy=False)
+        return action, stop_logit, valid_mask.astype(bool, copy=False)
 
 
 __all__ = [
     "DEFAULT_POLICY_MODEL_PATH",
     "PolicyOutput",
     "PolicyRuntimeError",
+    "SmallActionPolicy",
     "SmallPolicyConfig",
-    "SmallTrajectoryPolicy",
     "TorchPolicyRunner",
 ]

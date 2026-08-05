@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 4 || $# -gt 8 ]]; then
-  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION] [TARGET_ATTRIBUTE] [START_DELAY_SEC]" >&2
+if [[ $# -lt 4 || $# -gt 9 ]]; then
+  echo "usage: $0 SLOT_ID LAYOUT_ID MOTION_STATE SCENE_SEED [PLAN_PATH] [ROLLOUT_ACTION] [TARGET_ATTRIBUTE] [START_DELAY_SEC] [DISTANCE_BUCKET]" >&2
   exit 2
 fi
 
@@ -15,6 +15,7 @@ rollout_action=${6:-follow}
 execution_address=${EXECUTION_ADDRESS:-}
 execution_port=${EXECUTION_PORT:-8081}
 max_speed_mps=${MAX_SPEED_MPS:-0.8}
+max_frames=${MAX_FRAMES:-100}
 
 [[ $slot_id =~ ^[A-Z0-9]*_?L[1-9][0-9A-Z]*_S[0-2]_R[1-9][0-9]*$ ]] || {
   echo "SCENE_REMOTE_FAIL invalid slot_id=$slot_id" >&2
@@ -37,7 +38,7 @@ max_speed_mps=${MAX_SPEED_MPS:-0.8}
   exit 2
 }
 rollout_target_attribute=${7:-color:red}
-rollout_distance_bucket=3m
+rollout_distance_bucket=${9:-3m}
 if [[ $rollout_action == stop ]]; then
   rollout_target_attribute=none
   rollout_distance_bucket=none
@@ -98,6 +99,7 @@ setsid env PYTHONUNBUFFERED=1 ros2 launch asv_bringup collect.launch.py \
   execution_address:="$execution_address" \
   execution_port:="$execution_port" \
   max_speed_mps:="$max_speed_mps" \
+  max_frames:="$max_frames" \
   >"$launch_log" 2>&1 &
 launch_pid=$!
 

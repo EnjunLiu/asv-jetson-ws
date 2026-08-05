@@ -31,6 +31,13 @@ def _load_node_module():
     class FakeString:
         data = ""
 
+    class FakeTaskEmbedding:
+        instruction = ""
+        model_id = ""
+        embedding_dim = 256
+        embedding = ()
+        valid = False
+
     class FakeModuleStatus:
         STARTING = "starting"
         ERROR = "error"
@@ -70,6 +77,7 @@ def _load_node_module():
     std_msgs_msg.String = FakeString
     interfaces_msg.CameraFrame = type("CameraFrame", (), {})
     interfaces_msg.ModuleStatus = FakeModuleStatus
+    interfaces_msg.TaskEmbedding = FakeTaskEmbedding
     interfaces_msg.UEEntity = FakeUEEntity
     interfaces_msg.UEEntityArray = FakeUEEntityArray
     std_msgs.msg = std_msgs_msg
@@ -101,12 +109,15 @@ class _Prediction:
 
 
 class _Model:
-    model_version = "test_model"
+    model_version = "image_entity_ridge_language_v3"
+    language_model_id = "test-language"
+    task_embedding_dim = 256
 
-    def predict(self, _image, *, task=None, device="numpy"):
+    def predict(self, _image, *, task=None, device="numpy", task_embedding=None):
         assert task is not None
         assert task.instruction_id == "follow_red"
         assert device == "numpy"
+        assert task_embedding is not None
         return (
             _Prediction("target_red", x=5.0, y=100.0, visible=True),
             _Prediction("target_blue", x=5.0, y=0.0, visible=False),
@@ -114,9 +125,10 @@ class _Model:
 
 
 class _BothVisibleModel(_Model):
-    def predict(self, _image, *, task=None, device="numpy"):
+    def predict(self, _image, *, task=None, device="numpy", task_embedding=None):
         assert task is not None
         assert device == "numpy"
+        assert task_embedding is not None
         return (
             _Prediction("target_red", x=5.0, y=100.0, visible=True),
             _Prediction("target_blue", x=5.0, y=0.0, visible=True),
@@ -145,6 +157,9 @@ def _test_node(module):
     node.publisher = _Publisher()
     node.task_text = "follow red"
     node.task_spec = module.parse_task_instruction(node.task_text)
+    node.task_embedding = [1.0] + [0.0] * 255
+    node.embedding_model_id = "test-language"
+    node.embedding_detail = "VALID_TASK_EMBEDDING"
     node.device = "numpy"
     node.input_ready = False
     node.output_valid = False
@@ -186,7 +201,7 @@ def test_out_of_image_projection_does_not_kill_on_frame_and_fails_closed():
     assert node.output_valid is True
     assert message.instruction == "follow red"
     assert message.instruction_id == "follow_red"
-    assert "image+instruction" in message.detail
+    assert "image+task_embedding" in message.detail
     assert message.entities[0].is_target is True
     assert message.entities[1].is_target is False
     assert len(node.trace_logs) == 1
@@ -213,11 +228,20 @@ def test_task_switch_changes_selected_entity_and_instruction_provenance():
     node.on_frame(frame)
     first = node.publisher.messages[-1]
     assert first.instruction_id == "follow_red"
-    assert "image+instruction" in first.detail
+    assert "image+task_embedding" in first.detail
     assert first.entities[0].is_target is True
     assert first.entities[1].visible is False
 
     node.on_task(types.SimpleNamespace(data="follow blue"))
+    node.on_embedding(
+        types.SimpleNamespace(
+            instruction="follow blue",
+            model_id="test-language",
+            embedding_dim=256,
+            embedding=[1.0] + [0.0] * 255,
+            valid=True,
+        )
+    )
     frame.frame_index = 1
     node.on_frame(frame)
     second = node.publisher.messages[-1]
@@ -266,3 +290,22 @@ def test_task_text_subscription_uses_transient_local_qos():
     ).read_text(encoding="utf-8")
     assert "DurabilityPolicy.TRANSIENT_LOCAL" in node_source
     assert 'String, "/task/text", self.on_task, TASK_QOS' in node_source
+    assert 'TaskEmbedding,\n            "/vla/language_embedding"' in node_source
+
+
+def test_missing_task_embedding_fails_closed_before_prediction():
+    module = _load_node_module()
+    node = _test_node(module)
+    node.task_embedding = None
+    frame = types.SimpleNamespace(
+        stamp_us=100,
+        run_id="RUN",
+        scene_seed=1,
+        frame_index=0,
+        valid=True,
+        data=_jpeg_bytes(),
+        encoding="jpeg",
+    )
+    node.on_frame(frame)
+    assert node.publisher.messages[-1].valid is False
+    assert "MISSING_TASK_EMBEDDING" in node.publisher.messages[-1].detail

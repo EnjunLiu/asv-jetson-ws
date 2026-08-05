@@ -18,12 +18,17 @@ from asv_vla.language_intervention_dataset import read_jsonl
 from asv_vla.visual_encoder import BACKBONE_ID, FrozenMobileNetEncoder
 from training.dataset import load_split_assignments
 from training.feature_cache import (
+    DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    DEFAULT_IMAGE_PREPROCESS_CONTRAST,
+    DEFAULT_IMAGE_PREPROCESS_ENABLED,
+    DEFAULT_IMAGE_PREPROCESS_GAMMA,
     IMAGE_PERCEPTION_TRACKER_CONFIG,
     ModelFingerprint,
     build_feature_cache,
     encode_language_instructions,
     hash_torch_module_state,
     hash_weight_tree,
+    make_image_preprocess_config,
     validate_feature_cache,
 )
 
@@ -40,6 +45,8 @@ SUPPORTED_SPLITS = {
     # Combined near red-view + blue-view: 16/4/4, stratified by view.
     24: {"train": 16, "validation": 4, "test": 4},
     30: {"train": 18, "validation": 6, "test": 6},
+    # Near-standoff extension (red/blue 2.5 m + blue 3 m): 67 runs.
+    67: {"train": 45, "validation": 11, "test": 11},
 }
 
 
@@ -102,6 +109,10 @@ def build_complete_feature_set(
     device: str = "cuda",
     frozen_git_sha: str = FROZEN_FEATURE_GIT_SHA,
     required_run_count: int = 12,
+    image_preprocess_enabled: bool = DEFAULT_IMAGE_PREPROCESS_ENABLED,
+    image_preprocess_gamma: float = DEFAULT_IMAGE_PREPROCESS_GAMMA,
+    image_preprocess_brightness: float = DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    image_preprocess_contrast: float = DEFAULT_IMAGE_PREPROCESS_CONTRAST,
 ) -> dict[str, Any]:
     root = Path(data_root).expanduser().resolve()
     registry_source = Path(registry_path).expanduser().resolve()
@@ -113,6 +124,12 @@ def build_complete_feature_set(
         None
         if image_model_path is None
         else Path(image_model_path).expanduser().resolve()
+    )
+    image_preprocess = make_image_preprocess_config(
+        enabled=image_preprocess_enabled,
+        gamma=image_preprocess_gamma,
+        brightness=image_preprocess_brightness,
+        contrast=image_preprocess_contrast,
     )
     if str(frozen_git_sha).strip() != FROZEN_FEATURE_GIT_SHA:
         raise ValueError(
@@ -143,8 +160,8 @@ def build_complete_feature_set(
         )
 
     instructions = read_jsonl(instructions_source)
-    if len(instructions) != 90:
-        raise ValueError(f"Day 15 requires 90 instructions, got {len(instructions)}")
+    if len(instructions) != 130:
+        raise ValueError(f"Day 16 requires 130 instructions, got {len(instructions)}")
     language_weights_sha256 = hash_weight_tree(language_model_source)
     language_encoder = USVLanguageEncoder(
         str(language_model_source),
@@ -177,7 +194,6 @@ def build_complete_feature_set(
         if image_model_source is None
         else _sha256_file(image_model_source)
     )
-
     run_reports: list[dict[str, Any]] = []
     for entry in entries:
         run_id = str(entry["run_id"])
@@ -196,6 +212,10 @@ def build_complete_feature_set(
             precomputed_language_embeddings=language_embeddings,
             image_model=image_model,
             image_model_path=image_model_source,
+            image_preprocess_enabled=image_preprocess.enabled,
+            image_preprocess_gamma=image_preprocess.gamma,
+            image_preprocess_brightness=image_preprocess.brightness,
+            image_preprocess_contrast=image_preprocess.contrast,
         )
         validation = validate_feature_cache(output / run_id)
         run_reports.append(
@@ -215,10 +235,23 @@ def build_complete_feature_set(
 
     total_frames = sum(item["frame_count"] for item in run_reports)
     total_samples = sum(item["sample_count"] for item in run_reports)
-    expected_frames = int(required_run_count) * 100
+    # The near-standoff collection records 200 frames per run (static start +
+    # approach + hold), so the expected total comes from the registry's
+    # episode manifests rather than a fixed 100 frames per run.
+    expected_frames = sum(
+        len(
+            [
+                p
+                for p in (root / str(entry["episode_path"]) / "frames").glob(
+                    "*.json"
+                )
+            ]
+        )
+        for entry in entries
+    )
     if total_frames != expected_frames:
         raise ValueError(
-            f"Day 15 requires {expected_frames} cached frames, got {total_frames}"
+            f"expected {expected_frames} cached frames, got {total_frames}"
         )
     if total_samples <= 0:
         raise ValueError("Day 15 feature set has no samples")
@@ -248,6 +281,7 @@ def build_complete_feature_set(
                 else None
             ),
         },
+        "image_preprocess": image_preprocess.as_manifest(),
         "registry_sha256": _sha256_file(registry_source),
         "split_sha256": _sha256_file(split_source),
         "instructions_sha256": _sha256_file(instructions_source),
@@ -284,6 +318,37 @@ def main() -> int:
         default=None,
         help="Optional image-only entity model; enables prediction-only policy entities",
     )
+    preprocess = parser.add_mutually_exclusive_group()
+    preprocess.add_argument(
+        "--image-preprocess-enabled",
+        dest="image_preprocess_enabled",
+        action="store_true",
+        help="apply the fixed UE5-compatible transform to decoded original JPEGs",
+    )
+    preprocess.add_argument(
+        "--no-image-preprocess",
+        dest="image_preprocess_enabled",
+        action="store_false",
+        help="keep legacy raw-JPEG cache behavior (default)",
+    )
+    parser.set_defaults(
+        image_preprocess_enabled=DEFAULT_IMAGE_PREPROCESS_ENABLED
+    )
+    parser.add_argument(
+        "--image-preprocess-gamma",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_GAMMA,
+    )
+    parser.add_argument(
+        "--image-preprocess-brightness",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_BRIGHTNESS,
+    )
+    parser.add_argument(
+        "--image-preprocess-contrast",
+        type=float,
+        default=DEFAULT_IMAGE_PREPROCESS_CONTRAST,
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--frozen-git-sha", default=FROZEN_FEATURE_GIT_SHA)
     parser.add_argument(
@@ -304,6 +369,10 @@ def main() -> int:
         device=args.device,
         frozen_git_sha=args.frozen_git_sha,
         required_run_count=args.required_run_count,
+        image_preprocess_enabled=args.image_preprocess_enabled,
+        image_preprocess_gamma=args.image_preprocess_gamma,
+        image_preprocess_brightness=args.image_preprocess_brightness,
+        image_preprocess_contrast=args.image_preprocess_contrast,
     )
     print(
         "FEATURE_SET_PASS "

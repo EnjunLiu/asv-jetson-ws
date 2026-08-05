@@ -34,24 +34,19 @@ color_swap:
 ablations:
   variants:
     - "no_language"
-    - "no_global_visual"
-    - "no_entity_visual"
-    - "no_all_visual"
     - "no_entity_geometry"
-    - "misaligned_entity_visual"
-  minimum_language_relative_ade_degradation: 0.05
-  minimum_visual_color_relative_ade_degradation: 0.05
-  minimum_entity_bearing_relative_ade_degradation: 0.05
+  minimum_language_relative_action_error_degradation: 0.05
+  minimum_entity_bearing_relative_action_error_degradation: 0.05
 
 fail_closed:
   faults:
     - "missing_language"
-    - "missing_image"
+    - "missing_entity_geometry"
     - "entity_alignment_error"
-  maximum_nonzero_trajectory_m: 0.0
+  maximum_nonzero_action_m: 0.0
   require_all_invalid: true
   require_stop_selected: true
 
 report:
   maximum_failure_cases: 200
-  maximum_trajectory_plots: 40
+  maximum_action_plots: 40

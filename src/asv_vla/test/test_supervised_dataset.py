@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -39,12 +40,16 @@ def _instruction(
 def _all_instructions():
     labels = [
         ("follow", "color:red", "3m"),
+        ("follow", "color:red", "4m"),
         ("follow", "color:red", "10m"),
         ("follow", "color:blue", "3m"),
+        ("follow", "color:blue", "4m"),
         ("follow", "color:blue", "10m"),
         ("follow", "bearing:left", "3m"),
+        ("follow", "bearing:left", "4m"),
         ("follow", "bearing:left", "10m"),
         ("follow", "bearing:right", "3m"),
+        ("follow", "bearing:right", "4m"),
         ("follow", "bearing:right", "10m"),
         ("stop", "none", "none"),
     ]
@@ -149,12 +154,31 @@ def test_build_and_evaluate_complete_dataset(tmp_path):
         output, require_all_labels=True
     )
 
-    assert build_report["sample_count"] == 18
+    assert build_report["sample_count"] == 26
     assert build_report["coverage_complete"] is True
-    assert evaluation["sample_count"] == 18
+    assert evaluation["sample_count"] == 26
     assert evaluation["frame_count"] == 2
-    assert evaluation["compatible_instruction_count"] == 9
-    assert evaluation["observed_label_count"] == 9
+    assert evaluation["compatible_instruction_count"] == 13
+    assert evaluation["observed_label_count"] == 13
+
+    samples = [
+        json.loads(line)
+        for line in (output / "samples.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert samples
+    for sample in samples:
+        action = sample["expert"]["expert_action"]
+        assert isinstance(action, list)
+        assert len(action) == 2
+        assert "horizon" not in sample["expert"]
+        assert "delta_p_xy" not in sample["expert"]
+    manifest = json.loads(
+        (output / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["expert_action_contract"]["action_shape"] == [2]
+    assert "horizon" not in manifest["expert_action_contract"]
 
 
 def test_build_is_byte_deterministic(tmp_path):
@@ -187,8 +211,8 @@ def test_partial_entity_scene_is_reported_not_mislabeled(tmp_path):
     checked = evaluate_supervised_dataset(output)
 
     assert report["coverage_complete"] is False
-    assert report["observed_label_count"] == 3
-    assert checked["sample_count"] == 6
+    assert report["observed_label_count"] == 4
+    assert checked["sample_count"] == 8
     with pytest.raises(
         SupervisedDatasetError, match="missing required task labels"
     ):
@@ -205,6 +229,53 @@ def test_samples_hash_tampering_is_rejected(tmp_path):
         stream.write("{}\n")
 
     with pytest.raises(SupervisedDatasetError, match="samples sha256"):
+        evaluate_supervised_dataset(output)
+
+
+@pytest.mark.parametrize("legacy_shape", ["fields", "length"])
+def test_legacy_trajectory_fields_and_shapes_are_rejected(
+    tmp_path, legacy_shape
+):
+    episode = _make_episode(tmp_path)
+    instructions = _write_instructions(tmp_path)
+    output = tmp_path / "artifacts" / f"legacy_{legacy_shape}"
+    build_supervised_dataset([episode], instructions, output)
+
+    samples_path = output / "samples.jsonl"
+    samples = [
+        json.loads(line)
+        for line in samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    expert = samples[0]["expert"]
+    if legacy_shape == "fields":
+        expert.pop("expert_action")
+        expert["horizon"] = 20
+        expert["delta_p_xy"] = [[0.0, 0.0]] * 20
+        expected_error = "legacy"
+    else:
+        expert["expert_action"] = [0.0, 0.0, 0.0]
+        expected_error = "expert_action"
+    samples_path.write_text(
+        "\n".join(
+            json.dumps(
+                sample,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for sample in samples
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["samples"]["sha256"] = hashlib.sha256(
+        samples_path.read_bytes()
+    ).hexdigest()
+    write_json_atomic(manifest_path, manifest)
+
+    with pytest.raises(SupervisedDatasetError, match=expected_error):
         evaluate_supervised_dataset(output)
 
 

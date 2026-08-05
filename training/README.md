@@ -13,7 +13,7 @@ pc_datasets/
 ├── incoming/       # Jetson/UE5 录制压缩包
 ├── extracted/      # day8_episode + day10_supervised
 ├── registry/       # Run/Scene-Seed 分组注册表
-├── features/       # 冻结语言/视觉/实体/ego 特征
+├── features/       # 冻结语言/结构化实体特征与感知审计数据
 ├── checkpoints/    # 训练模型和 summary.json
 ├── models/         # image_entity_color_calibrated_v1.npz/json、Qwen
 └── reports/        # 训练与验证报告
@@ -44,10 +44,14 @@ Windows 自动化入口为 `tools/ue5/collect.ps1`，其默认计划也指向同
 
 1. `training.dataset_registry` 扫描每个 Run，检查帧数、身份、质量和监督完整性。
 2. `training.make_group_splits` 按 Run/Scene Seed 分组，避免相邻帧泄漏到验证集。
-3. `training.feature_cache` 在 PC CUDA 上冻结 Qwen、MobileNet、图像实体和 ego 特征。
+3. `training.feature_cache` 在 PC CUDA 上冻结 Qwen 和图像感知/结构化实体特征。
    相对速度只使用相邻帧 tracker 结果；不能从单张图像标签直接伪造速度。
-4. `training.train` 训练 20 点二维位移策略；策略不接收颜色真值、实体 ID、专家候选
-   轨迹或左右推力。
+4. `training.train` 训练单步二维期望位移策略；每个样本是某个
+   `(Run, instruction, frame)` 时刻的专家点 `[desired_x, desired_y]`，不是整条专家
+   轨迹。决策头接收 `language + entity_geometry + previous_action` 及有效性 mask；
+   `previous_action` 只从同一 Run、同一 instruction 的相邻前帧专家点生成，首帧或前帧
+   STOP 使用零值并置无效。策略不接收全局视觉 token、实体 crop token、ego、颜色真值、
+   实体 ID 或左右推力。缓存中的视觉/ego 数组只用于感知审计，不会进入决策头。
 5. `training.evaluate_selection`、`training.contract_checks` 和近距离 S2 回放生成
    外部报告，只有通过验证的 checkpoint 才能复制到 Jetson `models/`。
 
@@ -79,14 +83,16 @@ Jetson 内存紧张时，feature-cache 允许分阶段加载 Qwen 后释放 CUDA
 部署模型由 `models/manifest.yaml` 指定：
 
 - `image_entity_color_calibrated_v1.npz`：JPEG -> 近距离图像几何；约 5 m 外 fail-closed；
-- `policy_sine_near_image_color_seed42.pt`：Torch CUDA，输入固定多模态 481k 合同；
+- `policy_sine_near_image_color_seed42.pt`：Torch CUDA，输入为任务嵌入、结构化实体、上一
+  个放行动作及有效性 mask，输出一个 `[desired_x, desired_y]` body-frame 单步位移；
 - `Qwen3-Embedding-0.6B`：真实 CUDA 语言编码，默认常驻，可显式释放权重但不允许 `.npy`。
 
 在线链路永远是：
 
 ```text
-JPEG + task text + real ego
-  -> image entities -> temporal velocity -> visual/task/language/ego
+JPEG + task text
+  -> image + task embedding perception -> temporal velocity -> structured entities
+  -> task embedding + structured entities + previous gated action
   -> Torch CUDA policy -> safety gate -> desired_x/y
 ```
 

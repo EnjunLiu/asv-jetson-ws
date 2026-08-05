@@ -1,4 +1,4 @@
-# One receding-horizon body-frame displacement command for UE5-only execution.
+# One single-step body-frame displacement command for UE5-only execution.
 # This message bypasses the physical controller and must never be sent to ESP32.
 int64 stamp_us
 int64 source_stamp_us

@@ -93,7 +93,7 @@ def instruction_id(intent_group: str, template_index: int) -> str:
 def build_instructions() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for target_key, (target_text, target_attribute) in FOLLOW_TARGETS.items():
-        for distance in (3, 10):
+        for distance in (3, 4, 10):
             intent_group = f"follow_{target_key}_{distance}m"
             for template_index, (
                 split,
@@ -199,6 +199,18 @@ def build_contrast_pairs(
             "distance",
             f"follow_{target}_3m",
             f"follow_{target}_10m",
+            template_index,
+        )
+
+    # 4 m bucket: 3 m <-> 4 m distance interventions.  This is the evidence
+    # pair for the red-3 m / red-4 m scenario contrast.
+    for template_index, target in zip(
+        template_indices, distance_targets
+    ):
+        add_pair(
+            "distance",
+            f"follow_{target}_3m",
+            f"follow_{target}_4m",
             template_index,
         )
 

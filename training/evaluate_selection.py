@@ -1,4 +1,4 @@
-"""Evaluate colour-selection correctness on held-out sine runs.
+"""Evaluate direct-action colour-selection correctness on held-out sine runs.
 
 The demo task is "follow the red boat" / "follow the blue boat" when the
 red/blue pair moves side by side.  The policy must steer toward the
@@ -46,7 +46,7 @@ def main() -> int:
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
-    from training.model import SmallTrajectoryPolicy, SmallPolicyConfig
+    from training.model import SmallActionPolicy, SmallPolicyConfig
     from training.dataset import _load_cache
 
     import yaml
@@ -54,7 +54,7 @@ def main() -> int:
     model_cfg = SmallPolicyConfig.from_mapping(
         yaml.safe_load(args.model_config.read_text(encoding="utf-8"))
     )
-    model = SmallTrajectoryPolicy(model_cfg).to(args.device)
+    model = SmallActionPolicy(model_cfg).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -129,39 +129,31 @@ def main() -> int:
                     "language": torch.from_numpy(
                         cache.language[instruction_row].copy()
                     ).unsqueeze(0).to(args.device),
-                    "global_visual": torch.from_numpy(
-                        cache.global_visual[frame_row].copy()
-                    ).unsqueeze(0).to(args.device),
-                    "entity_visual": torch.from_numpy(
-                        cache.entity_visual[frame_row].copy()
-                    ).unsqueeze(0).to(args.device),
                     "entity_geometry": torch.from_numpy(
                         cache.entity_geometry[frame_row].copy()
                     ).unsqueeze(0).to(args.device),
-                    "ego": torch.from_numpy(
-                        cache.ego[frame_row].copy()
+                    "previous_action": torch.from_numpy(
+                        cache.previous_expert_actions[sample_row].copy()
                     ).unsqueeze(0).to(args.device),
                     "language_valid": torch.tensor([True], dtype=torch.bool),
-                    "global_visual_mask": torch.tensor(
-                        [bool(cache.global_visual_mask[frame_row])],
-                        dtype=torch.bool,
-                    ),
-                    "entity_visual_mask": torch.from_numpy(
-                        cache.entity_visual_mask[frame_row].copy()
-                    ).unsqueeze(0).to(args.device),
                     "entity_geometry_mask": torch.from_numpy(
                         cache.entity_geometry_mask[frame_row].copy()
                     ).unsqueeze(0).to(args.device),
-                    "ego_valid": torch.tensor(
-                        [bool(cache.ego_valid[frame_row])], dtype=torch.bool
+                    "previous_action_valid": torch.tensor(
+                        [bool(cache.previous_action_valid[sample_row])],
+                        dtype=torch.bool,
+                    ),
+                    "policy_input_valid": torch.tensor(
+                        [bool(cache.policy_input_valid[frame_row])],
+                        dtype=torch.bool,
                     ),
                 }
                 output = model(**item)
-                traj = output.trajectory[0].cpu().numpy()
+                action = output.action[0].cpu().numpy()
                 stop_logit = float(output.stop_logit[0][0])
                 stop = stop_logit > 0.0
-                first_dx = float(traj[0, 0])
-                first_dy = float(traj[0, 1])
+                first_dx = float(action[0])
+                first_dy = float(action[1])
                 if math.hypot(first_dx, first_dy) < 1e-4:
                     # A zero step cannot be classified; count as failure
                     # only for non-stop commands (a stop is not a selection).

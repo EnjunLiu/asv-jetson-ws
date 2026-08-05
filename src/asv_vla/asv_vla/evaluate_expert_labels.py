@@ -16,7 +16,7 @@ from .expert_trajectory import (
     task_from_labels,
 )
 from .language_intervention_dataset import read_jsonl
-from .trajectory_contract import ACTION_DIM, DT_SEC, HORIZON
+from .trajectory_contract import ACTION_DIM, DT_SEC
 
 
 EXPECTED_TARGET_IDS = {
@@ -56,10 +56,10 @@ def canonical_entities() -> list[SimpleNamespace]:
     # independent. Positions deliberately differ so target interventions
     # produce distinct expert labels.
     return [
-        _entity("target_red", "red", 12.0, 0.0, 0.2, 0.0),
+        _entity("target_red", "red", 6.5, 0.0, 0.2, 0.0),
         _entity("target_blue", "blue", 8.0, 0.0, 0.1, 0.0),
-        _entity("target_left", "white", 10.0, 5.0, 0.0, 0.1),
-        _entity("target_right", "white", 10.0, -5.0, 0.0, -0.1),
+        _entity("target_left", "white", 6.5, 5.0, 0.0, 0.1),
+        _entity("target_right", "white", 6.5, -5.0, 0.0, -0.1),
     ]
 
 
@@ -70,10 +70,8 @@ def evaluate_expert_labels(
     if not instructions:
         raise ExpertTrajectoryError("instruction dataset is empty")
     entities = canonical_entities()
-    trajectories_by_instruction: dict[str, tuple[float, ...]] = {}
-    label_trajectories: dict[
-        tuple[str, str, str], tuple[float, ...]
-    ] = {}
+    actions_by_instruction: dict[str, tuple[float, ...]] = {}
+    label_actions: dict[tuple[str, str, str], tuple[float, ...]] = {}
     action_counts: Counter[str] = Counter()
     selector_counts: Counter[str] = Counter()
 
@@ -90,25 +88,16 @@ def evaluate_expert_labels(
             raise ExpertTrajectoryError(
                 f"non-deterministic expert output: {instruction_id}"
             )
-        if len(result.delta_p_xy) != HORIZON * ACTION_DIM:
+        action = tuple(float(value) for value in result.expert_action)
+        if len(action) != ACTION_DIM:
             raise ExpertTrajectoryError(
-                f"wrong shape for instruction: {instruction_id}"
+                f"wrong expert_action shape for instruction: {instruction_id}"
             )
-        if not all(math.isfinite(value) for value in result.delta_p_xy):
+        if not all(math.isfinite(value) for value in action):
             raise ExpertTrajectoryError(
                 f"NaN/Inf for instruction: {instruction_id}"
             )
-        max_step = 0.0
-        previous_x = 0.0
-        previous_y = 0.0
-        for index in range(HORIZON):
-            x = result.delta_p_xy[index * ACTION_DIM]
-            y = result.delta_p_xy[index * ACTION_DIM + 1]
-            max_step = max(
-                max_step, math.hypot(x - previous_x, y - previous_y)
-            )
-            previous_x, previous_y = x, y
-        if max_step > 1.5 * DT_SEC + 1.0e-6:
+        if math.hypot(*action) > 1.5 * DT_SEC + 1.0e-6:
             raise ExpertTrajectoryError(
                 f"speed bound exceeded: {instruction_id}"
             )
@@ -117,7 +106,7 @@ def evaluate_expert_labels(
             if (
                 not result.safe_stop
                 or result.selected_entity_id
-                or any(result.delta_p_xy)
+                or any(action)
             ):
                 raise ExpertTrajectoryError(
                     f"invalid STOP label: {instruction_id}"
@@ -135,21 +124,21 @@ def evaluate_expert_labels(
             task.target_attribute,
             str(record.get("distance_bucket", "")),
         )
-        existing = label_trajectories.setdefault(key, result.delta_p_xy)
-        if existing != result.delta_p_xy:
+        existing = label_actions.setdefault(key, action)
+        if existing != action:
             raise ExpertTrajectoryError(
-                f"same label produced different trajectory: {key}"
+                f"same label produced different expert_action: {key}"
             )
-        trajectories_by_instruction[instruction_id] = result.delta_p_xy
+        actions_by_instruction[instruction_id] = action
         action_counts[task.action] += 1
 
-    if len(label_trajectories) != 9:
+    if len(label_actions) != 13:
         raise ExpertTrajectoryError(
-            f"expected 9 task labels, got {len(label_trajectories)}"
+            f"expected 13 task labels, got {len(label_actions)}"
         )
-    if len(set(label_trajectories.values())) != len(label_trajectories):
+    if len(set(label_actions.values())) != len(label_actions):
         raise ExpertTrajectoryError(
-            "different task labels produced identical trajectories"
+            "different task labels produced identical expert actions"
         )
 
     changed_pairs = 0
@@ -157,15 +146,15 @@ def evaluate_expert_labels(
         instruction_ids = pair.get("instruction_ids")
         if not isinstance(instruction_ids, list) or len(instruction_ids) != 2:
             raise ExpertTrajectoryError("invalid contrast pair instruction_ids")
-        left = trajectories_by_instruction.get(str(instruction_ids[0]))
-        right = trajectories_by_instruction.get(str(instruction_ids[1]))
+        left = actions_by_instruction.get(str(instruction_ids[0]))
+        right = actions_by_instruction.get(str(instruction_ids[1]))
         if left is None or right is None:
             raise ExpertTrajectoryError(
                 f"contrast pair references unknown instruction: {instruction_ids}"
             )
         if left == right:
             raise ExpertTrajectoryError(
-                f"contrast pair did not change trajectory: "
+                f"contrast pair did not change expert_action: "
                 f"{pair.get('pair_id')}"
             )
         changed_pairs += 1
@@ -175,10 +164,10 @@ def evaluate_expert_labels(
         "instruction_count": len(instructions),
         "contrast_pair_count": len(contrast_pairs),
         "changed_contrast_pair_count": changed_pairs,
-        "unique_task_label_count": len(label_trajectories),
+        "unique_task_label_count": len(label_actions),
         "action_counts": dict(sorted(action_counts.items())),
         "selector_counts": dict(sorted(selector_counts.items())),
-        "trajectory_shape": [HORIZON, ACTION_DIM],
+        "expert_action_shape": [ACTION_DIM],
         "dt_sec": DT_SEC,
         "deterministic": True,
         "finite": True,
@@ -223,7 +212,7 @@ def main() -> int:
         f"instructions={report['instruction_count']} "
         f"contrast_pairs={report['changed_contrast_pair_count']} "
         f"labels={report['unique_task_label_count']} "
-        f"shape={HORIZON}x{ACTION_DIM}"
+        f"action_shape={ACTION_DIM}"
     )
     return 0
 

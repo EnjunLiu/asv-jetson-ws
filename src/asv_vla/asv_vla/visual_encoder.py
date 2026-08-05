@@ -6,7 +6,7 @@ import math
 from typing import Any, Iterable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 
 TOKEN_COUNT = 2
@@ -16,6 +16,10 @@ BACKBONE_ID = "torchvision:mobilenet_v3_small:IMAGENET1K_V1"
 
 IMAGENET_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
 IMAGENET_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
+
+DEFAULT_LOW_LIGHT_GAMMA = 0.92
+DEFAULT_LOW_LIGHT_BRIGHTNESS = 1.04
+DEFAULT_LOW_LIGHT_CONTRAST = 1.03
 
 
 class VisualEncoderError(RuntimeError):
@@ -74,6 +78,52 @@ def decode_camera_image(data: bytes | bytearray, encoding: str) -> Image.Image:
         raise InvalidImageError(
             f"failed to decode JPEG: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def enhance_low_light_image(
+    image: Image.Image,
+    *,
+    enabled: bool = True,
+    gamma: float = DEFAULT_LOW_LIGHT_GAMMA,
+    brightness: float = DEFAULT_LOW_LIGHT_BRIGHTNESS,
+    contrast: float = DEFAULT_LOW_LIGHT_CONTRAST,
+) -> Image.Image:
+    """Return a separate RGB image with bounded low-light enhancement.
+
+    The input is never modified.  Keeping this after JPEG decoding lets the
+    episode recorder retain the original camera bytes while both online image
+    consumers use the same deterministic transform.
+    """
+
+    if not isinstance(image, Image.Image):
+        raise InvalidImageError("image must be a PIL image")
+    values = {
+        "gamma": float(gamma),
+        "brightness": float(brightness),
+        "contrast": float(contrast),
+    }
+    if not all(math.isfinite(value) for value in values.values()):
+        raise ValueError("low-light parameters must be finite")
+    if values["gamma"] <= 0.0:
+        raise ValueError("low-light gamma must be positive")
+    if values["brightness"] <= 0.0:
+        raise ValueError("low-light brightness must be positive")
+    if values["contrast"] <= 0.0:
+        raise ValueError("low-light contrast must be positive")
+
+    result = image.convert("RGB").copy()
+    if not enabled:
+        return result
+
+    # A gamma below 1 lifts shadows while preserving the RGB ordering that
+    # the color-calibrated perception model relies on.
+    gamma_lut = [
+        int(round(255.0 * (index / 255.0) ** values["gamma"]))
+        for index in range(256)
+    ]
+    result = result.point(gamma_lut * 3)
+    result = ImageEnhance.Brightness(result).enhance(values["brightness"])
+    return ImageEnhance.Contrast(result).enhance(values["contrast"])
 
 
 def select_target(entities: Iterable[Any]) -> Any:

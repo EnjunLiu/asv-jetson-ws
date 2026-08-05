@@ -12,17 +12,35 @@ from asv_vla.image_entity_perception import (
     COLOR_CALIBRATION_WIDTH,
     ENTITY_COUNT,
     FEATURE_DIM,
+    FUSED_FEATURE_DIM,
     LEGACY_MODEL_VERSION,
+    LANGUAGE_EMBEDDING_DIM,
+    LOW_LIGHT_PREPROCESS_BRIGHTNESS,
+    LOW_LIGHT_PREPROCESS_CONTRAST,
+    LOW_LIGHT_PREPROCESS_CONTRACT,
+    LOW_LIGHT_PREPROCESS_ENABLED,
+    LOW_LIGHT_PREPROCESS_GAMMA,
+    MODEL_VERSION,
     OUTPUT_DIM,
     ImageEntityModel,
     ImageEntityPerceptionError,
     ImageEntityPrediction,
-    calibrated_red_geometry,
+    calibrated_color_geometry,
     extract_image_features,
     parse_task_instruction,
     save_model,
     select_task_entities,
 )
+
+
+def test_low_light_preprocess_contract_is_fixed() -> None:
+    assert LOW_LIGHT_PREPROCESS_ENABLED is False
+    assert LOW_LIGHT_PREPROCESS_CONTRACT == (
+        "ue5_capture_gamma065_brightness100_contrast100_v2"
+    )
+    assert LOW_LIGHT_PREPROCESS_GAMMA == pytest.approx(0.65)
+    assert LOW_LIGHT_PREPROCESS_BRIGHTNESS == pytest.approx(1.0)
+    assert LOW_LIGHT_PREPROCESS_CONTRAST == pytest.approx(1.0)
 
 
 def test_image_features_are_fixed_and_finite() -> None:
@@ -51,7 +69,9 @@ def test_legacy_model_round_trip_keeps_v1_feature_contract(tmp_path: Path) -> No
         bias=np.ones(OUTPUT_DIM, dtype=np.float32),
         model_version=LEGACY_MODEL_VERSION,
     )
-    model = ImageEntityModel.load(path)
+    with pytest.raises(ImageEntityPerceptionError, match="MODEL_SCHEMA_MISMATCH"):
+        ImageEntityModel.load(path)
+    model = ImageEntityModel.load(path, allow_legacy=True)
     assert model.model_version == LEGACY_MODEL_VERSION
     assert len(model.predict(np.zeros((24, 32, 3), dtype=np.uint8))) == ENTITY_COUNT
 
@@ -60,14 +80,19 @@ def test_model_round_trip_and_no_velocity_output(tmp_path: Path) -> None:
     path = tmp_path / "perception.npz"
     save_model(
         path,
-        feature_mean=np.zeros(FEATURE_DIM, dtype=np.float32),
-        feature_scale=np.ones(FEATURE_DIM, dtype=np.float32),
-        weights=np.zeros((FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
+        feature_mean=np.zeros(FUSED_FEATURE_DIM, dtype=np.float32),
+        feature_scale=np.ones(FUSED_FEATURE_DIM, dtype=np.float32),
+        weights=np.zeros((FUSED_FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
         bias=np.ones(OUTPUT_DIM, dtype=np.float32),
+        language_model_id="test-language",
+        language_weights_sha256="a" * 64,
         metadata={"velocity_output": False},
     )
     model = ImageEntityModel.load(path)
-    predictions = model.predict(Image.new("RGB", (1280, 720), (40, 50, 60)))
+    predictions = model.predict(
+        Image.new("RGB", (1280, 720), (40, 50, 60)),
+        task_embedding=np.ones(LANGUAGE_EMBEDDING_DIM, dtype=np.float32),
+    )
     assert len(predictions) == ENTITY_COUNT
     assert all(prediction.visible for prediction in predictions)
     assert all(
@@ -78,14 +103,48 @@ def test_model_round_trip_and_no_velocity_output(tmp_path: Path) -> None:
     )
 
 
-def test_calibrated_red_geometry_uses_image_centroid_sign_only() -> None:
-    left = Image.new("RGB", (1280, 720), (20, 30, 40))
-    ImageDraw.Draw(left).rectangle((180, 300, 300, 390), fill=(220, 20, 20))
-    right = Image.new("RGB", (1280, 720), (20, 30, 40))
-    ImageDraw.Draw(right).rectangle((980, 300, 1100, 390), fill=(220, 20, 20))
+def test_new_model_requires_a_real_task_embedding() -> None:
+    model = _all_visible_model()
+    with pytest.raises(ImageEntityPerceptionError, match="task embedding"):
+        model.predict(Image.new("RGB", (1280, 720), (40, 50, 60)))
 
-    left_valid, left_x, left_y, left_area, left_centroid = calibrated_red_geometry(left)
-    right_valid, right_x, right_y, right_area, right_centroid = calibrated_red_geometry(right)
+
+def test_language_features_are_fused_into_model_projection() -> None:
+    weights = np.zeros((FUSED_FEATURE_DIM, OUTPUT_DIM), dtype=np.float32)
+    weights[FEATURE_DIM, 0] = 2.0
+    model = ImageEntityModel(
+        feature_mean=np.zeros(FUSED_FEATURE_DIM, dtype=np.float32),
+        feature_scale=np.ones(FUSED_FEATURE_DIM, dtype=np.float32),
+        weights=weights,
+        bias=np.zeros(OUTPUT_DIM, dtype=np.float32),
+        language_model_id="test-language",
+        language_weights_sha256="a" * 64,
+    )
+    image = Image.new("RGB", (1280, 720), (40, 50, 60))
+    positive = model.predict(image, task_embedding=_embedding(1.0))
+    negative = model.predict(image, task_embedding=_embedding(-1.0))
+    assert positive[0].confidence > negative[0].confidence
+    assert positive[0].relative_x == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("color", "rgb"),
+    (("red", (220, 20, 20)), ("blue", (20, 20, 220))),
+)
+def test_calibrated_color_geometry_is_symmetric(
+    color: str, rgb: tuple[int, int, int]
+) -> None:
+    left = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(left).rectangle((180, 300, 300, 390), fill=rgb)
+    right = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(right).rectangle((980, 300, 1100, 390), fill=rgb)
+
+    left_valid, left_x, left_y, left_area, left_centroid = calibrated_color_geometry(
+        left, color
+    )
+    right_valid, right_x, right_y, right_area, right_centroid = calibrated_color_geometry(
+        right, color
+    )
 
     assert left_valid and right_valid
     assert left_area == pytest.approx(right_area, rel=0.05)
@@ -96,9 +155,15 @@ def test_calibrated_red_geometry_uses_image_centroid_sign_only() -> None:
     assert right_centroid[0] > COLOR_CALIBRATION_WIDTH / 2.0
 
 
-def test_calibrated_red_geometry_fails_closed_without_red_component() -> None:
-    valid, relative_x, relative_y, area, centroid = calibrated_red_geometry(
-        Image.new("RGB", (1280, 720), (20, 30, 40))
+@pytest.mark.parametrize(
+    "color",
+    ("red", "blue"),
+)
+def test_calibrated_color_geometry_fails_closed_without_component(
+    color: str,
+) -> None:
+    valid, relative_x, relative_y, area, centroid = calibrated_color_geometry(
+        Image.new("RGB", (1280, 720), (20, 30, 40)), color
     )
     assert not valid
     assert np.isnan(relative_x)
@@ -106,6 +171,21 @@ def test_calibrated_red_geometry_fails_closed_without_red_component() -> None:
     assert area == 0.0
     assert np.isnan(centroid[0])
     assert np.isnan(centroid[1])
+
+
+def test_blue_calibration_accepts_cyan_rgb_component() -> None:
+    image = Image.new("RGB", (1280, 720), (8, 35, 75))
+    ImageDraw.Draw(image).rectangle((560, 330, 680, 420), fill=(8, 58, 62))
+
+    valid, relative_x, relative_y, area, centroid = calibrated_color_geometry(
+        image, "blue"
+    )
+
+    assert valid
+    assert area >= 0.00125
+    assert centroid[0] == pytest.approx(620.0 / 4.0, abs=2.0)
+    assert relative_x > 0.0
+    assert relative_y == pytest.approx(0.0, abs=0.2)
 
 
 def test_task_parser_covers_color_bearing_and_stop() -> None:
@@ -144,20 +224,127 @@ def test_task_selection_only_returns_relevant_visible_entities() -> None:
 
 def _all_visible_model() -> ImageEntityModel:
     return ImageEntityModel(
-        feature_mean=np.zeros(FEATURE_DIM, dtype=np.float32),
-        feature_scale=np.ones(FEATURE_DIM, dtype=np.float32),
-        weights=np.zeros((FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
+        feature_mean=np.zeros(FUSED_FEATURE_DIM, dtype=np.float32),
+        feature_scale=np.ones(FUSED_FEATURE_DIM, dtype=np.float32),
+        weights=np.zeros((FUSED_FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
         bias=np.ones(OUTPUT_DIM, dtype=np.float32),
+        language_model_id="test-language",
+        language_weights_sha256="a" * 64,
     )
+
+
+def _color_ridge_model(
+    *, color: str, model_version: str = MODEL_VERSION
+) -> ImageEntityModel:
+    bias = np.zeros(OUTPUT_DIM, dtype=np.float32)
+    offset = {"red": 0, "blue": 4}[color]
+    bias[offset : offset + 4] = (-1.0, 0.25, -0.5, 0.4)
+    feature_dim = FEATURE_DIM if model_version != MODEL_VERSION else FUSED_FEATURE_DIM
+    return ImageEntityModel(
+        feature_mean=np.zeros(feature_dim, dtype=np.float32),
+        feature_scale=np.ones(feature_dim, dtype=np.float32),
+        weights=np.zeros((feature_dim, OUTPUT_DIM), dtype=np.float32),
+        bias=bias,
+        model_version=model_version,
+        language_model_id="test-language",
+        language_weights_sha256="a" * 64,
+    )
+
+
+def _embedding(value: float = 1.0) -> np.ndarray:
+    result = np.zeros(LANGUAGE_EMBEDDING_DIM, dtype=np.float32)
+    result[0] = value
+    return result
+
+
+@pytest.mark.parametrize(
+    ("color", "rgb"),
+    (("red", (220, 20, 20)), ("blue", (20, 20, 220))),
+)
+def test_prediction_uses_original_color_reference_for_red_and_blue(
+    monkeypatch,
+    color: str,
+    rgb: tuple[int, int, int],
+) -> None:
+    import asv_vla.image_entity_perception as perception
+
+    original = Image.new("RGB", (1280, 720), (20, 30, 40))
+    ImageDraw.Draw(original).rectangle((180, 300, 300, 390), fill=rgb)
+    enhanced = Image.new("RGB", (1280, 720), (120, 130, 140))
+    model = _color_ridge_model(color=color)
+    feature_inputs = []
+
+    monkeypatch.setattr(
+        perception,
+        "extract_image_features",
+        lambda image: feature_inputs.append(image)
+        or np.zeros(FEATURE_DIM, dtype=np.float32),
+    )
+    with_reference = model.predict(
+        enhanced, color_image=original, task_embedding=_embedding()
+    )
+    without_reference = model.predict(enhanced, task_embedding=_embedding())
+    target = next(
+        prediction
+        for prediction in with_reference
+        if prediction.entity_id == f"target_{color}"
+    )
+    expected = calibrated_color_geometry(original, color)
+
+    assert feature_inputs == [enhanced, enhanced]
+    assert expected[0]
+    assert target.visible
+    assert target.confidence == 1.0
+    assert target.relative_x == pytest.approx(expected[1])
+    assert target.relative_y == pytest.approx(expected[2])
+    assert target.relative_z == 0.0
+    assert not next(
+        prediction
+        for prediction in without_reference
+        if prediction.entity_id == f"target_{color}"
+    ).visible
+
+
+@pytest.mark.parametrize(
+    "color",
+    ("red", "blue"),
+)
+def test_prediction_fails_closed_when_original_color_is_missing(
+    color: str,
+) -> None:
+    model = _color_ridge_model(color=color)
+    feature_image = Image.new("RGB", (1280, 720), (120, 130, 140))
+    color_image = Image.new("RGB", (1280, 720), (20, 30, 40))
+    prediction = next(
+        item
+        for item in model.predict(
+            feature_image,
+            color_image=color_image,
+            task_embedding=_embedding(),
+        )
+        if item.entity_id == f"target_{color}"
+    )
+
+    assert not prediction.visible
+    assert prediction.confidence == 0.0
+    assert (
+        prediction.relative_x,
+        prediction.relative_y,
+        prediction.relative_z,
+    ) == (0.0, 0.0, 0.0)
 
 
 def test_predict_applies_task_condition_at_model_output_boundary() -> None:
     image = Image.new("RGB", (1280, 720), (40, 50, 60))
     model = _all_visible_model()
 
-    unconditioned = model.predict(image)
-    red = model.predict(image, task=parse_task_instruction("follow red"))
-    blue = model.predict(image, task="follow blue")
+    unconditioned = model.predict(image, task_embedding=_embedding())
+    red = model.predict(
+        image,
+        task=parse_task_instruction("follow red"),
+        task_embedding=_embedding(),
+    )
+    blue = model.predict(image, task="follow blue", task_embedding=_embedding())
 
     assert all(prediction.visible for prediction in unconditioned)
     assert [prediction.entity_id for prediction in red if prediction.visible] == [
@@ -200,7 +387,11 @@ def test_cuda_path_uses_torch_feature_helper_without_numpy_fallback(
     )
 
     with pytest.raises(ImageEntityPerceptionError, match="CUDA_FEATURE_PATH"):
-        model.predict(np.zeros((24, 32, 3), dtype=np.uint8), device="cuda")
+        model.predict(
+            np.zeros((24, 32, 3), dtype=np.uint8),
+            device="cuda",
+            task_embedding=_embedding(),
+        )
 
 
 def test_cuda_request_fails_closed_without_silent_numpy_fallback(monkeypatch) -> None:

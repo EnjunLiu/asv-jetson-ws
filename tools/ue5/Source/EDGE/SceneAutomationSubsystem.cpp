@@ -585,9 +585,19 @@ void USceneAutomationSubsystem::Tick(float DeltaTime)
         }
     }
     PollSetpointExecutor();
-    if (ElapsedSeconds >= MaxRuntimeSeconds)
+    if (ElapsedSeconds >= MaxRuntimeSeconds && !bExitRequested)
     {
-        FailAndExit(TEXT("maximum automation runtime exceeded"));
+        bExitRequested = true;
+        UE_LOG(
+            LogSceneAutomation,
+            Display,
+            TEXT("SCENE_UE_COMPLETE slot=%s layout=%s motion=%s scene_seed=%d runtime_seconds=%.2f"),
+            *SlotId,
+            *LayoutId,
+            *MotionState,
+            SceneSeed,
+            ElapsedSeconds);
+        FPlatformMisc::RequestExit(false);
     }
 }
 
@@ -797,7 +807,8 @@ void USceneAutomationSubsystem::HandleSetpointPayload(const FString& Payload)
         UE_LOG(
             LogSceneAutomation,
             Display,
-            TEXT("SCENE_EXEC_APPLY count=%d dx_cm=%.3f dy_cm=%.3f offset=%s"),
+            TEXT("SCENE_EXEC_APPLY slot=%s count=%d dx_cm=%.3f dy_cm=%.3f offset=%s"),
+            *SlotId,
             ApplyLogCount,
             DeltaX,
             DeltaY,
@@ -844,7 +855,8 @@ void USceneAutomationSubsystem::FailAndExit(const FString& Reason)
     UE_LOG(
         LogSceneAutomation,
         Error,
-        TEXT("SCENE_UE_FAIL %s"),
+        TEXT("SCENE_UE_FAIL slot=%s reason=%s"),
+        *SlotId,
         *Reason);
     FPlatformMisc::RequestExit(false);
 }

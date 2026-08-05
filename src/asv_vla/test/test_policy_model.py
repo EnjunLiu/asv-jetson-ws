@@ -21,7 +21,7 @@ def test_policy_node_defaults_to_explicit_torch_cuda_backend() -> None:
         "POLICY_READY",
         "TorchPolicyRunner.load",
         "device=policy_device",
-        "policy backend is not ready",
+        "inputs=task_embedding+structured_entities+previous_action",
     ):
         assert token in source
 
@@ -29,19 +29,15 @@ def test_policy_node_defaults_to_explicit_torch_cuda_backend() -> None:
 def _inputs(config: Any) -> dict[str, np.ndarray]:
     return {
         "language": np.zeros((1, config.language_dim), dtype=np.float32),
-        "global_visual": np.zeros((1, config.visual_dim), dtype=np.float32),
-        "entity_visual": np.zeros(
-            (1, config.entity_count, config.visual_dim), dtype=np.float32
-        ),
         "entity_geometry": np.zeros(
             (1, config.entity_count, config.entity_geometry_dim), dtype=np.float32
         ),
-        "ego": np.zeros((1, config.ego_dim), dtype=np.float32),
+        "previous_action": np.zeros(
+            (1, config.previous_action_dim), dtype=np.float32
+        ),
         "language_valid": np.ones((1,), dtype=bool),
-        "global_visual_mask": np.ones((1,), dtype=bool),
-        "entity_visual_mask": np.ones((1, config.entity_count), dtype=bool),
         "entity_geometry_mask": np.ones((1, config.entity_count), dtype=bool),
-        "ego_valid": np.ones((1,), dtype=bool),
+        "previous_action_valid": np.zeros((1,), dtype=bool),
         "policy_input_valid": np.ones((1,), dtype=bool),
     }
 
@@ -66,12 +62,12 @@ def test_checkpoint_strict_load_and_runtime_contract(tmp_path: Path) -> None:
         pytest.skip("CUDA is unavailable")
     from asv_vla.policy_model import (  # noqa: E402
         SmallPolicyConfig,
-        SmallTrajectoryPolicy,
+        SmallActionPolicy,
         TorchPolicyRunner,
     )
 
     config = SmallPolicyConfig()
-    model = SmallTrajectoryPolicy(config)
+    model = SmallActionPolicy(config)
     model_path = tmp_path / "policy.pt"
     torch.save(
         {"model_config": asdict(config), "model_state_dict": model.state_dict()},
@@ -80,9 +76,9 @@ def test_checkpoint_strict_load_and_runtime_contract(tmp_path: Path) -> None:
 
     runner = TorchPolicyRunner.load(model_path, device="cuda")
     assert next(runner.model.parameters()).device.type == "cuda"
-    trajectory, stop_logit, valid_mask = runner.run(_inputs(config))
-    assert trajectory.shape == (1, config.horizon, config.action_dim)
+    action, stop_logit, valid_mask = runner.run(_inputs(config))
+    assert action.shape == (1, config.action_dim)
     assert stop_logit.shape == (1, 1)
     assert valid_mask.shape == (1,)
-    assert np.all(np.isfinite(trajectory))
+    assert np.all(np.isfinite(action))
     assert np.all(np.isfinite(stop_logit))

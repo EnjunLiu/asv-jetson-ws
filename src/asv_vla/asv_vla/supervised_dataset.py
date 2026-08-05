@@ -23,20 +23,24 @@ from .expert_trajectory import (
 )
 from .frame_record import read_frame_record
 from .language_intervention_dataset import read_jsonl
-from .trajectory_contract import ACTION_DIM, DT_SEC, HORIZON
+from .trajectory_contract import DT_SEC
 
 
-DATASET_SCHEMA_VERSION = "supervised_trajectory_dataset_v1"
-SAMPLE_SCHEMA_VERSION = "supervised_trajectory_sample_v1"
-GENERATOR_VERSION = "supervised_dataset_v1"
+DATASET_SCHEMA_VERSION = "supervised_action_dataset_v2"
+SAMPLE_SCHEMA_VERSION = "supervised_action_sample_v2"
+GENERATOR_VERSION = "supervised_dataset_single_step_v2"
 REQUIRED_LABELS = {
     "follow|color:red|3m",
+    "follow|color:red|4m",
     "follow|color:red|10m",
     "follow|color:blue|3m",
+    "follow|color:blue|4m",
     "follow|color:blue|10m",
     "follow|bearing:left|3m",
+    "follow|bearing:left|4m",
     "follow|bearing:left|10m",
     "follow|bearing:right|3m",
+    "follow|bearing:right|4m",
     "follow|bearing:right|10m",
     "stop|none|none",
 }
@@ -195,12 +199,13 @@ def _sample_id(
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
 
-def _trajectory_rows(values: Iterable[float]) -> list[list[float]]:
-    flat = list(values)
-    return [
-        [flat[index * ACTION_DIM], flat[index * ACTION_DIM + 1]]
-        for index in range(HORIZON)
-    ]
+def _expert_action(values: Iterable[float]) -> list[float]:
+    action = [float(value) for value in values]
+    if len(action) != 2 or not all(math.isfinite(value) for value in action):
+        raise SupervisedDatasetError(
+            "expert_action must be finite with shape [2]"
+        )
+    return action
 
 
 def _make_sample(
@@ -256,8 +261,7 @@ def _make_sample(
         "expert": {
             "model_version": MODEL_VERSION,
             "dt": DT_SEC,
-            "horizon": HORIZON,
-            "delta_p_xy": _trajectory_rows(expert.delta_p_xy),
+            "expert_action": _expert_action(expert.expert_action),
             "safe_stop": expert.safe_stop,
             "selected_entity_id": expert.selected_entity_id,
             "valid": True,
@@ -271,7 +275,7 @@ def build_supervised_dataset(
     instructions_path: str | Path,
     output_dir: str | Path,
 ) -> dict[str, Any]:
-    """Pair complete FrameRecords with every compatible Day 3 instruction."""
+    """Pair complete FrameRecords with every compatible instruction."""
 
     episodes = sorted({Path(path).resolve() for path in episode_dirs})
     if not episodes:
@@ -395,11 +399,10 @@ def build_supervised_dataset(
                 "frame_count": frame_count,
                 "language_split_counts": dict(sorted(split_counts.items())),
             },
-            "trajectory_contract": {
+            "expert_action_contract": {
                 "frame_id": "base_link",
                 "dt": DT_SEC,
-                "horizon": HORIZON,
-                "action_dim": ACTION_DIM,
+                "action_shape": [2],
                 "expert_model_version": MODEL_VERSION,
             },
             "label_coverage": {
@@ -453,7 +456,7 @@ def evaluate_supervised_dataset(
     *,
     require_all_labels: bool = False,
 ) -> dict[str, Any]:
-    """Verify source hashes and recompute every expert trajectory."""
+    """Verify source hashes and recompute every expert action."""
 
     root = Path(dataset_dir).resolve()
     manifest = _load_json(root / "manifest.json", "manifest.json")
@@ -461,6 +464,16 @@ def evaluate_supervised_dataset(
         manifest.get("schema_version"),
         DATASET_SCHEMA_VERSION,
         "manifest schema_version",
+    )
+    _assert_equal(
+        manifest.get("expert_action_contract"),
+        {
+            "frame_id": "base_link",
+            "dt": DT_SEC,
+            "action_shape": [2],
+            "expert_model_version": MODEL_VERSION,
+        },
+        "manifest expert_action_contract",
     )
 
     instruction_info = manifest.get("instruction_dataset")
@@ -622,6 +635,23 @@ def evaluate_supervised_dataset(
             )
         sample_ids.add(expected_id)
 
+        if "horizon" in expert or "delta_p_xy" in expert:
+            raise SupervisedDatasetError(
+                f"{context} contains legacy horizon/delta_p_xy fields"
+            )
+        action = expert.get("expert_action")
+        if (
+            not isinstance(action, list)
+            or len(action) != 2
+            or not all(
+                isinstance(value, (int, float)) and math.isfinite(value)
+                for value in action
+            )
+        ):
+            raise SupervisedDatasetError(
+                f"{context} expert_action must be finite with shape [2]"
+            )
+
         task = task_from_labels(
             str(expected_instruction["action"]),
             str(expected_instruction["target_attribute"]),
@@ -638,26 +668,13 @@ def evaluate_supervised_dataset(
         expected_expert = {
             "model_version": MODEL_VERSION,
             "dt": DT_SEC,
-            "horizon": HORIZON,
-            "delta_p_xy": _trajectory_rows(expected_result.delta_p_xy),
+            "expert_action": _expert_action(expected_result.expert_action),
             "safe_stop": expected_result.safe_stop,
             "selected_entity_id": expected_result.selected_entity_id,
             "valid": True,
             "detail": expected_result.detail,
         }
         _assert_equal(expert, expected_expert, f"{context} expert")
-        if len(expert["delta_p_xy"]) != HORIZON or any(
-            not isinstance(row, list)
-            or len(row) != ACTION_DIM
-            or not all(
-                isinstance(value, (int, float)) and math.isfinite(value)
-                for value in row
-            )
-            for row in expert["delta_p_xy"]
-        ):
-            raise SupervisedDatasetError(
-                f"{context} trajectory must be finite {HORIZON}x{ACTION_DIM}"
-            )
 
         label_counts[_label_key(instruction)] += 1
         compatible_instructions.add(instruction_id)
@@ -702,7 +719,7 @@ def evaluate_supervised_dataset(
 
 def build_main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build deterministic supervised trajectory data."
+        description="Build deterministic supervised expert-action data."
     )
     parser.add_argument(
         "--episode",

@@ -20,7 +20,7 @@ from .expert_trajectory import (
     generate_expert_trajectory,
     task_from_labels,
 )
-from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, HORIZON
+from .trajectory_contract import DT_SEC, FRAME_ID
 
 
 RELIABLE_QOS = QoSProfile(
@@ -103,8 +103,8 @@ class ExpertTrajectoryNode(Node):
         message.desired_distance_m = self.task.desired_distance_m
         message.selected_entity_id = ""
         message.dt = DT_SEC
-        message.horizon = HORIZON
-        message.delta_p_xy = [0.0] * (HORIZON * ACTION_DIM)
+        message.desired_x = 0.0
+        message.desired_y = 0.0
         message.safe_stop = True
         message.valid = False
         message.detail = "UNINITIALIZED"
@@ -173,7 +173,7 @@ class ExpertTrajectoryNode(Node):
 
         message = self._message(source)
         message.selected_entity_id = result.selected_entity_id
-        message.delta_p_xy = list(result.delta_p_xy)
+        message.desired_x, message.desired_y = result.expert_action
         message.safe_stop = result.safe_stop
         message.valid = True
         message.detail = result.detail

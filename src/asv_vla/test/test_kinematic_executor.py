@@ -6,15 +6,15 @@ import pytest
 from asv_vla.kinematic_executor import first_step_from_expert
 
 
-def trajectory(
+def action_message(
     *,
     valid=True,
     safe_stop=False,
     frame_id="base_link",
     run_id="run-1",
     dt=0.2,
-    horizon=2,
-    values=(0.3, 0.0, 0.6, 0.0),
+    desired_x=0.3,
+    desired_y=0.0,
     detail="ok",
 ):
     return SimpleNamespace(
@@ -24,14 +24,14 @@ def trajectory(
         run_id=run_id,
         model_version="expert-v1",
         dt=dt,
-        horizon=horizon,
-        delta_p_xy=values,
+        desired_x=desired_x,
+        desired_y=desired_y,
         detail=detail,
     )
 
 
-def test_extracts_only_first_cumulative_waypoint():
-    step = first_step_from_expert(trajectory())
+def test_consumes_one_action_without_horizon_or_trajectory_shape():
+    step = first_step_from_expert(action_message())
 
     assert step.valid
     assert not step.hold_position
@@ -41,9 +41,10 @@ def test_extracts_only_first_cumulative_waypoint():
 
 def test_stop_becomes_valid_hold():
     step = first_step_from_expert(
-        trajectory(
+        action_message(
             safe_stop=True,
-            values=(0.0, 0.0, 0.0, 0.0),
+            desired_x=0.0,
+            desired_y=0.0,
         )
     )
 
@@ -56,19 +57,15 @@ def test_stop_becomes_valid_hold():
 @pytest.mark.parametrize(
     ("source", "reason"),
     [
-        (trajectory(valid=False), "INVALID_EXPERT"),
-        (trajectory(frame_id="map"), "INVALID_FRAME"),
-        (trajectory(run_id=""), "INVALID_RUN_ID"),
-        (trajectory(values=(0.1, 0.0)), "INVALID_SHAPE"),
+        (action_message(valid=False), "INVALID_EXPERT"),
+        (action_message(frame_id="map"), "INVALID_FRAME"),
+        (action_message(run_id=""), "INVALID_RUN_ID"),
+        (action_message(desired_x=float("nan")), "NONFINITE_ACTION"),
+        (action_message(desired_x=0.36), "STEP_LIMIT"),
         (
-            trajectory(values=(float("nan"), 0.0, 0.0, 0.0)),
-            "NONFINITE_TRAJECTORY",
-        ),
-        (trajectory(values=(0.36, 0.0, 0.6, 0.0)), "STEP_LIMIT"),
-        (
-            trajectory(
+            action_message(
                 safe_stop=True,
-                values=(0.1, 0.0, 0.0, 0.0),
+                desired_x=0.1,
             ),
             "INVALID_SAFE_STOP",
         ),
@@ -81,6 +78,37 @@ def test_invalid_inputs_fail_to_non_executable_hold(source, reason):
     assert step.hold_position
     assert (step.delta_x_m, step.delta_y_m) == (0.0, 0.0)
     assert reason in step.reason
+
+
+def test_legacy_trajectory_fields_and_shapes_are_rejected():
+    legacy = SimpleNamespace(
+        valid=True,
+        safe_stop=False,
+        frame_id="base_link",
+        run_id="run-1",
+        model_version="expert-v1",
+        dt=0.2,
+        horizon=2,
+        delta_p_xy=(0.3, 0.0, 0.6, 0.0),
+        detail="legacy",
+    )
+
+    step = first_step_from_expert(legacy)
+
+    assert not step.valid
+    assert step.hold_position
+    assert "INVALID_ACTION_FIELDS" in step.reason
+
+
+def test_missing_safety_field_fails_closed():
+    malformed = action_message()
+    del malformed.safe_stop
+
+    step = first_step_from_expert(malformed)
+
+    assert not step.valid
+    assert step.hold_position
+    assert "missing safe_stop" in step.reason
 
 
 def test_message_and_bridge_contract_are_registered():

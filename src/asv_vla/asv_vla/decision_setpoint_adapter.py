@@ -1,6 +1,6 @@
 """Adapter: /decision/output (DecisionOutput) -> /ue/kinematic_setpoint.
 
-The trajectory controller publishes ``desired_x / desired_y`` on
+The point controller publishes ``desired_x / desired_y`` on
 ``/decision/output`` (the existing control boundary).  The UE5 kinematic
 execution path consumes single-step setpoints on ``/ue/kinematic_setpoint``.
 This node bridges the two without touching the legacy control chain.

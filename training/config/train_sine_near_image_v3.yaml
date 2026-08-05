@@ -38,8 +38,7 @@ training:
     minimum_stop_within_0_10m_rate: 0.90
 
 loss:
-  waypoint: 1.0
-  endpoint: 0.5
+  action: 1.0
   stop: 1.0
   smoothness: 0.05
   pairwise: 0.15

@@ -15,8 +15,8 @@ import torch
 from torch import Tensor
 import yaml
 
-from training.losses import PolicyLossWeights, trajectory_policy_loss
-from training.model import SmallPolicyConfig, SmallTrajectoryPolicy
+from training.losses import PolicyLossWeights, action_policy_loss
+from training.model import SmallActionPolicy, SmallPolicyConfig
 
 
 REPORT_SCHEMA_VERSION = "policy_contract_report_v1"
@@ -81,19 +81,6 @@ def _make_inputs(
             device=device,
             requires_grad=True,
         ),
-        "global_visual": torch.randn(
-            batch_size,
-            config.visual_dim,
-            device=device,
-            requires_grad=True,
-        ),
-        "entity_visual": torch.randn(
-            batch_size,
-            config.entity_count,
-            config.visual_dim,
-            device=device,
-            requires_grad=True,
-        ),
         "entity_geometry": torch.randn(
             batch_size,
             config.entity_count,
@@ -101,28 +88,26 @@ def _make_inputs(
             device=device,
             requires_grad=True,
         ),
-        "ego": torch.randn(
+        "previous_action": torch.randn(
             batch_size,
-            config.ego_dim,
+            config.previous_action_dim,
             device=device,
             requires_grad=True,
         ),
         "language_valid": torch.ones(
             batch_size, dtype=torch.bool, device=device
         ),
-        "global_visual_mask": torch.ones(
+        "entity_geometry_mask": entity_mask.clone(),
+        "previous_action_valid": torch.ones(
             batch_size, dtype=torch.bool, device=device
         ),
-        "entity_visual_mask": entity_mask.clone(),
-        "entity_geometry_mask": entity_mask.clone(),
-        "ego_valid": torch.ones(batch_size, dtype=torch.bool, device=device),
         "policy_input_valid": torch.ones(
             batch_size, dtype=torch.bool, device=device
         ),
     }
 
 
-def _checkpoint_size_bytes(model: SmallTrajectoryPolicy) -> int:
+def _checkpoint_size_bytes(model: SmallActionPolicy) -> int:
     descriptor, name = tempfile.mkstemp(suffix=".pt")
     os.close(descriptor)
     try:
@@ -133,6 +118,15 @@ def _checkpoint_size_bytes(model: SmallTrajectoryPolicy) -> int:
             os.unlink(name)
         except OSError:
             pass
+
+
+def _expected_zero_gradient_parameter_names(
+    model_config: SmallPolicyConfig,
+) -> set[str]:
+    """Return legacy parameters intentionally inactive in the selected mode."""
+    if model_config.entity_attention_mode == "language_only":
+        return {"entity_attention.weight", "entity_attention.bias"}
+    return set()
 
 
 def run_contract(
@@ -173,7 +167,7 @@ def run_contract(
         tracemalloc.start()
         peak_kind = "python_tracemalloc"
 
-    model = SmallTrajectoryPolicy(model_config).to(device)
+    model = SmallActionPolicy(model_config).to(device)
     model.eval()
     output_shapes: dict[str, list[int]] = {}
     maximum_observed_increment = 0.0
@@ -181,67 +175,77 @@ def run_contract(
         inputs = _make_inputs(batch_size, model_config, device)
         first = model(**inputs)
         second = model(**inputs)
-        expected = (batch_size, model_config.horizon, model_config.action_dim)
-        if tuple(first.trajectory.shape) != expected:
+        expected = (batch_size, model_config.action_dim)
+        if tuple(first.action.shape) != expected:
             raise AssertionError(
-                f"batch {batch_size}: trajectory shape is "
-                f"{tuple(first.trajectory.shape)}, expected {expected}"
+                f"batch {batch_size}: action shape is "
+                f"{tuple(first.action.shape)}, expected {expected}"
             )
         if tuple(first.stop_logit.shape) != (batch_size, 1):
             raise AssertionError("stop_logit shape is invalid")
-        if not torch.isfinite(first.trajectory).all():
-            raise AssertionError("policy trajectory contains NaN or Inf")
+        if not torch.isfinite(first.action).all():
+            raise AssertionError("policy action contains NaN or Inf")
         if not torch.isfinite(first.stop_logit).all():
             raise AssertionError("policy stop_logit contains NaN or Inf")
-        if not torch.equal(first.trajectory, second.trajectory):
+        if not torch.equal(first.action, second.action):
             raise AssertionError("repeated forward pass is not deterministic")
-        observed = float(
-            torch.max(
-                torch.linalg.vector_norm(first.increments, dim=-1)
-            ).detach().cpu()
-        )
+        observed = float(torch.max(torch.linalg.vector_norm(first.action, dim=-1)).detach().cpu())
         maximum_observed_increment = max(maximum_observed_increment, observed)
-        if observed > model_config.maximum_step_m + 1.0e-6:
-            raise AssertionError("trajectory increment exceeded structural bound")
-        output_shapes[str(batch_size)] = list(first.trajectory.shape)
+        if observed > model_config.maximum_action_m + 1.0e-6:
+            raise AssertionError("direct action exceeded structural bound")
+        output_shapes[str(batch_size)] = list(first.action.shape)
 
     invalid_inputs = _make_inputs(2, model_config, device)
-    invalid_inputs["global_visual_mask"][0] = False
+    invalid_inputs["policy_input_valid"][0] = False
     with torch.no_grad():
-        invalid_inputs["global_visual"][0].fill_(float("nan"))
+        invalid_inputs["language"][0].fill_(float("nan"))
     invalid_output = model(**invalid_inputs)
     if bool(invalid_output.valid_mask[0]):
-        raise AssertionError("missing global visual input did not fail closed")
-    if torch.count_nonzero(invalid_output.trajectory[0]):
-        raise AssertionError("invalid sample trajectory is not zero")
-    if not torch.isfinite(invalid_output.trajectory).all():
+        raise AssertionError("invalid structured policy input did not fail closed")
+    if torch.count_nonzero(invalid_output.action[0]):
+        raise AssertionError("invalid sample action is not zero")
+    if not torch.isfinite(invalid_output.action).all():
         raise AssertionError("invalid masks produced NaN or Inf")
 
     model.train()
     training_inputs = _make_inputs(8, model_config, device)
     training_output = model(**training_inputs)
-    target_trajectory = torch.zeros_like(training_output.trajectory)
+    target_action = torch.zeros_like(training_output.action)
     target_stop = torch.zeros(8, 1, dtype=torch.float32, device=device)
-    losses = trajectory_policy_loss(
+    losses = action_policy_loss(
         training_output,
-        target_trajectory,
+        target_action,
         target_stop,
         weights=loss_weights,
     )
     losses["total"].backward()
     frozen_input_gradients = {
         key: training_inputs[key].grad is None
-        for key in ("language", "global_visual", "entity_visual")
+        for key in ("language",)
     }
     if not all(frozen_input_gradients.values()):
-        raise AssertionError("frozen language/visual inputs received gradients")
+        raise AssertionError("frozen language input received gradients")
+    expected_zero_gradient_names = _expected_zero_gradient_parameter_names(
+        model_config
+    )
+    missing_gradient_names = {
+        name
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and parameter.grad is None
+    }
+    unexpected_missing_gradient_names = (
+        missing_gradient_names - expected_zero_gradient_names
+    )
+    if unexpected_missing_gradient_names:
+        raise AssertionError(
+            "unexpected trainable parameters without gradients: "
+            f"{sorted(unexpected_missing_gradient_names)}"
+        )
     trainable_gradients = [
         parameter.grad
-        for parameter in model.parameters()
-        if parameter.requires_grad
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and name not in expected_zero_gradient_names
     ]
-    if any(gradient is None for gradient in trainable_gradients):
-        raise AssertionError("a trainable policy parameter has no gradient")
     if not all(
         torch.isfinite(gradient).all()
         for gradient in trainable_gradients
@@ -273,9 +277,12 @@ def run_contract(
         "checkpoint_size_bytes": checkpoint_size,
         "peak_memory_bytes": peak_memory_bytes,
         "peak_memory_kind": peak_kind,
-        "maximum_step_m": model_config.maximum_step_m,
+        "maximum_action_m": model_config.maximum_action_m,
         "maximum_observed_increment_m": maximum_observed_increment,
         "frozen_cache_input_gradients_absent": frozen_input_gradients,
+        "expected_zero_gradient_parameter_names": sorted(
+            expected_zero_gradient_names
+        ),
         "invalid_input_fail_closed": True,
         "privileged_policy_fields_absent": True,
         "loss": {
@@ -314,7 +321,7 @@ def main() -> int:
         f"parameters={report['trainable_parameter_count']} "
         f"checkpoint_bytes={report['checkpoint_size_bytes']} "
         f"peak_memory_bytes={report['peak_memory_bytes']} "
-        f"max_step_m={report['maximum_step_m']}"
+        f"max_action_m={report['maximum_action_m']}"
     )
     return 0
 

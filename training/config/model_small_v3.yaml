@@ -5,25 +5,39 @@ schema_version: "model_small_v3"
 
 model:
   language_dim: 256
-  visual_dim: 576
   entity_count: 16
   entity_geometry_dim: 16
-  ego_dim: 2
-  horizon: 20
   action_dim: 2
+  previous_action_dim: 2
   language_hidden: 128
-  visual_hidden: 128
   entity_geometry_hidden: 64
   entity_hidden: 192
-  ego_hidden: 32
+  previous_action_hidden: 64
   fusion_hidden: 256
-  maximum_step_m: 0.3
+  maximum_action_m: 0.3
   invalid_stop_logit: 20.0
   maximum_trainable_parameters: 2000000
   language_conditioned_entity_attention: true
   entity_attention_mode: "language_only"
 
 contract:
+  execution_target: "pc_train_jetson_infer"
+  decision_inputs:
+    - language
+    - entity_geometry
+    - previous_action
+    - language_valid
+    - entity_geometry_mask
+    - previous_action_valid
+    - policy_input_valid
+  decision_input_exclusions:
+    - global_visual
+    - entity_visual
+    - ego
+  output_action_shape: [B, 2]
+  output_action_frame: "base_link"
+  output_action_kind: "single_step_desired_displacement_m"
+  maximum_action_norm_m: 0.3
   batch_sizes: [1, 2, 8]
   deterministic_seed: 42
   checkpoint_format: "pytorch_state_dict"
@@ -35,3 +49,7 @@ contract:
     - color_blue
     - entity_ids
     - expert_selected_entity_ids
+  temporal_context:
+    previous_action_source: "same_run_same_instruction_previous_frame"
+    first_frame_action: [0.0, 0.0]
+    first_frame_valid: false

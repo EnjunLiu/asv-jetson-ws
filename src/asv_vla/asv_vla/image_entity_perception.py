@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any, Sequence
 
 import numpy as np
@@ -25,7 +26,21 @@ from PIL import Image
 
 
 LEGACY_MODEL_VERSION = "image_entity_ridge_v1"
-MODEL_VERSION = "image_entity_ridge_v2"
+IMAGE_ONLY_MODEL_VERSION = "image_entity_ridge_v2"
+MODEL_VERSION = "image_entity_ridge_language_v3"
+MODEL_SCHEMA_VERSION = "image_entity_perception_schema_v3"
+MODEL_INPUT_CONTRACT = (
+    "(camera_image_rgb,task_embedding_float32[256])->structured_entities"
+)
+LANGUAGE_EMBEDDING_DIM = 256
+LANGUAGE_EMBEDDING_CONTRACT = (
+    "task_embedding:float32[256];finite;nonzero_l2;normalized_by_language_encoder"
+)
+STRUCTURED_ENTITY_OUTPUT_CONTRACT = (
+    "entity_id,class_name,color,relative_position_m,visible_mask,bbox_px,"
+    "confidence,valid,relative_velocity_mps,velocity_valid"
+)
+VELOCITY_SOURCE = "temporal_entity_tracker"
 GRID_WIDTH = 32
 GRID_HEIGHT = 18
 CHANNELS = 7  # RGB plus red/blue/white/bright spatial evidence maps
@@ -33,14 +48,33 @@ BASE_FEATURE_DIM = GRID_WIDTH * GRID_HEIGHT * CHANNELS
 MOMENT_MAPS = 4
 MOMENT_FEATURES_PER_MAP = 8
 FEATURE_DIM = BASE_FEATURE_DIM + MOMENT_MAPS * MOMENT_FEATURES_PER_MAP
+FUSED_FEATURE_DIM = FEATURE_DIM + LANGUAGE_EMBEDDING_DIM
 ENTITY_IDS = ("target_red", "target_blue", "target_left", "target_right")
 ENTITY_COUNT = len(ENTITY_IDS)
 OUTPUT_DIM = ENTITY_COUNT * 4  # visible logit + relative x/y/z per slot
 POSITION_SCALE_M = np.asarray((40.0, 40.0, 5.0), dtype=np.float32)
 COLOR_CALIBRATED_MODEL_VERSION = "image_entity_color_calibrated_v1"
-COLOR_CALIBRATED_MODEL_VERSION_V2 = "image_entity_ridge_v2"
+COLOR_CALIBRATED_MODEL_VERSION_V2 = IMAGE_ONLY_MODEL_VERSION
+IMAGE_ONLY_MODEL_VERSIONS = frozenset(
+    {
+        LEGACY_MODEL_VERSION,
+        IMAGE_ONLY_MODEL_VERSION,
+        COLOR_CALIBRATED_MODEL_VERSION,
+        COLOR_CALIBRATED_MODEL_VERSION_V2,
+    }
+)
 COLOR_CALIBRATION_WIDTH = 320
 COLOR_CALIBRATION_HEIGHT = 180
+# The image model is retrained against this exact transform. Keep these
+# values in the perception contract rather than exposing per-node tuning.
+LOW_LIGHT_PREPROCESS_CONTRACT = "ue5_capture_gamma065_brightness100_contrast100_v2"
+# The UE5 bridge applies this transform before publishing JPEG bytes. Applying
+# it again in the Jetson node would double-lift the image and change the color
+# margins used by the calibrated visibility checks.
+LOW_LIGHT_PREPROCESS_ENABLED = False
+LOW_LIGHT_PREPROCESS_GAMMA = 0.65
+LOW_LIGHT_PREPROCESS_BRIGHTNESS = 1.0
+LOW_LIGHT_PREPROCESS_CONTRAST = 1.0
 # Fit on the available near-range S2 red masks.  The form is intentionally
 # explicit so the PC calibration script can replace these values in a model
 # artifact without changing the online image-only contract.
@@ -51,6 +85,30 @@ COLOR_AREA_MAX = 0.0172222222
 
 class ImageEntityPerceptionError(RuntimeError):
     """Raised when the image perception model or input is unusable."""
+
+
+def validate_task_embedding(
+    embedding: object,
+    *,
+    expected_dim: int = LANGUAGE_EMBEDDING_DIM,
+) -> np.ndarray:
+    """Validate the task condition; never create a fallback vector."""
+
+    array = np.asarray(embedding, dtype=np.float32)
+    if array.shape != (expected_dim,):
+        raise ImageEntityPerceptionError(
+            f"task embedding shape {array.shape}; expected ({expected_dim},)"
+        )
+    if not np.all(np.isfinite(array)):
+        raise ImageEntityPerceptionError("task embedding contains NaN or Inf")
+    norm = float(np.linalg.norm(array))
+    if not math.isfinite(norm) or norm <= 1.0e-12:
+        raise ImageEntityPerceptionError("task embedding has zero or invalid norm")
+    return np.ascontiguousarray(array, dtype=np.float32)
+
+
+def _is_sha256(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{64}", str(value).strip()))
 
 
 @dataclass(frozen=True)
@@ -196,9 +254,14 @@ def calibrated_color_geometry(
     The returned area is the fraction of the fixed 320x180 grid occupied by
     the largest color component, and the centroid is in that same grid.  A
     missing or out-of-calibration component returns ``valid=False`` with NaN
-    geometry; callers must keep their existing ridge prediction in that case.
+    geometry; callers must fail closed rather than expose ridge geometry.
     """
 
+    normalized_color = str(color).strip().casefold()
+    if normalized_color not in {"red", "blue"}:
+        raise ImageEntityPerceptionError(
+            f"unsupported color calibration target {color!r}; use red or blue"
+        )
     if isinstance(image, np.ndarray):
         array = np.asarray(image)
         if array.ndim != 3 or array.shape[2] != 3:
@@ -222,26 +285,38 @@ def calibrated_color_geometry(
         dtype=np.float32,
     ) / 255.0
     red, green, blue = grid.transpose(2, 0, 1)
-    if color == "blue":
-        # Restrict the blue mask to the water zone: the sky occupies the
-        # upper rows and satisfies the same hue conditions, which made the
-        # "largest component" the background instead of the boat.
-        water_zone = np.zeros(grid.shape[:2], dtype=bool)
-        water_zone[COLOR_CALIBRATION_HEIGHT // 4 :, :] = True
-        mask = water_zone & (
-            (blue >= 0.25)
-            & (blue >= red * 1.25)
-            & (blue >= green * 1.15)
-            & ((blue - green) >= 0.08)
+    primary = red if normalized_color == "red" else blue
+    secondary = np.maximum(red if normalized_color == "blue" else blue, green)
+    # Keep the red and blue contracts on the same component/geometry path;
+    # only the selected primary channel changes. Area filtering below rejects
+    # large background regions without relying on a scene-specific horizon or
+    # camera crop.
+    dominant_mask = (
+        (primary >= 0.25)
+        & (primary >= secondary * 1.25)
+        & ((primary - secondary) >= 0.08)
+    )
+    if normalized_color == "blue":
+        # Blue materials can be recorded as low-value cyan. This is a generic
+        # RGB color-family fallback, not a location or scene assumption.
+        cyan_mask = (
+            (green >= red * 1.6)
+            & (blue >= red * 1.6)
+            & (green >= 0.08)
+            & (blue >= 0.08)
+            & (np.abs(blue - green) <= (32.0 / 255.0))
         )
+        component_pixels, centroid_x, centroid_y = (
+            _largest_color_component_in_area(cyan_mask)
+        )
+        if component_pixels == 0:
+            component_pixels, centroid_x, centroid_y = (
+                _largest_color_component_in_area(dominant_mask)
+            )
     else:
-        mask = (
-            (red >= 0.25)
-            & (red >= green * 1.25)
-            & (red >= blue * 1.15)
-            & ((red - green) >= 0.08)
+        component_pixels, centroid_x, centroid_y = (
+            _largest_color_component_in_area(dominant_mask)
         )
-    component_pixels, centroid_x, centroid_y = _largest_color_component_in_area(mask)
     area = component_pixels / float(COLOR_CALIBRATION_WIDTH * COLOR_CALIBRATION_HEIGHT)
     if component_pixels < 8 or not (COLOR_AREA_MIN <= area <= COLOR_AREA_MAX):
         return False, float("nan"), float("nan"), float(area), (
@@ -265,6 +340,14 @@ def calibrated_color_geometry(
         float(area),
         (float(centroid_x), float(centroid_y)),
     )
+
+
+def calibrated_red_geometry(
+    image: Image.Image | np.ndarray,
+) -> tuple[bool, float, float, float, tuple[float, float]]:
+    """Backward-compatible red-only alias for the unified color calibrator."""
+
+    return calibrated_color_geometry(image, "red")
 
 
 def _resized_rgb(image: Image.Image | np.ndarray) -> np.ndarray:
@@ -491,7 +574,15 @@ def extract_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
 
 
 def _feature_dim_for_model(model_version: str) -> int:
-    return BASE_FEATURE_DIM if model_version == LEGACY_MODEL_VERSION else FEATURE_DIM
+    if model_version == LEGACY_MODEL_VERSION:
+        return BASE_FEATURE_DIM
+    if model_version in IMAGE_ONLY_MODEL_VERSIONS:
+        return FEATURE_DIM
+    if model_version == MODEL_VERSION:
+        return FEATURE_DIM + LANGUAGE_EMBEDDING_DIM
+    raise ImageEntityPerceptionError(
+        f"MODEL_SCHEMA_MISMATCH: unsupported model_version={model_version!r}"
+    )
 
 
 def _torch_for_device(device: str):
@@ -531,6 +622,40 @@ class ImageEntityPrediction:
     relative_x: float
     relative_y: float
     relative_z: float
+
+    @property
+    def class_name(self) -> str:
+        return "boat"
+
+    @property
+    def color(self) -> str:
+        return {
+            "target_red": "red",
+            "target_blue": "blue",
+            "target_left": "white",
+            "target_right": "white",
+        }.get(str(self.entity_id), "")
+
+    @property
+    def valid(self) -> bool:
+        return bool(
+            math.isfinite(float(self.confidence))
+            and 0.0 <= float(self.confidence) <= 1.0
+            and all(
+                math.isfinite(float(value))
+                for value in (self.relative_x, self.relative_y, self.relative_z)
+            )
+        )
+
+    @property
+    def relative_velocity(self) -> tuple[float, float, float]:
+        """Velocity is intentionally unavailable to a single-frame head."""
+
+        return (0.0, 0.0, 0.0)
+
+    @property
+    def velocity_valid(self) -> bool:
+        return False
 
 
 def _prediction_color(entity_id: str) -> str:
@@ -603,6 +728,13 @@ class ImageEntityModel:
     bias: np.ndarray
     model_version: str = MODEL_VERSION
     visibility_threshold: float = 0.0
+    schema_version: str = MODEL_SCHEMA_VERSION
+    input_contract: str = MODEL_INPUT_CONTRACT
+    output_contract: str = STRUCTURED_ENTITY_OUTPUT_CONTRACT
+    task_embedding_dim: int = LANGUAGE_EMBEDDING_DIM
+    language_model_id: str = ""
+    language_weights_sha256: str = ""
+    velocity_output: bool = False
 
     @staticmethod
     def validate_device(device: str) -> None:
@@ -611,6 +743,42 @@ class ImageEntityModel:
         _torch_for_device(device)
 
     def __post_init__(self) -> None:
+        is_legacy = self.model_version in IMAGE_ONLY_MODEL_VERSIONS
+        if not is_legacy:
+            if self.schema_version != MODEL_SCHEMA_VERSION:
+                raise ImageEntityPerceptionError(
+                    "MODEL_SCHEMA_MISMATCH: expected "
+                    f"{MODEL_SCHEMA_VERSION}, got {self.schema_version!r}"
+                )
+            if self.input_contract != MODEL_INPUT_CONTRACT:
+                raise ImageEntityPerceptionError(
+                    "MODEL_INPUT_CONTRACT_MISMATCH: expected "
+                    f"{MODEL_INPUT_CONTRACT}, got {self.input_contract!r}"
+                )
+            if self.output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
+                raise ImageEntityPerceptionError(
+                    "MODEL_OUTPUT_CONTRACT_MISMATCH: expected "
+                    f"{STRUCTURED_ENTITY_OUTPUT_CONTRACT}, got {self.output_contract!r}"
+                )
+            if int(self.task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
+                raise ImageEntityPerceptionError(
+                    "LANGUAGE_EMBEDDING_DIM_MISMATCH: expected "
+                    f"{LANGUAGE_EMBEDDING_DIM}, got {self.task_embedding_dim}"
+                )
+            if not str(self.language_model_id).strip():
+                raise ImageEntityPerceptionError(
+                    "LANGUAGE_MODEL_ID_MISSING: new perception models require "
+                    "the identity of the embedding model"
+                )
+            if not _is_sha256(self.language_weights_sha256):
+                raise ImageEntityPerceptionError(
+                    "LANGUAGE_MODEL_HASH_INVALID: expected a 64-character "
+                    "SHA-256 for the embedding model weights"
+                )
+        if bool(self.velocity_output):
+            raise ImageEntityPerceptionError(
+                "VELOCITY_OUTPUT_FORBIDDEN: velocity is estimated by the temporal tracker"
+            )
         expected_feature_dim = _feature_dim_for_model(self.model_version)
         mean = np.asarray(self.feature_mean, dtype=np.float32)
         scale = np.asarray(self.feature_scale, dtype=np.float32)
@@ -632,15 +800,56 @@ class ImageEntityModel:
         object.__setattr__(self, "feature_scale", np.ascontiguousarray(scale))
         object.__setattr__(self, "weights", np.ascontiguousarray(weights))
         object.__setattr__(self, "bias", np.ascontiguousarray(bias))
+        object.__setattr__(self, "task_embedding_dim", int(self.task_embedding_dim))
 
     @classmethod
-    def load(cls, path: str | Path) -> "ImageEntityModel":
+    def load(
+        cls, path: str | Path, *, allow_legacy: bool = False
+    ) -> "ImageEntityModel":
         model_path = Path(path).expanduser()
         if not model_path.is_file():
             raise ImageEntityPerceptionError(f"model not found: {model_path}")
         try:
             with np.load(model_path, allow_pickle=False) as data:
                 version = str(data["model_version"].item())
+                if version in IMAGE_ONLY_MODEL_VERSIONS:
+                    if not allow_legacy:
+                        raise ImageEntityPerceptionError(
+                            "MODEL_SCHEMA_MISMATCH: checkpoint is image-only "
+                            f"({version}); load it only with explicit "
+                            "allow_legacy=True image-only legacy mode"
+                        )
+                    return cls(
+                        feature_mean=data["feature_mean"],
+                        feature_scale=data["feature_scale"],
+                        weights=data["weights"],
+                        bias=data["bias"],
+                        model_version=version,
+                        visibility_threshold=float(
+                            data["visibility_threshold"].item()
+                        ),
+                        schema_version="image_only_legacy_schema",
+                        input_contract="(camera_image_rgb)->structured_entities",
+                        output_contract=STRUCTURED_ENTITY_OUTPUT_CONTRACT,
+                        task_embedding_dim=0,
+                        language_model_id="legacy-image-only",
+                        language_weights_sha256="",
+                    )
+                required = (
+                    "model_schema_version",
+                    "input_contract",
+                    "output_contract",
+                    "task_embedding_dim",
+                    "language_model_id",
+                    "language_weights_sha256",
+                    "velocity_output",
+                )
+                missing = [key for key in required if key not in data]
+                if missing:
+                    raise ImageEntityPerceptionError(
+                        "MODEL_SCHEMA_MISMATCH: new checkpoint is missing "
+                        + ", ".join(missing)
+                    )
                 return cls(
                     feature_mean=data["feature_mean"],
                     feature_scale=data["feature_scale"],
@@ -648,7 +857,18 @@ class ImageEntityModel:
                     bias=data["bias"],
                     model_version=version,
                     visibility_threshold=float(data["visibility_threshold"].item()),
+                    schema_version=str(data["model_schema_version"].item()),
+                    input_contract=str(data["input_contract"].item()),
+                    output_contract=str(data["output_contract"].item()),
+                    task_embedding_dim=int(data["task_embedding_dim"].item()),
+                    language_model_id=str(data["language_model_id"].item()),
+                    language_weights_sha256=str(
+                        data["language_weights_sha256"].item()
+                    ),
+                    velocity_output=bool(data["velocity_output"].item()),
                 )
+        except ImageEntityPerceptionError:
+            raise
         except (OSError, KeyError, ValueError, TypeError) as exc:
             raise ImageEntityPerceptionError(
                 f"cannot load perception model {model_path}: {exc}"
@@ -660,15 +880,25 @@ class ImageEntityModel:
         task: TaskSpec | str | None = None,
         *,
         device: str = "numpy",
+        color_image: Image.Image | np.ndarray | None = None,
+        task_embedding: object | None = None,
     ) -> tuple[ImageEntityPrediction, ...]:
         """Predict entities and optionally apply task selection at the boundary.
 
-        ``task=None`` preserves the legacy all-candidate API used by offline
-        callers.  A supplied :class:`TaskSpec` or instruction string changes
-        only the returned visibility mask; geometry and confidence remain the
-        image-model outputs.  CUDA requests never fall back to NumPy.
+        New models require a real fixed-size task embedding and concatenate it
+        with image features before the learned projection. ``task`` is only
+        the parsed instruction metadata used for target selection; it is not a
+        substitute for ``task_embedding``. ``color_image`` is the original
+        decoded RGB image used only for the calibrated color contract. CUDA
+        requests never fall back to NumPy.
         """
 
+        is_legacy = self.model_version in IMAGE_ONLY_MODEL_VERSIONS
+        validated_embedding = None
+        if not is_legacy:
+            validated_embedding = validate_task_embedding(
+                task_embedding, expected_dim=self.task_embedding_dim
+            )
         torch = _torch_for_device(device)
         if torch is None:
             feature_extractor = (
@@ -677,6 +907,8 @@ class ImageEntityModel:
                 else extract_image_features
             )
             features = feature_extractor(image)
+            if validated_embedding is not None:
+                features = np.concatenate((features, validated_embedding))
             normalized = (features - self.feature_mean) / self.feature_scale
             output = normalized @ self.weights + self.bias
         else:
@@ -690,6 +922,17 @@ class ImageEntityModel:
                     device=device,
                     model_version=self.model_version,
                 )
+                if validated_embedding is not None:
+                    feature_tensor = torch.cat(
+                        (
+                            feature_tensor,
+                            torch.as_tensor(
+                                validated_embedding,
+                                dtype=torch.float32,
+                                device=device,
+                            ),
+                        )
+                    )
                 mean_tensor = torch.as_tensor(
                     self.feature_mean, dtype=torch.float32, device=device
                 )
@@ -714,22 +957,24 @@ class ImageEntityModel:
         if output.shape != (OUTPUT_DIM,) or not np.all(np.isfinite(output)):
             raise ImageEntityPerceptionError("perception output is non-finite")
 
-        # The calibrated v3 artifact keeps the trained ridge model for the
-        # non-red slots, but replaces the red slot's geometry with an
-        # auditable RGB-only estimate.  This is intentionally fail-closed:
-        # when the red component is absent or outside the near-range
-        # calibration, the target is marked invisible instead of allowing a
-        # hallucinated ridge position to drive the vessel.
-        calibrated_red: tuple[bool, float, float, float, tuple[float, float]] | None = None
-        calibrated_blue: tuple[bool, float, float, float, tuple[float, float]] | None = None
-        if self.model_version in (COLOR_CALIBRATED_MODEL_VERSION, COLOR_CALIBRATED_MODEL_VERSION_V2):
-            calibrated_red = calibrated_color_geometry(image, "red")
-            # Area-filtered blue RGB: background (sky/water) components exceed
-            # the calibration area cap and are skipped, so the blue mask
-            # recovers the boat (72% of static-start frames offline vs 0%
-            # before).  Its geometry is coarse (~3 m), so the ridge geometry
-            # is preferred; the RGB detection only lifts visibility.
-            calibrated_blue = calibrated_color_geometry(image, "blue")
+        calibrated_colors: dict[
+            str, tuple[bool, float, float, float, tuple[float, float]]
+        ] = {}
+        if color_image is not None:
+            if self.model_version == COLOR_CALIBRATED_MODEL_VERSION:
+                color_targets = ("red",)
+            elif self.model_version in (
+                COLOR_CALIBRATED_MODEL_VERSION_V2,
+                MODEL_VERSION,
+            ):
+                color_targets = ("red", "blue")
+            else:
+                color_targets = ()
+            calibrated_colors = {
+                color: calibrated_color_geometry(color_image, color)
+                for color in color_targets
+            }
+
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
@@ -737,21 +982,19 @@ class ImageEntityModel:
             visible = visible_logit >= self.visibility_threshold
             confidence = float(1.0 / (1.0 + math.exp(-np.clip(visible_logit, -30.0, 30.0))))
             geometry = output[offset + 1 : offset + 4] * POSITION_SCALE_M
-            if index == 0 and calibrated_red is not None:
-                red_valid, red_x, red_y, _, _ = calibrated_red
-                if red_valid:
-                    # Auditable RGB-only estimate (1.0 confidence).
+            calibrated = calibrated_colors.get(_prediction_color(entity_id))
+            if calibrated is not None:
+                color_valid, color_x, color_y, _, _ = calibrated
+                if color_valid:
                     visible = True
                     confidence = 1.0
-                    geometry = np.asarray((red_x, red_y, 0.0), dtype=np.float32)
+                    geometry = np.asarray((color_x, color_y, 0.0), dtype=np.float32)
                 else:
-                    # RGB miss falls back to the trained ridge slot instead
-                    # of forcing invisibility: the RGB red mask is sensitive
-                    # to windowed-render water/lighting (observed a full run
-                    # where it never matched while the ridge tracked the
-                    # target at 4 m, and the forced invisibility starved the
-                    # gate into E-STOP).
-                    pass
+                    # Do not expose a ridge hallucination when the original
+                    # RGB evidence for a calibrated target is absent.
+                    visible = False
+                    confidence = 0.0
+                    geometry = np.zeros(3, dtype=np.float32)
             predictions.append(
                 ImageEntityPrediction(
                     entity_id=entity_id,
@@ -792,6 +1035,13 @@ def save_model(
     bias: np.ndarray,
     visibility_threshold: float = 0.0,
     model_version: str = MODEL_VERSION,
+    schema_version: str = MODEL_SCHEMA_VERSION,
+    input_contract: str = MODEL_INPUT_CONTRACT,
+    output_contract: str = STRUCTURED_ENTITY_OUTPUT_CONTRACT,
+    task_embedding_dim: int = LANGUAGE_EMBEDDING_DIM,
+    language_model_id: str = "",
+    language_weights_sha256: str = "",
+    velocity_output: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """Write an immutable model and optional JSON metadata next to it."""
@@ -800,15 +1050,48 @@ def save_model(
     model_path.parent.mkdir(parents=True, exist_ok=True)
     if not model_version.strip():
         raise ImageEntityPerceptionError("model_version must not be empty")
-    np.savez_compressed(
-        model_path,
-        model_version=np.asarray(model_version),
-        feature_mean=np.asarray(feature_mean, dtype=np.float32),
-        feature_scale=np.asarray(feature_scale, dtype=np.float32),
-        weights=np.asarray(weights, dtype=np.float32),
-        bias=np.asarray(bias, dtype=np.float32),
-        visibility_threshold=np.asarray(float(visibility_threshold), dtype=np.float32),
-    )
+    if model_version not in IMAGE_ONLY_MODEL_VERSIONS:
+        if schema_version != MODEL_SCHEMA_VERSION:
+            raise ImageEntityPerceptionError(
+                f"MODEL_SCHEMA_MISMATCH: expected {MODEL_SCHEMA_VERSION}, "
+                f"got {schema_version!r}"
+            )
+        if int(task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
+            raise ImageEntityPerceptionError(
+                f"LANGUAGE_EMBEDDING_DIM_MISMATCH: expected {LANGUAGE_EMBEDDING_DIM}, "
+                f"got {task_embedding_dim}"
+            )
+        if output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
+            raise ImageEntityPerceptionError("MODEL_OUTPUT_CONTRACT_MISMATCH")
+        if not str(language_model_id).strip():
+            raise ImageEntityPerceptionError("LANGUAGE_MODEL_ID_MISSING")
+        if not _is_sha256(language_weights_sha256):
+            raise ImageEntityPerceptionError("LANGUAGE_MODEL_HASH_INVALID")
+        if velocity_output:
+            raise ImageEntityPerceptionError("VELOCITY_OUTPUT_FORBIDDEN")
+    arrays: dict[str, np.ndarray] = {
+        "model_version": np.asarray(model_version),
+        "feature_mean": np.asarray(feature_mean, dtype=np.float32),
+        "feature_scale": np.asarray(feature_scale, dtype=np.float32),
+        "weights": np.asarray(weights, dtype=np.float32),
+        "bias": np.asarray(bias, dtype=np.float32),
+        "visibility_threshold": np.asarray(
+            float(visibility_threshold), dtype=np.float32
+        ),
+    }
+    if model_version not in IMAGE_ONLY_MODEL_VERSIONS:
+        arrays.update(
+            {
+                "model_schema_version": np.asarray(schema_version),
+                "input_contract": np.asarray(input_contract),
+                "output_contract": np.asarray(output_contract),
+                "task_embedding_dim": np.asarray(int(task_embedding_dim)),
+                "language_model_id": np.asarray(language_model_id),
+                "language_weights_sha256": np.asarray(language_weights_sha256),
+                "velocity_output": np.asarray(bool(velocity_output)),
+            }
+        )
+    np.savez_compressed(model_path, **arrays)
     if metadata is not None:
         model_path.with_suffix(".json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",

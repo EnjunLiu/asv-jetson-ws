@@ -12,8 +12,8 @@ Keep this module for existing PC training scripts and tests.
 try:
     from asv_vla.policy_model import (
         PolicyOutput,
+        SmallActionPolicy,
         SmallPolicyConfig,
-        SmallTrajectoryPolicy,
     )
 except ModuleNotFoundError as exc:
     # A checkout-level training invocation may run without the ROS package
@@ -29,8 +29,12 @@ except ModuleNotFoundError as exc:
         sys.path.insert(0, str(source_root))
     from asv_vla.policy_model import (  # noqa: E402
         PolicyOutput,
+        SmallActionPolicy,
         SmallPolicyConfig,
-        SmallTrajectoryPolicy,
     )
 
-__all__ = ["PolicyOutput", "SmallPolicyConfig", "SmallTrajectoryPolicy"]
+__all__ = [
+    "PolicyOutput",
+    "SmallActionPolicy",
+    "SmallPolicyConfig",
+]
