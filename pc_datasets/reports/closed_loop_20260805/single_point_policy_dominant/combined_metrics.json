@@ -5,9 +5,9 @@
     "target_entity": "target_red",
     "desired_standoff_m": 4.0,
     "available": true,
-    "ue_log": "red4m/ue_TRACK-SYNTH-RED-4m-V1.log",
+    "ue_log": "red4m/ue_TRACK-SYNTH-RED4.log",
     "jetson_logs": [
-      "red4m/jetson_TRACK-SYNTH-RED-4m-V1.log"
+      "red4m/jetson_TRACK-SYNTH-RED4.log"
     ],
     "asv_samples": 186,
     "target_samples": 186,
@@ -36,9 +36,9 @@
     "target_entity": "target_blue",
     "desired_standoff_m": 3.0,
     "available": true,
-    "ue_log": "blue3m/ue_TRACK-SYNTH-BLUE-3m-V1.log",
+    "ue_log": "blue3m/ue_TRACK-SYNTH-BLUE3.log",
     "jetson_logs": [
-      "blue3m/jetson_TRACK-SYNTH-BLUE-3m-V1.log"
+      "blue3m/jetson_TRACK-SYNTH-BLUE3.log"
     ],
     "asv_samples": 186,
     "target_samples": 186,
@@ -67,27 +67,27 @@
     "target_entity": "target_red",
     "desired_standoff_m": 3.0,
     "available": true,
-    "ue_log": "red3m/ue_TRACK-SYNTH-RED-3m-V2.log",
+    "ue_log": "red3m/ue_TRACK-SYNTH-RED3.log",
     "jetson_logs": [
-      "red3m/jetson_TRACK-SYNTH-RED-3m-V2.log"
+      "red3m/jetson_TRACK-SYNTH-RED3.log"
     ],
     "asv_samples": 186,
     "target_samples": 186,
-    "path_length_m": 114.19237945841239,
-    "standoff_mean_abs_error_m": 0.5394962318537937,
-    "standoff_p95_abs_error_m": 1.3131651333098775,
-    "standoff_final_m": 3.445840735060172,
+    "path_length_m": 108.4504476566638,
+    "standoff_mean_abs_error_m": 0.5335002453450076,
+    "standoff_p95_abs_error_m": 1.316854969824674,
+    "standoff_final_m": 3.034309606154256,
     "audit": {
-      "events": 700,
+      "events": 721,
       "events_complete": true,
-      "raw_action_observed": 12,
-      "policy_driven": 698,
-      "backstop": 1,
+      "raw_action_observed": 13,
+      "policy_driven": 713,
+      "backstop": 7,
       "hold": 1,
       "fail_closed": 0,
       "policy_stop_subset": 0,
-      "policy_dominance_rate": 0.9971428571428571,
-      "backstop_rate": 0.0014285714285714286,
+      "policy_dominance_rate": 0.9889042995839112,
+      "backstop_rate": 0.009708737864077669,
       "source": "POLICY_AUDIT",
       "observed_trace_records": 6
     }

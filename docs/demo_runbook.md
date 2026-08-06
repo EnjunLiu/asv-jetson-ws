@@ -85,9 +85,10 @@ policy 的实际决策输入是 `language`、`structured_entities/entity_geometr
 ```powershell
 & "D:\Softwares\Unreal Engine\UE_5.6\Engine\Binaries\Win64\UnrealEditor.exe" `
   "D:\Unreal Projects\VLA\VLA.uproject" /Game/Main_Map -game -SceneAuto `
-  -Slot=FINAL-S2-230908-V5 -Layout=L7 -Motion=S2 -Seed=230908 `
-  -MaxRuntimeSeconds=120 -SceneExecPort=8081 -YawFixWholeRun `
-  -SineAmplitude=200 -SineDelay=40 -ResX=1280 -ResY=720 -windowed -stdout -FullStdOutLogOutput
+  -Slot=TRACK-SYNTH-RED3 -Layout=L7 -Motion=S2 -Seed=230908 `
+  -MaxRuntimeSeconds=185 -SceneExecPort=8081 -YawFixWholeRun `
+  -SineWavelength=6000 -SineAmplitude=200 -SineSpeed=60 -SineDelay=40 `
+  -RenderOffscreen -unattended -nosplash -stdout -FullStdOutLogOutput
 ```
 
 运行时同时保存 UE5 窗口、Jetson 日志和 `Saved/Logs/VLA.log`。不要启动第二套 bridge、
@@ -95,16 +96,15 @@ policy、safety gate 或 recorder。
 
 ## 4. 成功判据
 
-当前第三轮真实证据固定为：
+当前三场景真实证据固定为：
 
 ```text
 run: L7/S2/seed=230908
-slot: FINAL-S2-230908-V5
-MaxRuntimeSeconds: 120
-Jetson log: /mnt/c/Temp/asv_vla_closed_loop_20260805/jetson_l7_s2_230908_20260805_third.log
-UE log: /mnt/c/Temp/asv_vla_ue_l7_s2_230908_20260805_third.log
-SCENE_UE_COMPLETE runtime_seconds=120.01
-SCENE_EXEC_APPLY final count=450
+slots: TRACK-SYNTH-RED4, TRACK-SYNTH-BLUE3, TRACK-SYNTH-RED3
+MaxRuntimeSeconds: 185
+report: pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant/
+SCENE_UE_COMPLETE: all three scenes
+shared entity trajectory tolerance: 5 cm
 ```
 
 成功证据必须能在对应日志中核对 `LANGUAGE_READY_VALID release_model=true`、
@@ -131,26 +131,22 @@ run、同一 instruction 的相邻前帧，首帧为 `[0.0, 0.0]` 且
 
 ## 6. 失败轮次和结果保全
 
-失败轮次必须保留原始 Jetson/UE 日志并标为失败，不能混入成功证据。当前成功引用只使用
-上面列出的第三轮日志；旧图、原始 learning curves 和历史失败记录不能覆盖或删除。新增
-统计、解释和截图应追加到新的分析位置。
+失败轮次不能混入成功证据。当前成功引用只使用上面列出的无版本报告目录；旧 RED 3m
+使用了不同的 UE 正弦参数，已从当前报告移除，不能通过复制目标轨迹来修补。
 
 目标不可见、身份不匹配、CUDA/模型加载失败、输入陈旧或 safety gate 拒绝时必须
 fail-closed，UE5 收到零位移 hold；不得用 UE 真值、旧专家 publisher、缓存 embedding 或
 CPU/ONNX 后端把失败轮次改写成成功。
 
-## 7. 第三轮轨迹分析
+## 7. 三场景轨迹分析
 
-为避免覆盖旧 benchmark 图，本轮生成了独立分析文件：
+最终图和指标为：
 
 ```text
-/mnt/c/Users/LIU/Desktop/track_world_closed_loop_single_point_l7_s2_230908_20260805.png
-/mnt/c/Temp/asv_vla_closed_loop_20260805/l7_s2_230908_20260805_third_metrics.json
+/mnt/c/Users/LIU/Desktop/track_world_single_point_policy_dominant_2x3.png
+pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant/combined_metrics.json
 ```
 
-解析结果：UE5 实际 `SCENE_EXEC_APPLY` 为 `450` 次，ASV 世界坐标采样 `121` 点，世界
-路径长度约 `48.59 m`；红色目标与 ASV 的采样 standoff 从 `4.53 m` 变为 `4.11 m`，
-本轮不是精确 3 m standoff 验收。Jetson bridge 的 payload 日志限流为 `105` 个动作样本，
-其中 `104` 个有效、`72` 个非零；记录到的单步位移上限为 `15.00 cm`，连续非零日志样本
-的稳定段相邻动作差分 p95 为 `0.34 cm`。这些平滑指标只描述该次真实 L7/S2/seed 运行，
-不能外推为跨场景统计泛化。
+上排三个子图分别画对应 ASV 以及相同的红、蓝、左干扰、右干扰实体轨迹；下排画
+`actual standoff - desired standoff` 有符号误差。生成时必须启用
+`--require-shared-entity-tracks`，不满足共享环境轨迹门时直接失败。

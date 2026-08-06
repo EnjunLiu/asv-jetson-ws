@@ -1,0 +1,21 @@
+{
+  "schema_version": "single_point_checkpoint_manifest",
+  "source_revision": "730feae",
+  "policy": {
+    "path_pc": "models/policy_single_point.pt",
+    "path_jetson": "/home/jetson/jetson_asv_ws/models/policy_single_point.pt",
+    "sha256": "f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483"
+  },
+  "perception": {
+    "path_pc": "models/perception_image_conditioned.npz",
+    "path_jetson": "/home/jetson/jetson_asv_ws/models/perception_image_conditioned.npz",
+    "sha256": "a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e"
+  },
+  "contract": {
+    "inputs": ["language", "structured_entities", "previous_action", "validity_masks"],
+    "excluded_inputs": ["global_visual", "entity_visual", "ego"],
+    "output": "single_step_desired_displacement_m"
+  },
+  "training_platform": "pc_cuda",
+  "jetson_role": "ros2_build_and_cuda_online_inference_only"
+}

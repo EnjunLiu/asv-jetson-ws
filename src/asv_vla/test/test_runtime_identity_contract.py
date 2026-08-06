@@ -202,7 +202,9 @@ def test_closed_loop_uses_current_single_point_cuda_artifacts() -> None:
         "f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483"
     ) in manifest
     assert "deployment_status: selected_for_current_closed_loop" in manifest
-    assert "scene_exec_apply_count: 450" in manifest
+    assert "report: pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant" in manifest
+    assert "shared_entity_trajectory_tolerance_cm: 5" in manifest
+    assert "TRACK-SYNTH-RED3" in manifest
     assert "mode: online_qwen_cuda_release_after_encode" in manifest
     assert "online_qwen_runtime: true" in manifest
     assert "release_model_after_encode: true" in manifest

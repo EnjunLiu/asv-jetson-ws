@@ -67,7 +67,7 @@ Windows 自动化入口为 `tools/ue5/collect.ps1`，其默认计划也指向同
 ```bash
 cd /mnt/c/Users/LIU/Documents/jetson_ws/asv_vla
 export PYTHONPATH=src/asv_vla
-export TRAIN_OUTPUT=/mnt/c/Temp/asv_vla_retrain_20260805/policy_single_point_v4_20260805
+export TRAIN_OUTPUT=/mnt/c/Temp/asv_vla_training/policy_single_point
 
 python3 -m training.train train \
   --config training/config/train_sine_near_image_v3.yaml \
@@ -169,7 +169,7 @@ CUDA 编码；WSL 的 `python3` 不承担训练）：
 Set-Location 'C:\Users\LIU\Documents\jetson_ws\asv_vla'
 & 'D:\Softwares\Python\Python313\python.exe' -m training.synthetic_geometry_train `
   --model-config training/config/model_small_v3.yaml `
-  --output 'C:\Temp\asv_vla_synthetic_qwen_l7_20260805\policy_synthetic_qwen_l7_seed23.pt' `
+  --output 'C:\Users\LIU\Documents\jetson_ws\asv_vla\models\policy_single_point.pt' `
   --language-embeddings 'C:\Temp\asv_vla_retrain_20260805\language_embeddings_130.npz' `
   --sample-count 16384 --epochs 250 --batch-size 1024 --learning-rate 0.002 --device cuda
 ```

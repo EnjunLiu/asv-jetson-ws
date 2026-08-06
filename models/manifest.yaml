@@ -84,19 +84,28 @@ deployment:
 
 closed_loop_evidence:
   run: L7/S2/seed=230908
-  slot: FINAL-S2-230908-V5
-  max_runtime_seconds: 120
-  jetson_log: /mnt/c/Temp/asv_vla_closed_loop_20260805/jetson_l7_s2_230908_20260805_third.log
-  ue_log: /mnt/c/Temp/asv_vla_ue_l7_s2_230908_20260805_third.log
-  ue_runtime_seconds: 120.01
-  scene_exec_apply_count: 450
+  report: pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant
+  slots:
+    - TRACK-SYNTH-RED4-V1
+    - TRACK-SYNTH-BLUE3-V1
+    - TRACK-SYNTH-RED3
+  max_runtime_seconds: 185
+  shared_entity_trajectory_tolerance_cm: 5
+  ue_runtime_seconds:
+    RED_4m: 185.00
+    BLUE_3m: 185.01
+    RED_3m: 185.00
+  policy_dominance_rate:
+    RED_4m: 0.9671428571
+    BLUE_3m: 0.9871428571
+    RED_3m: 0.9889042996
   required_traces:
     - LANGUAGE_READY_VALID release_model=true
     - POLICY_READY backend=torch_cuda inputs=task_embedding+structured_entities+previous_action output=[desired_x,desired_y]
     - PERCEPTION_TRACE visible=True
     - POLICY_TRACE entity_valid=True
     - PERCEPTION_PERF_TRACE valid=True
-    - SCENE_UE_COMPLETE runtime_seconds=120.01
+    - SCENE_UE_COMPLETE
 
 training_only:
   language_model: Qwen/Qwen3-Embedding-0.6B

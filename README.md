@@ -104,20 +104,19 @@ run、同一 instruction 的相邻前帧；首帧是零向量且 `previous_actio
 
 训练数据、日志、checkpoint、感知模型和 Qwen 目录放在仓库外；Jetson 不承担训练工作。
 
-## 当前第三轮闭环证据
+## 当前闭环证据
 
-当前可引用的真实证据是 L7/S2/`seed=230908`、slot `FINAL-S2-230908-V5`、
-`MaxRuntimeSeconds=120`：
+当前可引用的真实证据位于
+`pc_datasets/reports/closed_loop_20260805/single_point_policy_dominant/`，包含
+L7/S2/`seed=230908` 下的 RED 4m、BLUE 3m 和 RED 3m 三个 185 秒在线闭环。
+三次运行使用相同的 `SineWavelength=6000`、`SineAmplitude=200`、
+`SineSpeed=60`、`SineDelay=40`；绘图工具还要求四条实体轨迹在共享采样时刻的偏差
+不超过 5 cm，避免把不同环境轨迹误画成可比较场景。
 
-- Jetson log：`/mnt/c/Temp/asv_vla_closed_loop_20260805/jetson_l7_s2_230908_20260805_third.log`
-- UE log：`/mnt/c/Temp/asv_vla_ue_l7_s2_230908_20260805_third.log`
-- UE `SCENE_UE_COMPLETE`：`runtime_seconds=120.01`
-- UE `SCENE_EXEC_APPLY` 最终 count：`450`
-
-以上日志同时包含 `LANGUAGE_READY_VALID release_model=true`、CUDA policy 的单点输入/输出
-trace、`PERCEPTION_TRACE visible=True`、`POLICY_TRACE entity_valid=True` 和
-`PERCEPTION_PERF_TRACE valid=True`。这些是当前闭环证据，不代表跨颜色、距离、seed 或
-布局的统计泛化。
+三组日志均包含真实 Qwen CUDA 编码、图像条件 CUDA 感知、CUDA 单点 policy 和
+`SCENE_UE_COMPLETE`。累计 policy-driven 比例分别为 96.7%、98.7% 和 98.9%；
+完整指标见报告目录的 `combined_metrics.json`。这些结果仍只证明该布局、运动和 seed
+下的三条指令运行，不代表更广泛分布上的统计泛化。
 
 失败轮次必须保留并明确标为失败，不能作为成功证据；不能用 UE 真值、专家 publisher、
 缓存 embedding、ONNX/CPU 后端补齐失败。新分析应追加到现有结果，不能覆盖旧图或原始

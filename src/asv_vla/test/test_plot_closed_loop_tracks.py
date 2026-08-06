@@ -12,13 +12,6 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 TOOL_PATH = REPOSITORY / "tools" / "plot_closed_loop_tracks.py"
-REPORT = (
-    REPOSITORY
-    / "pc_datasets"
-    / "reports"
-    / "closed_loop_20260805"
-    / "single_point_policy_dominant_v9"
-)
 ENTITY_IDS = ("target_red", "target_blue", "target_left", "target_right")
 
 
@@ -96,10 +89,12 @@ def test_plot_scenes_uses_fixed_layout_and_signed_error(plot_tool, tmp_path: Pat
         original_close(figure)
 
 
-def test_shared_entity_tracks_accepts_matching_pair_and_rejects_old_red3(plot_tool) -> None:
-    red4 = plot_tool.parse_scene(f"RED 4m={REPORT / 'red4m' / 'ue_TRACK-SYNTH-RED-4m-V1.log'}")
-    blue3 = plot_tool.parse_scene(f"BLUE 3m={REPORT / 'blue3m' / 'ue_TRACK-SYNTH-BLUE-3m-V1.log'}")
-    red3 = plot_tool.parse_scene(f"RED 3m={REPORT / 'red3m' / 'ue_TRACK-SYNTH-RED-3m-V2.log'}")
+def test_shared_entity_tracks_accepts_matching_pair_and_rejects_mismatch(
+    plot_tool, tmp_path: Path
+) -> None:
+    red4 = _scene(plot_tool, tmp_path, "RED 4m")
+    blue3 = _scene(plot_tool, tmp_path, "BLUE 3m")
+    red3 = _scene(plot_tool, tmp_path, "RED 3m", offset_cm=10.0)
 
     plot_tool.require_shared_entity_tracks([red4, blue3], tolerance_cm=5.0)
     with pytest.raises(ValueError, match=r"shared entity track mismatch for target_red"):
