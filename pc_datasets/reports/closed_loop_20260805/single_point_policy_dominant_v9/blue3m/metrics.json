@@ -1,0 +1,33 @@
+{
+  "BLUE 3m": {
+    "scene": "BLUE 3m",
+    "target_color": "blue",
+    "target_entity": "target_blue",
+    "desired_standoff_m": 3.0,
+    "available": true,
+    "ue_log": "blue3m/ue_TRACK-SYNTH-BLUE-3m-V1.log",
+    "jetson_logs": [
+      "blue3m/jetson_TRACK-SYNTH-BLUE-3m-V1.log"
+    ],
+    "asv_samples": 186,
+    "target_samples": 186,
+    "path_length_m": 112.33703029890336,
+    "standoff_mean_abs_error_m": 0.5681765553970027,
+    "standoff_p95_abs_error_m": 1.4516696922053853,
+    "standoff_final_m": 3.5209091067506995,
+    "audit": {
+      "events": 700,
+      "events_complete": true,
+      "raw_action_observed": 12,
+      "policy_driven": 691,
+      "backstop": 8,
+      "hold": 1,
+      "fail_closed": 0,
+      "policy_stop_subset": 0,
+      "policy_dominance_rate": 0.9871428571428571,
+      "backstop_rate": 0.011428571428571429,
+      "source": "POLICY_AUDIT",
+      "observed_trace_records": 6
+    }
+  }
+}

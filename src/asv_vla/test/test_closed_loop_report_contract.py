@@ -12,22 +12,32 @@ REPORT = (
     / "pc_datasets"
     / "reports"
     / "closed_loop_20260805"
-    / "single_point_policy_dominant_v8"
+    / "single_point_policy_dominant_v9"
 )
+REPORT_SCENES = (
+    ("RED 4m", "red4m"),
+    ("BLUE 3m", "blue3m"),
+    ("RED 3m", "red3m"),
+)
+REPORT_SCENE_NAMES = frozenset(scene for scene, _ in REPORT_SCENES)
 
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize(
-    "scene, directory", [("RED 4m", "red4m"), ("BLUE 3m", "blue3m")]
-)
+def test_combined_metrics_cover_all_report_scenes() -> None:
+    combined_metrics = _load(REPORT / "combined_metrics.json")
+    assert set(combined_metrics) == REPORT_SCENE_NAMES
+
+
+@pytest.mark.parametrize("scene, directory", REPORT_SCENES)
 def test_scene_metrics_are_self_contained_and_match_combined(
     scene: str, directory: str
 ) -> None:
     scene_metrics = _load(REPORT / directory / "metrics.json")
     combined_metrics = _load(REPORT / "combined_metrics.json")
+    assert set(scene_metrics) == {scene}
     assert scene_metrics[scene] == combined_metrics[scene]
 
     values = scene_metrics[scene]
@@ -46,13 +56,17 @@ def test_scene_metrics_are_self_contained_and_match_combined(
     for raw_path in [values["ue_log"], *values["jetson_logs"]]:
         path = Path(raw_path)
         assert not path.is_absolute()
-        assert (REPORT / path).is_file()
+        assert path.parts and path.parts[0] == directory
+        resolved = (REPORT / path).resolve()
+        assert REPORT.resolve() in resolved.parents
+        assert resolved.is_file()
 
 
 def test_report_readme_names_all_audit_categories() -> None:
     readme = (REPORT / "README.md").read_text(encoding="utf-8")
-    assert "red4m/metrics.json" in readme
-    assert "blue3m/metrics.json" in readme
+    for scene, directory in REPORT_SCENES:
+        assert scene in readme
+        assert f"{directory}/metrics.json" in readme
     assert "combined_metrics.json" in readme
     assert "hold" in readme
     assert "policy-driven + backstop + hold +" in readme

@@ -1,0 +1,33 @@
+{
+  "RED 3m": {
+    "scene": "RED 3m",
+    "target_color": "red",
+    "target_entity": "target_red",
+    "desired_standoff_m": 3.0,
+    "available": true,
+    "ue_log": "red3m/ue_TRACK-SYNTH-RED-3m-V2.log",
+    "jetson_logs": [
+      "red3m/jetson_TRACK-SYNTH-RED-3m-V2.log"
+    ],
+    "asv_samples": 186,
+    "target_samples": 186,
+    "path_length_m": 114.19237945841239,
+    "standoff_mean_abs_error_m": 0.5394962318537937,
+    "standoff_p95_abs_error_m": 1.3131651333098775,
+    "standoff_final_m": 3.445840735060172,
+    "audit": {
+      "events": 700,
+      "events_complete": true,
+      "raw_action_observed": 12,
+      "policy_driven": 698,
+      "backstop": 1,
+      "hold": 1,
+      "fail_closed": 0,
+      "policy_stop_subset": 0,
+      "policy_dominance_rate": 0.9971428571428571,
+      "backstop_rate": 0.0014285714285714286,
+      "source": "POLICY_AUDIT",
+      "observed_trace_records": 6
+    }
+  }
+}
