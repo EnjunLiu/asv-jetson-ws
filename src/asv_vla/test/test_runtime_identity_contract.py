@@ -15,10 +15,13 @@ INTERFACES = REPOSITORY / "src/asv_jetson_interfaces/msg"
 VLA = REPOSITORY / "src/asv_vla/asv_vla"
 POLICY = VLA / "vla_policy_node.py"
 LAUNCH = REPOSITORY / "src/asv_bringup/launch/vla_closed_loop.launch.py"
+REPLAY_LAUNCH = REPOSITORY / "src/asv_bringup/launch/replay_episode.launch.py"
 PERCEPTION_NODE = REPOSITORY / "src/asv_vla/asv_vla/image_entity_perception_node.py"
 COLLECT_LAUNCH = REPOSITORY / "src/asv_bringup/launch/collect.launch.py"
 MANIFEST = REPOSITORY / "models/manifest.yaml"
 README = REPOSITORY / "README.md"
+DEMO_RUNBOOK = REPOSITORY / "docs/demo_runbook.md"
+TRAINING_README = REPOSITORY / "training/README.md"
 
 
 def _fields(path: Path) -> list[str]:
@@ -174,23 +177,29 @@ def test_task_features_identity_is_complete_and_monotonic() -> None:
 
 def test_closed_loop_uses_current_single_point_cuda_artifacts() -> None:
     launch = LAUNCH.read_text(encoding="utf-8")
+    replay_launch = REPLAY_LAUNCH.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
+    demo_runbook = DEMO_RUNBOOK.read_text(encoding="utf-8")
+    training_readme = TRAINING_README.read_text(encoding="utf-8")
 
-    assert "policy_single_point_v3_full_seed17.pt" in launch
-    assert "perception_image_conditioned_130_v1.npz" in launch
+    assert "policy_single_point.pt" in launch
+    assert "perception_image_conditioned.npz" in launch
+    assert "perception_image_conditioned.npz" in replay_launch
     assert "default_value=\"/home/jetson/jetson_asv_ws/models/policy.onnx\"" not in launch
-    assert "path: models/perception_image_conditioned_130_v1.npz" in manifest
+    assert "path: models/perception_image_conditioned.npz" in manifest
+    assert "source_path: models/perception_image_conditioned.npz" in manifest
     assert "model_id: image_entity_ridge_language_v3" in manifest
-    assert "path: models/policy_single_point_v3_full_seed17.pt" in manifest
-    assert "model_id: policy_single_point_v3_full_seed17" in manifest
+    assert "path: models/policy_single_point.pt" in manifest
+    assert "source_path: models/policy_single_point.pt" in manifest
+    assert "model_id: policy_single_point" in manifest
     assert (
         "artifact_sha256: "
         "a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e"
     ) in manifest
     assert (
         "source_sha256: "
-        "f907d297dbcbedd10aa5bc009d4345655654db04d1e66282f68fad06abbead2c"
+        "f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483"
     ) in manifest
     assert "deployment_status: selected_for_current_closed_loop" in manifest
     assert "scene_exec_apply_count: 450" in manifest
@@ -202,13 +211,21 @@ def test_closed_loop_uses_current_single_point_cuda_artifacts() -> None:
     assert "post_encode_embedding_online: true" in manifest
     assert "cached_embedding_file: false" in manifest
     assert "cpu_fallback: false" in manifest
-    assert "policy_single_point_v3_full_seed17.pt" in readme
-    assert "perception_image_conditioned_130_v1.npz" in readme
+    assert "policy_single_point.pt" in readme
+    assert "perception_image_conditioned.npz" in readme
+    assert "policy_single_point.pt" in demo_runbook
+    assert "perception_image_conditioned.npz" in demo_runbook
+    assert "policy_single_point.pt" in training_readme
+    assert "perception_image_conditioned.npz" in training_readme
     assert "policy_image_seed17.onnx" not in readme
     assert "policy.onnx" not in readme
-    assert "perception_image_conditioned_130_v1.npz" in PERCEPTION_NODE.read_text(
-        encoding="utf-8"
+    old_active_artifacts = (
+        "policy_single_point_v3_full_seed17.pt",
+        "perception_image_conditioned_130_v1.npz",
     )
+    for source in (launch, replay_launch, manifest, readme):
+        for artifact in old_active_artifacts:
+            assert artifact not in source
     assert "device={self.device}" in PERCEPTION_NODE.read_text(encoding="utf-8")
 
 

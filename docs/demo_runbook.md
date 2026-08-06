@@ -9,18 +9,18 @@ policy 和 UE5 运动学执行。Jetson 只做 ROS 2 构建与 CUDA 在线推理
 将 PC 产物复制到 Jetson `/home/jetson/jetson_asv_ws/models/`，并使用以下隔离文件名：
 
 ```text
-policy_single_point_v3_full_seed17.pt
-perception_image_conditioned_130_v1.npz
+policy_single_point.pt
+perception_image_conditioned.npz
 Qwen3-Embedding-0.6B/
 ```
 
 来源和 SHA-256：
 
 ```text
-policy source: /mnt/c/Temp/asv_vla_retrain_20260805/policy_v3_single_point_20260805/full_seed17/best.pt
-policy sha256: f907d297dbcbedd10aa5bc009d4345655654db04d1e66282f68fad06abbead2c
+policy source: models/policy_single_point.pt
+policy sha256: f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483
 
-perception source: /mnt/c/Temp/asv_vla_retrain_20260805/perception_image_conditioned_130_v1.npz
+perception source: models/perception_image_conditioned.npz
 perception sha256: a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e
 ```
 
@@ -39,12 +39,12 @@ colcon build --merge-install --symlink-install \
   --packages-select asv_jetson_interfaces asv_ue_bridge asv_vla asv_bringup
 source install/setup.bash
 
-sha256sum models/policy_single_point_v3_full_seed17.pt
-sha256sum models/perception_image_conditioned_130_v1.npz
+sha256sum models/policy_single_point.pt
+sha256sum models/perception_image_conditioned.npz
 
 ros2 launch asv_bringup vla_closed_loop.launch.py \
-  model_path:=/home/jetson/jetson_asv_ws/models/policy_single_point_v3_full_seed17.pt \
-  perception_model_path:=/home/jetson/jetson_asv_ws/models/perception_image_conditioned_130_v1.npz \
+  model_path:=/home/jetson/jetson_asv_ws/models/policy_single_point.pt \
+  perception_model_path:=/home/jetson/jetson_asv_ws/models/perception_image_conditioned.npz \
   language_model_path:=/home/jetson/jetson_asv_ws/models/Qwen3-Embedding-0.6B \
   language_model_id:=Qwen/Qwen3-Embedding-0.6B \
   language_device:=cuda visual_device:=cuda policy_device:=cuda \

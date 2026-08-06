@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Plot UE world-coordinate closed-loop tracks and policy audit evidence.
+"""Plot UE world-coordinate closed-loop tracks and signed standoff errors.
 
 The parser consumes runtime evidence only. UE ``SCENE_*`` records provide the
-world trajectory and Jetson ``POLICY_*`` records provide audit counts. Missing
-optional target or audit fields are represented as missing values in the plot
-and metrics; no trajectory or counter is inferred from another scene.
+world trajectory and Jetson ``POLICY_*`` records remain available in the
+metrics JSON. Missing entity tracks are represented as missing values; no
+trajectory or counter is inferred from another scene.
 
 Typical use::
 
@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import csv
+from itertools import combinations
 import json
 import math
 from pathlib import Path
@@ -60,7 +61,13 @@ SCENE_TOKEN_RE = re.compile(
 TRACK_EXTENSIONS = {".csv", ".json", ".jsonl", ".log", ".ndjson", ".txt", ".track"}
 DEFAULT_SCENE_ORDER = ("RED 4m", "BLUE 3m", "RED 3m")
 SCENE_COLORS = {"red": "#b23a48", "blue": "#2878a8"}
-LINE_COLORS = ("#59636e", "#b23a48", "#2878a8")
+ENTITY_ORDER = ("target_red", "target_blue", "target_left", "target_right")
+ENTITY_STYLES = {
+    "target_red": {"color": "#c63d42", "linestyle": "-"},
+    "target_blue": {"color": "#267ab5", "linestyle": "-"},
+    "target_left": {"color": "#555b63", "linestyle": "--"},
+    "target_right": {"color": "#8a6f4d", "linestyle": ":"},
+}
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,7 @@ class SceneTrack:
     asv: list[Point]
     target: list[Point]
     audits: AuditCounts | None
+    entity_tracks: dict[str, list[Point]] | None = None
 
     @property
     def available(self) -> bool:
@@ -129,6 +137,22 @@ class SceneTrack:
             distance_m = math.hypot(target.x_cm - asv.x_cm, target.y_cm - asv.y_cm) / 100.0
             result.append((asv.time_s, distance_m))
         return result
+
+    def standoff_error(self) -> list[tuple[float, float]]:
+        """Return actual-minus-requested target distance in metres."""
+
+        return [
+            (time_s, distance_m - self.desired_standoff_m)
+            for time_s, distance_m in self.standoff()
+        ]
+
+    @property
+    def all_entity_tracks(self) -> Mapping[str, list[Point]]:
+        """All logged entities, falling back to the legacy selected target."""
+
+        if self.entity_tracks is not None:
+            return self.entity_tracks
+        return {self.target_entity: self.target} if self.target else {}
 
 
 @dataclass
@@ -274,8 +298,8 @@ def _parse_structured_trajectory(text: str, path: Path, target_entity: str) -> _
     return records
 
 
-def parse_trajectory_file(path: Path, target_entity: str) -> tuple[list[Point], list[Point]]:
-    """Return sorted ASV and requested-target points from one evidence file."""
+def parse_all_trajectory_file(path: Path, target_entity: str) -> tuple[list[Point], dict[str, list[Point]]]:
+    """Return sorted ASV and all logged target trajectories from one evidence file."""
 
     text = _read_text(path)
     records = _parse_text_trajectory(text, target_entity)
@@ -284,11 +308,20 @@ def parse_trajectory_file(path: Path, target_entity: str) -> tuple[list[Point], 
         records.asv.update(structured.asv)
         for entity, points in structured.targets.items():
             records.targets.setdefault(entity, {}).update(points)
-    target = records.targets.get(target_entity.casefold(), {})
     return (
         [records.asv[key] for key in sorted(records.asv)],
-        [target[key] for key in sorted(target)],
+        {
+            entity: [points[key] for key in sorted(points)]
+            for entity, points in sorted(records.targets.items())
+        },
     )
+
+
+def parse_trajectory_file(path: Path, target_entity: str) -> tuple[list[Point], list[Point]]:
+    """Return sorted ASV and requested-target points from one evidence file."""
+
+    asv, entity_tracks = parse_all_trajectory_file(path, target_entity)
+    return asv, entity_tracks.get(target_entity.casefold(), [])
 
 
 def parse_ue_log(path: Path, target_color: str) -> tuple[list[Point], list[Point]]:
@@ -498,7 +531,7 @@ def _choose_candidate(candidates: list[tuple[Path, int]], role: str) -> Path | N
 
 def _discover_scenes(input_dir: Path, names: tuple[str, ...]) -> list[SceneTrack]:
     files = _candidate_files(input_dir)
-    parsed_ue: dict[Path, tuple[list[Point], list[Point]]] = {}
+    parsed_ue: dict[Path, tuple[list[Point], dict[str, list[Point]]]] = {}
     ue_candidates: dict[str, list[tuple[Path, int]]] = {}
     audit_candidates: dict[str, list[tuple[Path, int]]] = {}
     for path in files:
@@ -509,11 +542,11 @@ def _discover_scenes(input_dir: Path, names: tuple[str, ...]) -> list[SceneTrack
         _, color, _ = _scene_definition(path.name)
         target_entity = f"target_{color}"
         try:
-            asv, target = parse_trajectory_file(path, target_entity)
+            asv, entity_tracks = parse_all_trajectory_file(path, target_entity)
         except OSError:
             continue
         if asv:
-            parsed_ue[path] = (asv, target)
+            parsed_ue[path] = (asv, entity_tracks)
             ue_candidates.setdefault(slot_name, []).append((path, len(asv)))
         if _has_audit_marker(path) or path.suffix.casefold() in {".json", ".jsonl", ".ndjson"}:
             audit = parse_audit_log(path)
@@ -525,7 +558,10 @@ def _discover_scenes(input_dir: Path, names: tuple[str, ...]) -> list[SceneTrack
     for name in names:
         slot, color, desired = _scene_definition(name)
         ue_path = _choose_candidate(ue_candidates.get(slot, []), "ue")
-        asv, target = parsed_ue.get(ue_path, ([], [])) if ue_path is not None else ([], [])
+        asv, entity_tracks = (
+            parsed_ue.get(ue_path, ([], {})) if ue_path is not None else ([], {})
+        )
+        target = entity_tracks.get(f"target_{color}", [])
         jetson_path = _choose_candidate(audit_candidates.get(slot, []), "audit")
         jetson_logs = (jetson_path,) if jetson_path is not None else ()
         audits = parse_audit_log(jetson_path) if jetson_path is not None else None
@@ -540,6 +576,7 @@ def _discover_scenes(input_dir: Path, names: tuple[str, ...]) -> list[SceneTrack
                 asv=asv,
                 target=target,
                 audits=audits,
+                entity_tracks=entity_tracks,
             )
         )
     return scenes
@@ -565,14 +602,22 @@ def parse_scene(spec: str) -> SceneTrack:
         jetson_logs = (jetson_log,)
         audits = parse_audit_log(jetson_log)
     target_entity = f"target_{color}"
-    asv, target = parse_trajectory_file(ue_log, target_entity)
+    asv, entity_tracks = parse_all_trajectory_file(ue_log, target_entity)
+    target = entity_tracks.get(target_entity, [])
     if not asv:
         raise ValueError(f"no UE ASV trajectory records found for {name}")
-    return SceneTrack(name, color, target_entity, desired, ue_log, jetson_logs, asv, target, audits)
-
-
-def _fmt_count(value: int | None) -> str:
-    return "n/a" if value is None else str(value)
+    return SceneTrack(
+        name,
+        color,
+        target_entity,
+        desired,
+        ue_log,
+        jetson_logs,
+        asv,
+        target,
+        audits,
+        entity_tracks,
+    )
 
 
 def _scene_metrics(scene: SceneTrack) -> dict[str, object]:
@@ -618,122 +663,135 @@ def _scene_metrics(scene: SceneTrack) -> dict[str, object]:
     return metrics
 
 
-def _audit_text(scene: SceneTrack) -> str:
-    audit = scene.audits
-    if audit is None:
-        return f"{scene.name}\nno policy audit"
-    status = "cumulative" if audit.complete else f"observed samples ({audit.observed_trace_records})"
-    policy_rate = "n/a" if audit.policy_dominance_rate is None else f"{audit.policy_dominance_rate:.0%}"
-    return (
-        f"{scene.name} [{status}]\n"
-        f"raw obs: {_fmt_count(audit.raw_observed)}\n"
-        f"policy-driven: {_fmt_count(audit.policy_driven)} ({policy_rate})\n"
-        f"backstop: {_fmt_count(audit.backstop)}\n"
-        f"hold: {_fmt_count(audit.hold)}\n"
-        f"fail-closed: {_fmt_count(audit.fail_closed)}"
-    )
+def require_shared_entity_tracks(scenes: Iterable[SceneTrack], tolerance_cm: float = 5.0) -> None:
+    """Fail unless all standard target tracks agree at shared sample times."""
+
+    if not math.isfinite(tolerance_cm) or tolerance_cm < 0:
+        raise ValueError("shared entity tolerance must be a finite non-negative value in cm")
+    scene_list = list(scenes)
+    for scene in scene_list:
+        missing = [entity for entity in ENTITY_ORDER if not scene.all_entity_tracks.get(entity)]
+        if missing:
+            raise ValueError(
+                f"{scene.name} is missing required entity tracks: {', '.join(missing)}"
+            )
+
+    for entity in ENTITY_ORDER:
+        points_by_scene = {}
+        for scene in scene_list:
+            points_by_scene[scene.name] = {
+                round(point.time_s, 3): point for point in scene.all_entity_tracks[entity]
+            }
+        shared_times = (
+            set.intersection(*(set(points) for points in points_by_scene.values()))
+            if points_by_scene
+            else set()
+        )
+        if not shared_times:
+            raise ValueError(f"{entity} has no shared sample times across requested scenes")
+        for time_s in sorted(shared_times):
+            for left, right in combinations(scene_list, 2):
+                first = points_by_scene[left.name][time_s]
+                second = points_by_scene[right.name][time_s]
+                deviation_cm = math.hypot(first.x_cm - second.x_cm, first.y_cm - second.y_cm)
+                if deviation_cm > tolerance_cm:
+                    raise ValueError(
+                        f"shared entity track mismatch for {entity} at t={time_s:g}s: "
+                        f"{left.name} vs {right.name} differs by {deviation_cm:.3f} cm "
+                        f"(tolerance {tolerance_cm:.3f} cm)"
+                    )
 
 
 def plot_scenes(scenes: list[SceneTrack], output: Path) -> None:
-    fig, (track_axis, distance_axis, audit_axis) = plt.subplots(
-        1,
-        3,
-        figsize=(17, 7.5),
-        gridspec_kw={"width_ratios": (1.55, 1.0, 0.9)},
-    )
+    if len(scenes) > 3:
+        raise ValueError("plot_scenes supports at most three scenes in its fixed 2x3 layout")
+    fig, axes = plt.subplots(2, 3, figsize=(17, 9), squeeze=False)
+    track_axes = axes[0]
+    error_axes = axes[1]
     all_x: list[float] = []
     all_y: list[float] = []
+    all_errors: list[float] = []
     for index, scene in enumerate(scenes):
-        color = LINE_COLORS[index % len(LINE_COLORS)]
-        target_color = SCENE_COLORS[scene.target_color]
+        track_axis = track_axes[index]
+        error_axis = error_axes[index]
         if scene.asv:
             asv_x = [point.x_cm / 100.0 for point in scene.asv]
             asv_y = [point.y_cm / 100.0 for point in scene.asv]
-            track_axis.plot(asv_x, asv_y, color=color, linewidth=2.0, label=f"{scene.name} ASV")
-            track_axis.scatter(asv_x[0], asv_y[0], color=color, marker="o", s=28, zorder=4)
-            track_axis.scatter(asv_x[-1], asv_y[-1], color=color, marker="x", s=48, zorder=4)
+            track_axis.plot(asv_x, asv_y, color="#20252b", linewidth=2.2, label="ASV", zorder=3)
+            track_axis.scatter(asv_x[0], asv_y[0], color="#20252b", marker="o", s=24, zorder=4)
+            track_axis.scatter(asv_x[-1], asv_y[-1], color="#20252b", marker="x", s=40, zorder=4)
             all_x.extend(asv_x)
             all_y.extend(asv_y)
-        if scene.target:
-            target_x = [point.x_cm / 100.0 for point in scene.target]
-            target_y = [point.y_cm / 100.0 for point in scene.target]
+        for entity in ENTITY_ORDER:
+            points = scene.all_entity_tracks.get(entity, [])
+            if not points:
+                continue
+            target_x = [point.x_cm / 100.0 for point in points]
+            target_y = [point.y_cm / 100.0 for point in points]
+            style = ENTITY_STYLES[entity]
+            selected = entity == scene.target_entity
             track_axis.plot(
                 target_x,
                 target_y,
-                color=target_color,
-                linestyle="--",
-                linewidth=1.5,
-                alpha=0.8,
-                label=f"{scene.name} target",
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=2.5 if selected else 1.4,
+                alpha=1.0 if selected else 0.8,
+                label=entity,
+                zorder=2 if selected else 1,
             )
             all_x.extend(target_x)
             all_y.extend(target_y)
-        samples = scene.standoff()
+        samples = scene.standoff_error()
         if samples:
-            distance_axis.plot(
+            error_axis.plot(
                 [time for time, _ in samples],
-                [distance for _, distance in samples],
-                color=color,
+                [error for _, error in samples],
+                color=SCENE_COLORS[scene.target_color],
                 linewidth=1.8,
-                label=scene.name,
+                label=f"{scene.target_entity} error",
             )
-            distance_axis.axhline(
-                scene.desired_standoff_m,
-                color=color,
-                linestyle=":",
-                linewidth=1.0,
-                alpha=0.7,
-            )
+            all_errors.extend(error for _, error in samples)
 
-    track_axis.set_title("UE5 world-coordinate online closed loop")
-    track_axis.set_xlabel("World X (m)")
-    track_axis.set_ylabel("World Y (m)")
-    track_axis.grid(True, alpha=0.25)
-    track_axis.set_aspect("equal", adjustable="box")
     if all_x and all_y:
-        track_axis.legend(fontsize=8, loc="best")
         margin = max(1.0, 0.04 * max(max(all_x) - min(all_x), max(all_y) - min(all_y)))
-        track_axis.set_xlim(min(all_x) - margin, max(all_x) + margin)
-        track_axis.set_ylim(min(all_y) - margin, max(all_y) + margin)
+        x_limits = (min(all_x) - margin, max(all_x) + margin)
+        y_limits = (min(all_y) - margin, max(all_y) + margin)
     else:
-        track_axis.text(0.5, 0.5, "No UE ASV trajectory", ha="center", va="center", transform=track_axis.transAxes)
-
-    distance_axis.set_title("Standoff distance")
-    distance_axis.set_xlabel("Runtime (s)")
-    distance_axis.set_ylabel("Target distance (m)")
-    distance_axis.grid(True, alpha=0.25)
-    if any(scene.standoff() for scene in scenes):
-        distance_axis.legend(fontsize=8, loc="best")
+        x_limits = y_limits = (-1.0, 1.0)
+    if all_errors:
+        error_limit = max(0.1, max(abs(error) for error in all_errors) * 1.1)
     else:
-        distance_axis.text(0.5, 0.5, "Target trajectory unavailable", ha="center", va="center", transform=distance_axis.transAxes)
+        error_limit = 0.1
 
-    audit_axis.axis("off")
-    audit_axis.set_title("Policy audit", pad=10)
-    for index, scene in enumerate(scenes):
-        y = 0.86 - index * 0.30
-        audit_axis.text(
-            0.02,
-            y,
-            _audit_text(scene),
-            transform=audit_axis.transAxes,
-            va="top",
-            ha="left",
-            fontsize=9,
-            color="#30343b",
-            linespacing=1.35,
-            bbox={"boxstyle": "round,pad=0.45", "facecolor": "#f5f6f7", "edgecolor": "#d6d9dd"},
-        )
-    fig.text(
-        0.5,
-        0.015,
-        "raw obs is counted only when raw_action/raw_dx/raw_dy is present; n/a means the field was absent",
-        ha="center",
-        va="bottom",
-        fontsize=8,
-        color="#59636e",
-    )
-    fig.suptitle("Single-point policy dominant closed-loop tracking", fontsize=15)
-    fig.tight_layout(rect=(0, 0.045, 1, 0.96))
+    for index, track_axis in enumerate(track_axes):
+        track_axis.set_xlim(*x_limits)
+        track_axis.set_ylim(*y_limits)
+        track_axis.set_aspect("equal", adjustable="box")
+        track_axis.set_title(scenes[index].name if index < len(scenes) else "")
+        track_axis.set_xlabel("World X (m)")
+        track_axis.set_ylabel("World Y (m)")
+        track_axis.grid(True, alpha=0.25)
+        if index < len(scenes) and (scenes[index].asv or scenes[index].all_entity_tracks):
+            track_axis.legend(fontsize=7, loc="best")
+        elif index >= len(scenes):
+            track_axis.set_visible(False)
+
+    for index, error_axis in enumerate(error_axes):
+        error_axis.axhline(0.0, color="#20252b", linewidth=1.2, zorder=0)
+        error_axis.set_ylim(-error_limit, error_limit)
+        error_axis.set_xlabel("Runtime (s)")
+        error_axis.set_ylabel("Standoff error (m)")
+        error_axis.grid(True, alpha=0.25)
+        if index < len(scenes):
+            error_axis.set_title(f"{scenes[index].name} signed standoff error")
+            if scenes[index].standoff_error():
+                error_axis.legend(fontsize=7, loc="best")
+        else:
+            error_axis.set_visible(False)
+
+    fig.suptitle("UE world tracks and signed standoff error", fontsize=15)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -750,7 +808,7 @@ def _scene_order(value: str) -> tuple[str, ...]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Plot UE world tracks and non-fabricated policy audit evidence for closed-loop scenes."
+        description="Plot UE world tracks and signed standoff errors for closed-loop scenes."
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
@@ -776,6 +834,17 @@ def main() -> int:
         action="store_true",
         help="Fail if any requested scene has no UE ASV trajectory.",
     )
+    parser.add_argument(
+        "--require-shared-entity-tracks",
+        action="store_true",
+        help="Fail unless all four entity tracks agree across scenes at shared timestamps.",
+    )
+    parser.add_argument(
+        "--shared-entity-tolerance-cm",
+        type=float,
+        default=5.0,
+        help="Maximum allowed shared entity world-coordinate deviation in cm (default: 5).",
+    )
     args = parser.parse_args()
 
     names = _scene_order(args.scene_order)
@@ -790,6 +859,8 @@ def main() -> int:
         raise ValueError("missing UE ASV trajectory for: " + ", ".join(missing))
     if not any(scene.available for scene in scenes):
         raise ValueError("no UE ASV trajectory records found in the requested inputs")
+    if args.require_shared_entity_tracks:
+        require_shared_entity_tracks(scenes, args.shared_entity_tolerance_cm)
 
     plot_scenes(scenes, args.output)
     metrics = {scene.name: _scene_metrics(scene) for scene in scenes}

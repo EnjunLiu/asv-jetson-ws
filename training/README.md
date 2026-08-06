@@ -15,7 +15,7 @@ pc_datasets/
 ├── registry/       # Run/Scene-Seed 分组注册表
 ├── features/       # 冻结语言/结构化实体特征与感知审计数据
 ├── checkpoints/    # 训练模型和 summary.json
-├── models/         # perception_image_conditioned_130_v1.npz、policy、Qwen
+├── models/         # perception_image_conditioned.npz、policy、Qwen
 └── reports/        # 训练与验证报告
 ```
 
@@ -126,9 +126,9 @@ Jetson 内存紧张时，feature-cache 允许分阶段加载 Qwen 后释放 CUDA
 
 部署模型由 `models/manifest.yaml` 指定：
 
-- `perception_image_conditioned_130_v1.npz`：JPEG + task embedding -> 结构化实体；相对
+- `perception_image_conditioned.npz`：JPEG + task embedding -> 结构化实体；相对
   速度由 temporal tracker 计算，模型不直接从单帧输出速度；
-- `policy_single_point_v3_full_seed17.pt`：Torch CUDA，输入为任务嵌入、结构化实体、上一
+- `policy_single_point.pt`：Torch CUDA，输入为任务嵌入、结构化实体、上一
   个放行动作及有效性 mask，输出一个 `[desired_x, desired_y]` body-frame 单步位移；
 - `Qwen3-Embedding-0.6B`：真实 CUDA 语言编码；当前 Jetson 闭环使用
   `language_release_after_encode=true`，释放权重但保留真实 embedding，不允许 `.npy` 或 CPU fallback。

@@ -81,7 +81,7 @@ def generate_launch_description():
                 "model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "policy_single_point_v3_full_seed17.pt"
+                    "policy_single_point.pt"
                 ),
             ),
             DeclareLaunchArgument("policy_device", default_value="cuda"),
@@ -89,7 +89,7 @@ def generate_launch_description():
                 "perception_model_path",
                 default_value=(
                     "/home/jetson/jetson_asv_ws/models/"
-                    "perception_image_conditioned_130_v1.npz"
+                    "perception_image_conditioned.npz"
                 ),
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),

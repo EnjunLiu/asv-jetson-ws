@@ -11,8 +11,8 @@ deployment:
   privileged_truth_allowed: collection_and_offline_supervision_validation_only
 
   perception:
-    path: models/perception_image_conditioned_130_v1.npz
-    source_path: /mnt/c/Temp/asv_vla_retrain_20260805/perception_image_conditioned_130_v1.npz
+    path: models/perception_image_conditioned.npz
+    source_path: models/perception_image_conditioned.npz
     model_id: image_entity_ridge_language_v3
     model_version: image_entity_ridge_language_v3
     artifact_sha256: a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e
@@ -37,10 +37,10 @@ deployment:
     deployment_status: selected_for_current_closed_loop
 
   policy:
-    path: models/policy_single_point_v3_full_seed17.pt
-    source_path: /mnt/c/Temp/asv_vla_retrain_20260805/policy_v3_single_point_20260805/full_seed17/best.pt
-    model_id: policy_single_point_v3_full_seed17
-    source_sha256: f907d297dbcbedd10aa5bc009d4345655654db04d1e66282f68fad06abbead2c
+    path: models/policy_single_point.pt
+    source_path: models/policy_single_point.pt
+    model_id: policy_single_point
+    source_sha256: f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483
     backend: torch_cuda
     device: cuda
     training_platform: pc
