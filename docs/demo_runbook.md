@@ -4,6 +4,21 @@
 policy 和 UE5 运动学执行。Jetson 只做 ROS 2 构建与 CUDA 在线推理，不训练、不启动
 专家、不读取 `/ue/entities` 真值，也不启动低层推力控制器。
 
+## 0. 工作区边界和同步规则
+
+演示前先确认运行位置：PC 负责训练、自动化数据采集、UE5 自动化，以及离线评估和报告；
+Jetson 只保留 ROS/ROS 2 源码、部署模型和本机 `colcon` 生成的 `build/`、`install/`。
+两端必须是独立工作区，不要用一端的完整工作树覆盖另一端。
+
+Jetson 的 `build/`、`install/`、`log/`、运行时 `cache/` 都是 Jetson 本地产物，不得复制
+到 PC 工作区、提交到 PC 侧仓库或作为 PC 训练/报告输入保留。需要回传结果时，只导出明确
+选择的离线数据、指标或摘要；PC 自己的训练缓存应放在单独命名的 PC 输出目录，不能与
+Jetson 运行时缓存混用。
+
+同步前后只核对显式文件白名单：PC -> Jetson 仅发布 ROS 源码和已核对 SHA-256 的部署
+模型；Jetson -> PC 仅提供离线评估明确需要的数据或汇总结果。禁止完整目录复制、全树
+镜像和 `rsync --delete`，并确认同步清单排除了 `build/`、`install/`、`log/`、`cache/`。
+
 ## 1. 准备 artifact
 
 将 PC 产物复制到 Jetson `/home/jetson/jetson_asv_ws/models/`，并使用以下隔离文件名：

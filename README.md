@@ -27,6 +27,24 @@ camera_image_rgb + task_text
 
 在线 launch 不启动 ESP32、控制管理器或推进器分配器。
 
+## PC/Jetson 工作区边界
+
+两端不是同一份可互相覆盖的完整工作树。PC 工作区保留训练代码、训练配置与
+checkpoint、自动化数据采集、UE5 自动化，以及离线评估和报告；Jetson 工作区只保留
+ROS/ROS 2 源码、部署模型和本机 `colcon` 构建所需的 `build/`、`install/`。PC 与 Jetson
+分别维护自己的分支、路径和生成环境。
+
+Jetson 生成的运行产物不得复制回 PC 工作区，也不得提交到 PC 侧仓库，包括 ROS 的
+`build/`、`install/`、`log/` 和运行时 `cache/`（以及这些目录的内容）。这些目录只在
+Jetson 本地按需生成、验证和清理；PC 侧若有训练缓存，必须放在明确命名的 PC 输出目录，
+不能冒充或替代 Jetson 运行时缓存。需要在 PC 生成报告时，只导出明确选择的指标、摘要或
+原始数据文件，不回灌整套 Jetson 工作区。
+
+同步只允许使用显式白名单：向 Jetson 发布 ROS 源码和已核对 SHA-256 的部署模型，向 PC
+提供离线评估所需的明确数据或汇总结果。不要使用完整工作树复制、`rsync --delete` 或
+同类操作让 PC 覆盖 Jetson，或让 Jetson 覆盖 PC；任何一端的本地 `build/`、`install/`、
+`log/`、`cache/` 都必须排除在同步范围之外。
+
 ## 当前部署 artifact
 
 二进制不提交 Git。将 PC 产物复制到 Jetson 的隔离部署名后，按
