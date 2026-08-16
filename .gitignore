@@ -1,0 +1,14 @@
+build/
+install/
+log/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+models/*.pt
+models/*.npz
+models/Qwen3-Embedding-0.6B/
+models/Qwen3-Embedding-0.6B*/
+*.tmp
+*.swp

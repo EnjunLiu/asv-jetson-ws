@@ -1,0 +1,91 @@
+schema_version: 1
+contract_revision: single_point_20260805
+
+# Deployment metadata for the selected L7/S2 single-point closed loop.
+# The binary artifacts stay outside this checkout; copy them to the Jetson
+# deployment names below and verify the source hashes before starting.
+deployment:
+  jetson_role: ros2_build_and_cuda_online_inference_only
+  pc_training_only: true
+  privileged_truth_topic: /ue/entities
+  privileged_truth_allowed: collection_and_offline_supervision_validation_only
+
+  perception:
+    path: models/perception_image_conditioned.npz
+    source_path: models/perception_image_conditioned.npz
+    model_id: image_entity_ridge_language_v3
+    model_version: image_entity_ridge_language_v3
+    artifact_sha256: a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e
+    input: (camera_image_rgb,task_embedding_float32[256])->structured_entities
+    input_components:
+      - camera_image_rgb
+      - task_embedding_float32[256]
+    output: structured_entities
+    output_fields:
+      - relative_position_m
+      - visible_mask
+      - bbox_px
+      - confidence
+      - valid
+      - relative_velocity_mps
+      - velocity_valid
+    feature_input_dimension: 4320
+    velocity_output: false
+    velocity_source: temporal_entity_tracker
+    language_model_id: Qwen/Qwen3-Embedding-0.6B
+    device: cuda
+    deployment_status: selected_for_deployment
+
+  policy:
+    path: models/policy_single_point.pt
+    source_path: models/policy_single_point.pt
+    model_id: policy_single_point
+    source_sha256: f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483
+    backend: torch_cuda
+    device: cuda
+    training_platform: pc
+    input_contract: single_point
+    decision_inputs:
+      - language
+      - structured_entities/entity_geometry
+      - previous_action
+      - language_valid
+      - entity_geometry_mask
+      - previous_action_valid
+      - policy_input_valid
+    decision_input_exclusions:
+      - global_visual
+      - entity_visual
+      - ego
+    output_action_shape: [B, 2]
+    output_action_frame: body_frame
+    output_action_kind: single_step_desired_displacement_m
+    output_units: meters
+    temporal_context:
+      previous_action_source: same_run_same_instruction_adjacent_previous_frame
+      first_frame_action: [0.0, 0.0]
+      first_frame_valid: false
+    deployment_status: selected_for_deployment
+
+  language:
+    mode: online_qwen_cuda_release_after_encode
+    model_id: Qwen/Qwen3-Embedding-0.6B
+    model_path: models/Qwen3-Embedding-0.6B
+    feature_dim: 256
+    device: cuda
+    language_release_after_encode: true
+    release_model_after_encode: true
+    online_qwen_runtime: true
+    first_instruction_encoding: real_qwen_cuda
+    qwen_weight_resident_after_encode: false
+    post_encode_embedding_online: true
+    cached_embedding_file: false
+    cpu_fallback: false
+
+training_only:
+  language_model: Qwen/Qwen3-Embedding-0.6B
+  location: pc_datasets/models/Qwen3-Embedding-0.6B
+  expert_label: one_current_frame_desired_displacement_point
+  previous_action_source: same_run_same_instruction_adjacent_previous_frame
+  first_frame_previous_action: [0.0, 0.0]
+  first_frame_previous_action_valid: false

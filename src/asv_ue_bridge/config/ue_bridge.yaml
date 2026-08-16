@@ -1,0 +1,42 @@
+ue_object_deliverer_bridge_node:
+  ros__parameters:
+    listen_address: "0.0.0.0"
+    port: 8080
+    terminator: "__OD_END__"
+
+    # UE5: cm -> m, cm/s -> m/s, angular velocity already rad/s.
+    position_scale: 0.01
+    velocity_scale: 0.01
+    yaw_rate_scale: 1.0
+    yaw_rate_sign: 1.0
+
+    # UE5 relative entity coordinates are centimetres in the ASV-local frame.
+    # UE +Y points right; ROS base_link +Y points left.
+    entity_frame_id: "base_link"
+    entity_lateral_sign: -1.0
+    entity_vertical_sign: 1.0
+    max_entities: 64
+
+    # Width and height are parsed from the JPEG header.
+    camera_encoding: "jpeg"
+    max_camera_bytes: 8388608
+
+    log_raw_json: false
+
+    # Publish UE5 Get Game Time in Seconds as the ROS 2 /clock source.
+    publish_clock: true
+
+    # The VLA boundary emits only kinematic desired displacement. Physical
+    # thruster control is owned by the separate low-level controller project.
+    outbound_command_mode: "kinematic"
+
+    # ROS base_link metres -> UE actor-local centimetres. ROS +Y is left while
+    # UE local +Y is right, so the outbound lateral sign is negative.
+    kinematic_position_scale: 100.0
+    kinematic_lateral_sign: -1.0
+
+    # Optional UE5 C++ kinematic executor (headless closed loop): when set,
+    # kinematic setpoints are delivered to the EDGE executor socket instead
+    # of the blueprint channel (the blueprint ignores them headless).
+    execution_address: ""
+    execution_port: 8081

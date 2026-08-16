@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>asv_ue_bridge</name>
+  <version>0.1.0</version>
+  <description>ObjectDeliverer TCP JSON to ROS 2 bridge.</description>
+  <maintainer email="liuenjun1010@gmail.com">ASV Developer</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_target_dependencies</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>asv_jetson_interfaces</depend>
+  <depend>nlohmann_json</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
