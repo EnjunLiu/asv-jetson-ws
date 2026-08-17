@@ -251,6 +251,5 @@ def test_identity_is_copied_and_mixed_frames_stop_before_inference() -> None:
 
 def test_setup_points_merged_nodes_at_algorithm_modules() -> None:
     setup = (REPOSITORY / "src/vla/setup.py").read_text(encoding="utf-8")
-    assert '"entity_features = vla.entity_features:main"' in setup
     assert '"temporal_entity_tracker = vla.temporal_entity_tracker:main"' in setup
     assert '"safety_gate = vla.safety_gate:main"' in setup

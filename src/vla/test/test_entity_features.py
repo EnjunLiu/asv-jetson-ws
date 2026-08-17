@@ -1,26 +1,17 @@
 from dataclasses import dataclass
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from vla.entity_features import (
-    FEATURE_DIM,
-    MAX_ENTITIES,
+from vla.vla_policy_node import (
+    ENTITY_COUNT,
+    ENTITY_GEOMETRY_DIM,
     EntityFeaturesError,
     build_entity_features,
     compute_entity_metrics,
 )
 
-
-def test_entity_features_module_owns_ros_node_entrypoint() -> None:
-    source = (Path(__file__).parents[1] / "vla" / "entity_features.py").read_text(
-        encoding="utf-8"
-    )
-    assert "class EntityFeaturesNode" in source
-    assert "def main(args=None)" in source
-    assert "allow_truth_entities" not in source
-    assert "UNTRUSTED_ENTITY_SOURCE" not in source
+MAX_ENTITIES = ENTITY_COUNT
+FEATURE_DIM = ENTITY_GEOMETRY_DIM
 
 
 @dataclass

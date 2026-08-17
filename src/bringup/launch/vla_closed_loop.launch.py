@@ -7,7 +7,6 @@ Pipeline (no duplicate publishers, real Qwen language encoder):
                         v
               image_perception (image only) -> /vla/perceived_entities
               temporal_tracker -> /vla/tracked_entities
-              entity_features -> /vla/entity_features
               Qwen CUDA encoder -> /vla/language_embedding
                         |
                         v
@@ -37,6 +36,9 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    workspace_models_dir = os.path.abspath(
+        os.path.join(get_package_share_directory("bringup"), "..", "..", "..", "models")
+    )
     ue_bridge_config = os.path.join(
         get_package_share_directory("bridge"),
         "config",
@@ -76,7 +78,7 @@ def generate_launch_description():
             DeclareLaunchArgument("start_ue_bridge", default_value="true"),
             DeclareLaunchArgument(
                 "models_dir",
-                default_value="../models",
+                default_value=workspace_models_dir,
                 description="Directory containing the deployment model artifacts.",
             ),
             DeclareLaunchArgument(
@@ -239,20 +241,6 @@ def generate_launch_description():
                 }],
             ),
             language_qwen_node,
-            # ── Entity features ──
-            Node(
-                package="vla",
-                executable="entity_features",
-                name="entity_features",
-                output="screen",
-                parameters=[{
-                    "entities_topic": "/vla/tracked_entities",
-                    "use_sim_time": ParameterValue(
-                        LaunchConfiguration("use_sim_time"),
-                        value_type=bool,
-                    ),
-                }],
-            ),
             # ── VLA policy inference (JetPack PyTorch, CUDA) ──
             TimerAction(
                 period=LaunchConfiguration("policy_start_delay_sec"),

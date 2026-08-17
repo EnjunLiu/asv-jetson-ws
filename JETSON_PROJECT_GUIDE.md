@@ -84,8 +84,7 @@ image_entity_perception
 temporal_entity_tracker
  ├─ /vla/tracked_entities
  v
-entity_features
- ├─ /vla/entity_features ───────────────┐
+vla_policy（内部构建实体特征） ──────────┐
                                       |
 task_instruction -> language_qwen     |
                     └─ embedding ─────┤
@@ -389,9 +388,9 @@ bridge 在 [第 278 行](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L2
 
 ### 7.2 实体张量
 
-[build_entity_features](./src/vla/vla/entity_features.py#L169) 将可变长度实体转换为 `16 x 16`。
+[build_entity_features](./src/vla/vla/vla_policy_node.py#L177) 在策略节点内将可变长度实体转换为 `16 x 16`。
 
-每个实体的 16 维由 [_entity_row](./src/vla/vla/entity_features.py#L136) 定义：
+每个实体的 16 维由 [_entity_row](./src/vla/vla/vla_policy_node.py#L154) 定义：
 
 ```text
 0-2   x/y/z
@@ -407,9 +406,9 @@ bridge 在 [第 278 行](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L2
 15    is_blue
 ```
 
-[compute_entity_metrics](./src/vla/vla/entity_features.py#L63) 计算最近会遇点 CPA。实体按“目标 -> 风险 -> 普通”排序，避免无关近物体挤掉任务目标。
+[compute_entity_metrics](./src/vla/vla/vla_policy_node.py#L116) 计算最近会遇点 CPA。实体按“目标 -> 风险 -> 普通”排序，避免无关近物体挤掉任务目标。
 
-[EntityFeaturesNode](./src/vla/vla/entity_features.py#L283) 负责 ROS 转换；异常时通过 [_publish_invalid](./src/vla/vla/entity_features.py#L354) 显式发布无效输入。
+`VLAPolicyNode` 在订阅 `/vla/tracked_entities` 后构建特征；转换异常会直接进入策略节点的 fail-closed 输出。
 
 ### 本章问题与答案
 
@@ -617,7 +616,6 @@ ros2 topic echo /ue/camera_frame --once
 ros2 topic echo /vla/language_embedding --once
 ros2 topic echo /vla/perceived_entities --once
 ros2 topic echo /vla/tracked_entities --once
-ros2 topic echo /vla/entity_features --once
 ros2 topic echo /vla/policy_displacement --once
 ros2 topic echo /control/desired_displacement --once
 ros2 topic info /control/desired_displacement
@@ -674,7 +672,6 @@ ros2 topic info /control/desired_displacement
 | [image_entity_perception.py](./src/vla/vla/image_entity_perception.py) | 感知算法 |
 | [image_entity_perception_node.py](./src/vla/vla/image_entity_perception_node.py) | 感知节点 |
 | [temporal_entity_tracker.py](./src/vla/vla/temporal_entity_tracker.py) | 跟踪算法和 ROS 跟踪节点 |
-| [entity_features.py](./src/vla/vla/entity_features.py) | 实体特征和 ROS 特征节点 |
 | [policy_model.py](./src/vla/vla/policy_model.py) | 策略网络 |
 | [vla_policy_node.py](./src/vla/vla/vla_policy_node.py) | 在线策略 |
 | [visual_standoff_guard.py](./src/vla/vla/visual_standoff_guard.py) | 跟随距离守卫 |
@@ -707,7 +704,7 @@ ros2 topic info /control/desired_displacement
 | [test_policy_model.py](./src/vla/test/test_policy_model.py) | 策略 shape、mask、停止头和加载 |
 | [test_runtime_identity_contract.py](./src/vla/test/test_runtime_identity_contract.py) | Launch、模型、身份和特权边界 |
 | [test_safety_gate.py](./src/vla/test/test_safety_gate.py) | 安全拒绝码和碰撞检查 |
-| [test_entity_features.py](./src/vla/test/test_entity_features.py) | 16 维实体特征、排序和 mask |
+| [test_entity_features.py](./src/vla/test/test_entity_features.py) | 策略模块内的 16 维实体特征、排序和 mask |
 | [test_task_instruction_node.py](./src/vla/test/test_task_instruction_node.py) | 任务文本校验和发布 |
 | [test_temporal_entity_tracker.py](./src/vla/test/test_temporal_entity_tracker.py) | 速度估计、重置和轨迹过期 |
 | [test_trajectory_contract.py](./src/vla/test/test_trajectory_contract.py) | 动作常量和 safe-stop 合同 |

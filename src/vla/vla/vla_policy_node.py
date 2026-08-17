@@ -2,10 +2,10 @@
 
 The perception chain owns image understanding and temporal velocity:
 
-    camera -> image perception -> temporal tracker -> EntityFeatures
+    camera -> image perception -> temporal tracker -> policy features
 
-This node consumes only ``TaskEmbedding`` and the structured ``EntityFeatures``
-message.  It publishes one bounded body-frame displacement for the next
+This node consumes ``TaskEmbedding`` and tracked entities, constructs its
+structured feature tensor, then publishes one bounded body-frame displacement for the next
 control interval.  There is no trajectory horizon, global visual token,
 entity crop token, or ego-state input at this boundary.
 """
@@ -16,14 +16,14 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import math
 import time
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-from interfaces.msg import DesiredDisplacement, EntityFeatures, TaskEmbedding
+from interfaces.msg import DesiredDisplacement, EntityArray, EntityFeatures, TaskEmbedding
 
 from .trajectory_contract import ACTION_DIM, DT_SEC, FRAME_ID, MAX_DISPLACEMENT_M
 from .visual_standoff_guard import (
@@ -41,6 +41,12 @@ POLICY_MODEL_VERSION = "vla_torch_cuda_action_history"
 ENTITY_COUNT = 16
 LANGUAGE_DIM = 256
 ENTITY_GEOMETRY_DIM = 16
+ENTITY_FEATURE_BACKEND = "deterministic_entity_tensor"
+POSITION_SCALE_M = 20.0
+HEIGHT_SCALE_M = 5.0
+VELOCITY_SCALE_MPS = 5.0
+RISK_HORIZON_SEC = 4.0
+RISK_RADIUS_M = 3.0
 STALE_SEC = 1.0
 MIN_INFERENCE_INTERVAL_SEC = 0.2
 SYNC_CACHE_SIZE = 256
@@ -71,6 +77,127 @@ class _PendingAction:
 class _SyncEntry:
     message: Any
     received_at: float
+
+
+class EntityFeaturesError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class EntityMetrics:
+    distance_m: float
+    bearing_sin: float
+    bearing_cos: float
+    closing_speed_mps: float
+    time_to_cpa_sec: float
+    cpa_distance_m: float
+    is_risk: bool
+
+
+@dataclass(frozen=True)
+class EntityFeaturesResult:
+    features: np.ndarray
+    mask: np.ndarray
+    entity_ids: tuple[str, ...]
+    entity_count: int
+    target_count: int
+    risk_count: int
+    dropped_count: int
+
+
+def _clip_feature(value: float, scale: float, low: float = -1.0) -> float:
+    return float(np.clip(value / scale, low, 1.0))
+
+
+def compute_entity_metrics(entity: Any) -> EntityMetrics:
+    x, y = float(entity.relative_x), float(entity.relative_y)
+    vx, vy = float(entity.relative_velocity_x), float(entity.relative_velocity_y)
+    distance = math.hypot(x, y)
+    if distance > 1.0e-9:
+        bearing_sin, bearing_cos = y / distance, x / distance
+        closing_speed = -(x * vx + y * vy) / distance
+    else:
+        bearing_sin, bearing_cos, closing_speed = 0.0, 1.0, 0.0
+    speed_squared = vx * vx + vy * vy
+    raw_time_to_cpa = -(x * vx + y * vy) / speed_squared if speed_squared > 1.0e-12 else math.inf
+    time_to_cpa = min(max(raw_time_to_cpa, 0.0), RISK_HORIZON_SEC)
+    cpa_distance = math.hypot(x + vx * time_to_cpa, y + vy * time_to_cpa)
+    return EntityMetrics(
+        distance, bearing_sin, bearing_cos, closing_speed, time_to_cpa,
+        cpa_distance,
+        closing_speed > 0.0 and 0.0 < raw_time_to_cpa <= RISK_HORIZON_SEC
+        and cpa_distance <= RISK_RADIUS_M,
+    )
+
+
+def _entity_candidate(entity: Any) -> tuple[Any, str, EntityMetrics]:
+    entity_id = str(entity.entity_id).strip()
+    values = (
+        entity.relative_x, entity.relative_y, entity.relative_z,
+        entity.relative_velocity_x, entity.relative_velocity_y,
+        entity.relative_velocity_z,
+    )
+    if not entity_id:
+        raise EntityFeaturesError("a valid visible entity has an empty entity_id")
+    if not all(math.isfinite(float(value)) for value in values):
+        raise EntityFeaturesError(f"entity {entity_id!r} contains NaN or Inf")
+    return entity, entity_id, compute_entity_metrics(entity)
+
+
+def _entity_sort_key(candidate: tuple[Any, str, EntityMetrics]) -> tuple[Any, ...]:
+    entity, entity_id, metrics = candidate
+    if bool(entity.is_target):
+        return 0, metrics.distance_m, entity_id
+    if metrics.is_risk:
+        return 1, metrics.cpa_distance_m, metrics.time_to_cpa_sec, metrics.distance_m, entity_id
+    return 2, metrics.distance_m, entity_id
+
+
+def _entity_row(candidate: tuple[Any, str, EntityMetrics]) -> np.ndarray:
+    entity, _, metrics = candidate
+    color = str(entity.color).strip().casefold()
+    return np.asarray((
+        _clip_feature(float(entity.relative_x), POSITION_SCALE_M),
+        _clip_feature(float(entity.relative_y), POSITION_SCALE_M),
+        _clip_feature(float(entity.relative_z), HEIGHT_SCALE_M),
+        _clip_feature(float(entity.relative_velocity_x), VELOCITY_SCALE_MPS),
+        _clip_feature(float(entity.relative_velocity_y), VELOCITY_SCALE_MPS),
+        _clip_feature(float(entity.relative_velocity_z), VELOCITY_SCALE_MPS),
+        _clip_feature(metrics.distance_m, POSITION_SCALE_M, 0.0),
+        metrics.bearing_sin, metrics.bearing_cos,
+        _clip_feature(metrics.closing_speed_mps, VELOCITY_SCALE_MPS),
+        _clip_feature(metrics.time_to_cpa_sec, RISK_HORIZON_SEC, 0.0),
+        _clip_feature(metrics.cpa_distance_m, POSITION_SCALE_M, 0.0),
+        float(bool(entity.is_target)), float(metrics.is_risk),
+        float(color in {"red", "红", "红色"}),
+        float(color in {"blue", "蓝", "蓝色"}),
+    ), dtype=np.float32)
+
+
+def build_entity_features(entities: Iterable[Any]) -> EntityFeaturesResult:
+    candidates, seen_ids = [], set()
+    for entity in entities:
+        if not bool(entity.valid) or not bool(entity.visible):
+            continue
+        candidate = _entity_candidate(entity)
+        if candidate[1] in seen_ids:
+            raise EntityFeaturesError(f"duplicate valid visible entity_id {candidate[1]!r}")
+        seen_ids.add(candidate[1])
+        candidates.append(candidate)
+    selected = sorted(candidates, key=_entity_sort_key)[:ENTITY_COUNT]
+    features = np.zeros((ENTITY_COUNT, ENTITY_GEOMETRY_DIM), dtype=np.float32)
+    mask = np.zeros(ENTITY_COUNT, dtype=np.bool_)
+    entity_ids = [""] * ENTITY_COUNT
+    for index, candidate in enumerate(selected):
+        features[index], mask[index], entity_ids[index] = _entity_row(candidate), True, candidate[1]
+    if not np.all(np.isfinite(features)):
+        raise EntityFeaturesError("entity features contain NaN or Inf")
+    return EntityFeaturesResult(
+        features, mask, tuple(entity_ids), len(selected),
+        sum(bool(entity.is_target) for entity, _, _ in selected),
+        sum(metrics.is_risk for _, _, metrics in selected),
+        max(0, len(candidates) - len(selected)),
+    )
 
 
 def _identity_tuple(message: Any) -> tuple[str, int, int] | None:
@@ -338,7 +465,7 @@ class VLAPolicyNode(Node):
             TaskEmbedding, "/vla/language_embedding", self._on_language, LANG_QOS
         )
         self._ent_sub = self.create_subscription(
-            EntityFeatures, "/vla/entity_features", self._on_entities, 10
+            EntityArray, "/vla/tracked_entities", self._on_entities, 10
         )
         self._gate_sub = self.create_subscription(
             DesiredDisplacement,
@@ -592,7 +719,53 @@ class VLAPolicyNode(Node):
         for key in self._frame_sync.keys():
             self._maybe_infer(key, trigger="language")
 
-    def _on_entities(self, message: EntityFeatures) -> None:
+    def _new_entity_features(self, source: EntityArray) -> EntityFeatures:
+        message = EntityFeatures()
+        message.stamp_us = int(source.stamp_us)
+        message.run_id = str(source.run_id)
+        message.scene_seed = int(source.scene_seed)
+        message.frame_index = int(source.frame_index)
+        message.frame_id = str(source.frame_id)
+        message.backend = ENTITY_FEATURE_BACKEND
+        message.max_entities = ENTITY_COUNT
+        message.feature_dim = ENTITY_GEOMETRY_DIM
+        message.entity_count = 0
+        message.entity_ids = [""] * ENTITY_COUNT
+        message.features = [0.0] * (ENTITY_COUNT * ENTITY_GEOMETRY_DIM)
+        message.mask = [False] * ENTITY_COUNT
+        message.valid = False
+        message.instruction_id = str(source.instruction_id)
+        message.instruction = str(source.instruction)
+        message.detail = "UNINITIALIZED"
+        return message
+
+    def _on_entities(self, source: EntityArray) -> None:
+        message = self._new_entity_features(source)
+        if not source.valid:
+            message.detail = f"INVALID_SOURCE:{source.detail}"
+        elif not message.run_id:
+            message.detail = "INVALID_RUN_ID: run_id is empty"
+        elif message.frame_id != FRAME_ID:
+            message.detail = f"INVALID_FRAME: expected {FRAME_ID}, got {message.frame_id!r}"
+        else:
+            try:
+                result = build_entity_features(source.entities)
+                message.entity_count = result.entity_count
+                message.entity_ids = list(result.entity_ids)
+                message.features = result.features.reshape(-1).tolist()
+                message.mask = result.mask.tolist()
+                message.valid = True
+                message.detail = (
+                    f"OK:selected={result.entity_count};targets={result.target_count};"
+                    f"risks={result.risk_count};dropped={result.dropped_count}"
+                )
+            except (EntityFeaturesError, ValueError) as exc:
+                message.detail = f"{type(exc).__name__.upper()}:{exc}"
+            except Exception as exc:
+                message.detail = f"UNEXPECTED_ENTITY_TENSOR_ERROR:{type(exc).__name__}:{exc}"
+        self._on_feature_message(message)
+
+    def _on_feature_message(self, message: EntityFeatures) -> None:
         self._entities = message
         now = time.monotonic()
         identity = _identity_tuple(message)

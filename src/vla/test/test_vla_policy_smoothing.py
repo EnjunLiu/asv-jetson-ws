@@ -396,7 +396,7 @@ def test_maybe_infer_keeps_previous_action_only_within_run(
 def test_policy_contract_has_no_visual_or_ego_decision_inputs() -> None:
     source = POLICY.read_text(encoding="utf-8")
     assert "TaskEmbedding, \"/vla/language_embedding\"" in source
-    assert "EntityFeatures, \"/vla/entity_features\"" in source
+    assert "EntityArray, \"/vla/tracked_entities\"" in source
     assert "VisualFeatures" not in source
     assert "ASVState" not in source
     assert "POLICY_MODEL_HORIZON" not in source

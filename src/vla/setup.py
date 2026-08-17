@@ -25,7 +25,6 @@ setup(
         "console_scripts": [
             "image_entity_perception = vla.image_entity_perception_node:main",
             "temporal_entity_tracker = vla.temporal_entity_tracker:main",
-            "entity_features = vla.entity_features:main",
             "safety_gate = vla.safety_gate:main",
             "vla_policy = vla.vla_policy_node:main",
             "language_qwen = vla.language_qwen_node:main",
