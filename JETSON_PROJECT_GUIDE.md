@@ -51,7 +51,7 @@
 
 项目通常把功能分成两层。例如：
 
-- [safety_gate.py](./src/asv_vla/asv_vla/safety_gate.py#L1)：安全判定、topic、参数、定时器和发布。
+- [safety_gate.py](./src/vla/vla/safety_gate.py#L1)：安全判定、topic、参数、定时器和发布。
 
 先读纯算法有利于理解数学和异常条件，再读节点代码理解它如何进入 ROS 图。
 
@@ -69,13 +69,13 @@
 
 ### 1.1 完整数据流
 
-总入口是 [vla_closed_loop.launch.py](./src/asv_bringup/launch/vla_closed_loop.launch.py#L45)。
+总入口是 [vla_closed_loop.launch.py](./src/bringup/launch/vla_closed_loop.launch.py#L45)。
 
 ```text
 UE5
  ├─ Camera/State/Truth
  v
-asv_ue_bridge
+bridge
  ├─ /ue/camera_frame
  v
 image_entity_perception
@@ -98,16 +98,15 @@ task_instruction -> language_qwen     |
                                       |
                         /control/desired_displacement
                                       v
-                           ue_setpoint_adapter
+                           bridge -> UE5 executor
                                       |
-                           /ue/kinematic_setpoint
                                       v
                                 UE5 executor
 ```
 
 ### 1.2 动作接口
 
-策略输出 `desired_x, desired_y`：ROS `base_link` 中的单步期望位移，单位米。合同位于 [trajectory_contract.py](./src/asv_vla/asv_vla/trajectory_contract.py#L10)：
+策略输出 `desired_x, desired_y`：ROS `base_link` 中的单步期望位移，单位米。合同位于 [trajectory_contract.py](./src/vla/vla/trajectory_contract.py#L10)：
 
 - `DT_SEC = 0.2`
 - `ACTION_DIM = 2`
@@ -117,9 +116,9 @@ task_instruction -> language_qwen     |
 
 ### 1.3 特权真值边界
 
-bridge 会发布 `/ue/entities`，但在线感知节点 [ImageEntityPerceptionNode](./src/asv_vla/asv_vla/image_entity_perception_node.py#L206) 不订阅它，只使用相机图像、任务文本和语言 embedding。
+bridge 会发布 `/ue/entities`，但在线感知节点 [ImageEntityPerceptionNode](./src/vla/vla/image_entity_perception_node.py#L206) 不订阅它，只使用相机图像、任务文本和语言 embedding。
 
-原因是现实世界不存在 UE5 真值。在线使用它会让仿真结果失去真实性。该约束由 [test_runtime_identity_contract.py](./src/asv_vla/test/test_runtime_identity_contract.py#L1) 检查。
+原因是现实世界不存在 UE5 真值。在线使用它会让仿真结果失去真实性。该约束由 [test_runtime_identity_contract.py](./src/vla/test/test_runtime_identity_contract.py#L1) 检查。
 
 ### 1.4 fail-closed
 
@@ -151,38 +150,38 @@ asv-jetson-ws/
 ├── README.md
 ├── models/manifest.yaml
 └── src/
-    ├── asv_jetson_interfaces  # 消息
-    ├── asv_ue_bridge          # UE5 TCP/C++
-    ├── asv_vla                # VLA 算法和节点
-    └── asv_bringup            # Launch
+    ├── interfaces  # 消息
+    ├── bridge          # UE5 TCP/C++
+    ├── vla                # VLA 算法和节点
+    └── launch            # Launch
 ```
 
 ### 2.1 接口包
 
-[接口 CMakeLists.txt](./src/asv_jetson_interfaces/CMakeLists.txt#L1) 使用 `rosidl_generate_interfaces` 将 `.msg` 生成 Python/C++ 类型。[package.xml](./src/asv_jetson_interfaces/package.xml) 声明 ROS 依赖。
+[接口 CMakeLists.txt](./src/interfaces/CMakeLists.txt#L1) 使用 `rosidl_generate_interfaces` 将 `.msg` 生成 Python/C++ 类型。[package.xml](./src/interfaces/package.xml) 声明 ROS 依赖。
 
 ### 2.2 Bridge 包
 
-[bridge CMakeLists.txt](./src/asv_ue_bridge/CMakeLists.txt#L1) 编译 C++ 节点并链接 ROS 2、nlohmann JSON 和线程库。
+[bridge CMakeLists.txt](./src/bridge/CMakeLists.txt#L1) 编译 C++ 节点并链接 ROS 2、nlohmann JSON 和线程库。
 
 ### 2.3 Python VLA 包
 
-[setup.py](./src/asv_vla/setup.py#L24) 注册 `ros2 run` 入口。例如：
+[setup.py](./src/vla/setup.py#L24) 注册 `ros2 run` 入口。例如：
 
 ```text
-vla_policy = asv_vla.vla_policy_node:main
+vla_policy = vla.vla_policy_node:main
 ```
 
-因此 `ros2 run asv_vla vla_policy` 会调用该文件的 `main()`。
+因此 `ros2 run vla vla_policy` 会调用该文件的 `main()`。
 
-- [setup.cfg](./src/asv_vla/setup.cfg)：脚本安装目录。
-- [package.xml](./src/asv_vla/package.xml)：ROS/Python 依赖。
-- [resource/asv_vla](./src/asv_vla/resource/asv_vla)：ament 索引标记，不能因内容为空而删除。
-- [requirements-language.txt](./src/asv_vla/requirements-language.txt)：Qwen 额外依赖。
+- [setup.cfg](./src/vla/setup.cfg)：脚本安装目录。
+- [package.xml](./src/vla/package.xml)：ROS/Python 依赖。
+- [resource/vla](./src/vla/resource/vla)：ament 索引标记，不能因内容为空而删除。
+- [requirements-language.txt](./src/vla/requirements-language.txt)：Qwen 额外依赖。
 
 ### 本章问题与答案
 
-**问：为什么 `resource/asv_vla` 是空文件却有用？**  
+**问：为什么 `resource/vla` 是空文件却有用？**  
 答：它让 ament 索引识别 Python ROS 包。
 
 **问：为什么 bridge 用 C++，模型用 Python？**  
@@ -194,31 +193,30 @@ vla_policy = asv_vla.vla_policy_node:main
 
 ### 3.1 传感器消息
 
-[CameraFrame.msg](./src/asv_jetson_interfaces/msg/CameraFrame.msg#L1) 保存 JPEG 字节和 `run_id/scene_seed/frame_index`。[ASVState.msg](./src/asv_jetson_interfaces/msg/ASVState.msg#L1) 保存位姿、纵向速度和偏航角速度。
+[CameraFrame.msg](./src/interfaces/msg/CameraFrame.msg#L1) 保存 JPEG 字节和 `run_id/scene_seed/frame_index`。[ASVState.msg](./src/interfaces/msg/ASVState.msg#L1) 保存位姿、纵向速度和偏航角速度。
 
 当前策略明确排除 ego 输入，所以 `ASVState` 主要是 bridge 状态接口，不进入决策头。
 
 ### 3.2 实体消息
 
-[Entity.msg](./src/asv_jetson_interfaces/msg/Entity.msg#L1) 描述一个实体：
+[Entity.msg](./src/interfaces/msg/Entity.msg#L1) 描述一个实体：
 
 - 类别、颜色、是否目标。
 - ASV 局部坐标位置和速度。
 - bbox、置信度和对应有效位。
 - `source`：`ue_truth`、`image_perception` 或 `temporal_tracker`。
 
-[EntityArray.msg](./src/asv_jetson_interfaces/msg/EntityArray.msg#L1) 为一帧实体添加身份、来源、任务文本和整体有效性。
+[EntityArray.msg](./src/interfaces/msg/EntityArray.msg#L1) 为一帧实体添加身份、来源、任务文本和整体有效性。
 
 ### 3.3 语言和张量
 
-[TaskEmbedding.msg](./src/asv_jetson_interfaces/msg/TaskEmbedding.msg#L1) 包含 256 维 embedding、模型 ID 和有效性。
+[TaskEmbedding.msg](./src/interfaces/msg/TaskEmbedding.msg#L1) 包含 256 维 embedding、模型 ID 和有效性。
 
-[EntityFeatures.msg](./src/asv_jetson_interfaces/msg/EntityFeatures.msg#L1) 包含固定形状实体张量：16 个槽位，每个槽位 16 维，并用 `mask` 区分真实实体与 padding。
+[EntityFeatures.msg](./src/interfaces/msg/EntityFeatures.msg#L1) 包含固定形状实体张量：16 个槽位，每个槽位 16 维，并用 `mask` 区分真实实体与 padding。
 
 ### 3.4 位移和执行
 
-- [DesiredDisplacement.msg](./src/asv_jetson_interfaces/msg/DesiredDisplacement.msg#L1)：策略、安全门和执行适配器共用的二维位移合同，包含源身份、安全停止和拒绝原因。
-- [UESetpoint.msg](./src/asv_jetson_interfaces/msg/UESetpoint.msg#L1)：UE5 最终执行合同，包含 `hold_position` 和发送序号。
+- [DesiredDisplacement.msg](./src/interfaces/msg/DesiredDisplacement.msg#L1)：策略、安全门和 UE5 bridge 共用的最终二维位移合同，包含源身份、安全停止和拒绝原因。
 
 ### 3.5 身份传播
 
@@ -246,18 +244,18 @@ stamp_us     时效性和时间计算
 
 ## 第 4 章：UE5 Bridge
 
-核心文件：[ue_object_deliverer_bridge_node.cpp](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L185)，配置：[ue_bridge.yaml](./src/asv_ue_bridge/config/ue_bridge.yaml#L1)。
+核心文件：[ue_object_deliverer_bridge_node.cpp](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L185)，配置：[ue_bridge.yaml](./src/bridge/config/ue_bridge.yaml#L1)。
 
 ### 4.1 接收路径
 
-1. [构造函数](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L192) 读取参数，创建 publisher/subscriber。
-2. [server_loop](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L420) 监听 UE5 连接。
-3. [receive_loop](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L509) 累积字节并按 `__OD_END__` 拆包。
-4. [process_json](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L553) 解析一帧。
-5. [validate_frame_metadata](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L657) 检查身份。
-6. [publish_optional_camera](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L853) 和 [publish_optional_entities](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L745) 发布 ROS 消息。
+1. [构造函数](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L192) 读取参数，创建 publisher/subscriber。
+2. [server_loop](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L420) 监听 UE5 连接。
+3. [receive_loop](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L509) 累积字节并按 `__OD_END__` 拆包。
+4. [process_json](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L553) 解析一帧。
+5. [validate_frame_metadata](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L657) 检查身份。
+6. [publish_optional_camera](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L853) 和 [publish_optional_entities](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L745) 发布 ROS 消息。
 
-文件开头的 [JSON 读取辅助函数](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L40) 拒绝错误类型、空字符串和 NaN/Inf。
+文件开头的 [JSON 读取辅助函数](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L40) 拒绝错误类型、空字符串和 NaN/Inf。
 
 ### 4.2 单位和坐标转换
 
@@ -272,9 +270,9 @@ UE 局部 `+Y` 向右，ROS `base_link +Y` 向左，因此两侧横向符号均�
 
 ### 4.3 出站路径
 
-bridge 在 [第 278 行](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L278) 订阅最终 setpoint。[send_kinematic_setpoint](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L895) 检查命令、米转厘米、转换横向符号并序列化 JSON。
+bridge 在 [第 278 行](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L278) 订阅最终 setpoint。[send_kinematic_setpoint](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L895) 检查命令、米转厘米、转换横向符号并序列化 JSON。
 
-若配置 `execution_address`，由 [execution_loop](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp#L346) 维护独立 UE5 executor 连接。
+若配置 `execution_address`，由 [execution_loop](./src/bridge/src/ue_object_deliverer_bridge_node.cpp#L346) 维护独立 UE5 executor 连接。
 
 ### 本章问题与答案
 
@@ -293,26 +291,26 @@ bridge 在 [第 278 行](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node
 
 ### 5.1 任务发布
 
-[task_instruction_node.py](./src/asv_vla/asv_vla/task_instruction_node.py#L39) 从 `task_text` 参数读取任务，[校验函数](./src/asv_vla/asv_vla/task_instruction_node.py#L30) 拒绝空文本，并以 transient-local QoS 发布 `/task/text`。这使晚启动的 Qwen 节点仍能收到当前任务。
+[task_instruction_node.py](./src/vla/vla/task_instruction_node.py#L39) 从 `task_text` 参数读取任务，[校验函数](./src/vla/vla/task_instruction_node.py#L30) 拒绝空文本，并以 transient-local QoS 发布 `/task/text`。这使晚启动的 Qwen 节点仍能收到当前任务。
 
 ### 5.2 Qwen 算法
 
-[USVLanguageEncoder](./src/asv_vla/asv_vla/language_encoder.py#L53) 完成模型加载、冻结、文本标准化和 embedding 计算。
+[USVLanguageEncoder](./src/vla/vla/language_encoder.py#L53) 完成模型加载、冻结、文本标准化和 embedding 计算。
 
-[_compute](./src/asv_vla/asv_vla/language_encoder.py#L194) 的流程：
+[_compute](./src/vla/vla/language_encoder.py#L194) 的流程：
 
 ```text
 任务文本 -> ASV prompt -> tokenizer -> Qwen hidden states
         -> pooling -> 256维 -> finite检查/归一化
 ```
 
-[encode_with_metadata](./src/asv_vla/asv_vla/language_encoder.py#L254) 增加进程内缓存。
+[encode_with_metadata](./src/vla/vla/language_encoder.py#L254) 增加进程内缓存。
 
 ### 5.3 Qwen ROS 节点
 
-[LanguageQwenNode](./src/asv_vla/asv_vla/language_qwen_node.py#L113) 订阅任务，发布 embedding 和模块状态。主入口是 [on_task](./src/asv_vla/asv_vla/language_qwen_node.py#L248)。
+[LanguageQwenNode](./src/vla/vla/language_qwen_node.py#L113) 订阅任务，发布 embedding 和模块状态。主入口是 [on_task](./src/vla/vla/language_qwen_node.py#L248)。
 
-失败时发布 256 维零向量且 `valid=false`，不能静默回退 CPU。[_release_encoder_model](./src/asv_vla/asv_vla/language_qwen_node.py#L216) 可在首次编码后释放 Qwen 权重，为感知和策略让出 Jetson 内存。
+失败时发布 256 维零向量且 `valid=false`，不能静默回退 CPU。[_release_encoder_model](./src/vla/vla/language_qwen_node.py#L216) 可在首次编码后释放 Qwen 权重，为感知和策略让出 Jetson 内存。
 
 ### 本章问题与答案
 
@@ -331,33 +329,33 @@ bridge 在 [第 278 行](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node
 
 ### 6.1 ROS 节点
 
-[ImageEntityPerceptionNode](./src/asv_vla/asv_vla/image_entity_perception_node.py#L206) 订阅相机、任务和语言 embedding，发布 `/vla/perceived_entities`。[on_frame](./src/asv_vla/asv_vla/image_entity_perception_node.py#L406) 是单帧处理主入口。
+[ImageEntityPerceptionNode](./src/vla/vla/image_entity_perception_node.py#L206) 订阅相机、任务和语言 embedding，发布 `/vla/perceived_entities`。[on_frame](./src/vla/vla/image_entity_perception_node.py#L406) 是单帧处理主入口。
 
 ### 6.2 图像处理
 
-- [decode_camera_image](./src/asv_vla/asv_vla/visual_encoder.py#L65)：解码 JPEG。
-- [enhance_low_light_image](./src/asv_vla/asv_vla/visual_encoder.py#L83)：gamma、亮度、对比度增强。
-- [project_target_to_pixel](./src/asv_vla/asv_vla/visual_encoder.py#L154)：几何投影辅助。
-- [FrozenMobileNetEncoder](./src/asv_vla/asv_vla/visual_encoder.py#L282)：冻结视觉编码器；当前在线感知主要复用其中图像处理工具。
+- [decode_camera_image](./src/vla/vla/visual_encoder.py#L65)：解码 JPEG。
+- [enhance_low_light_image](./src/vla/vla/visual_encoder.py#L83)：gamma、亮度、对比度增强。
+- [project_target_to_pixel](./src/vla/vla/visual_encoder.py#L154)：几何投影辅助。
+- [FrozenMobileNetEncoder](./src/vla/vla/visual_encoder.py#L282)：冻结视觉编码器；当前在线感知主要复用其中图像处理工具。
 
 ### 6.3 感知特征
 
-[image_entity_perception.py](./src/asv_vla/asv_vla/image_entity_perception.py#L44) 将图像缩放为 `32 x 18` 网格，构造 RGB、颜色/亮度证据图和空间矩特征，再拼接 256 维任务 embedding。
+[image_entity_perception.py](./src/vla/vla/image_entity_perception.py#L44) 将图像缩放为 `32 x 18` 网格，构造 RGB、颜色/亮度证据图和空间矩特征，再拼接 256 维任务 embedding。
 
-- [extract_image_features](./src/asv_vla/asv_vla/image_entity_perception.py#L523)：图像特征。
-- [validate_task_embedding](./src/asv_vla/asv_vla/image_entity_perception.py#L93)：语言维度和 finite 检查。
-- [parse_task_instruction](./src/asv_vla/asv_vla/image_entity_perception.py#L137)：提取跟随/停止、颜色和距离。
-- [select_task_entities](./src/asv_vla/asv_vla/image_entity_perception.py#L718)：选择任务相关实体。
+- [extract_image_features](./src/vla/vla/image_entity_perception.py#L523)：图像特征。
+- [validate_task_embedding](./src/vla/vla/image_entity_perception.py#L93)：语言维度和 finite 检查。
+- [parse_task_instruction](./src/vla/vla/image_entity_perception.py#L137)：提取跟随/停止、颜色和距离。
+- [select_task_entities](./src/vla/vla/image_entity_perception.py#L718)：选择任务相关实体。
 
 ### 6.4 加载和预测
 
-[ImageEntityModel.load](./src/asv_vla/asv_vla/image_entity_perception.py#L816) 检查 `.npz` 内的权重形状、输入合同、模型标识和设备。[predict](./src/asv_vla/asv_vla/image_entity_perception.py#L887) 输出 [ImageEntityPrediction](./src/asv_vla/asv_vla/image_entity_perception.py#L628)：可见性、相对位置、bbox 和置信度。
+[ImageEntityModel.load](./src/vla/vla/image_entity_perception.py#L816) 检查 `.npz` 内的权重形状、输入合同、模型标识和设备。[predict](./src/vla/vla/image_entity_perception.py#L887) 输出 [ImageEntityPrediction](./src/vla/vla/image_entity_perception.py#L628)：可见性、相对位置、bbox 和置信度。
 
 单帧感知不宣称速度有效，速度交给后续 tracker。
 
 ### 6.5 颜色几何先验
 
-[calibrated_color_geometry](./src/asv_vla/asv_vla/image_entity_perception.py#L251) 根据颜色连通域、面积和像素位置估计目标几何。[_predict_with_color_reference](./src/asv_vla/asv_vla/image_entity_perception_node.py#L81) 用它约束或补充模型结果。
+[calibrated_color_geometry](./src/vla/vla/image_entity_perception.py#L251) 根据颜色连通域、面积和像素位置估计目标几何。[_predict_with_color_reference](./src/vla/vla/image_entity_perception_node.py#L81) 用它约束或补充模型结果。
 
 优点是简单、可解释、适合当前红/蓝 UE5 任务；缺点是依赖颜色、光照和标定，不能夸大真实环境泛化。
 
@@ -378,22 +376,22 @@ bridge 在 [第 278 行](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node
 
 ### 7.1 时序跟踪
 
-[temporal_entity_tracker.py](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L1) 的主要结构：
+[temporal_entity_tracker.py](./src/vla/vla/temporal_entity_tracker.py#L1) 的主要结构：
 
-- [FrameMetadata](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L28)：帧身份。
-- [GeometryObservation](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L58)：当前观测。
-- [TrackedEntity](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L134)：带速度输出。
-- [TemporalEntityTracker](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L212)：轨迹状态机。
+- [FrameMetadata](./src/vla/vla/temporal_entity_tracker.py#L28)：帧身份。
+- [GeometryObservation](./src/vla/vla/temporal_entity_tracker.py#L58)：当前观测。
+- [TrackedEntity](./src/vla/vla/temporal_entity_tracker.py#L134)：带速度输出。
+- [TemporalEntityTracker](./src/vla/vla/temporal_entity_tracker.py#L212)：轨迹状态机。
 
-[update](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L258) 按实体 ID 更新轨迹，[_filter_velocity](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L402) 用位置差和时间差估计速度，[_expire_tracks](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L330) 删除过期轨迹。
+[update](./src/vla/vla/temporal_entity_tracker.py#L258) 按实体 ID 更新轨迹，[_filter_velocity](./src/vla/vla/temporal_entity_tracker.py#L402) 用位置差和时间差估计速度，[_expire_tracks](./src/vla/vla/temporal_entity_tracker.py#L330) 删除过期轨迹。
 
-[TemporalEntityTrackerNode](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L571) 将其接入 `/vla/perceived_entities -> /vla/tracked_entities`。[_DropoutRecovery](./src/asv_vla/asv_vla/temporal_entity_tracker.py#L470) 短暂保留丢失目标，但运行/场景变化时必须清空。
+[TemporalEntityTrackerNode](./src/vla/vla/temporal_entity_tracker.py#L571) 将其接入 `/vla/perceived_entities -> /vla/tracked_entities`。[_DropoutRecovery](./src/vla/vla/temporal_entity_tracker.py#L470) 短暂保留丢失目标，但运行/场景变化时必须清空。
 
 ### 7.2 实体张量
 
-[build_entity_features](./src/asv_vla/asv_vla/entity_features.py#L169) 将可变长度实体转换为 `16 x 16`。
+[build_entity_features](./src/vla/vla/entity_features.py#L169) 将可变长度实体转换为 `16 x 16`。
 
-每个实体的 16 维由 [_entity_row](./src/asv_vla/asv_vla/entity_features.py#L136) 定义：
+每个实体的 16 维由 [_entity_row](./src/vla/vla/entity_features.py#L136) 定义：
 
 ```text
 0-2   x/y/z
@@ -409,9 +407,9 @@ bridge 在 [第 278 行](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node
 15    is_blue
 ```
 
-[compute_entity_metrics](./src/asv_vla/asv_vla/entity_features.py#L63) 计算最近会遇点 CPA。实体按“目标 -> 风险 -> 普通”排序，避免无关近物体挤掉任务目标。
+[compute_entity_metrics](./src/vla/vla/entity_features.py#L63) 计算最近会遇点 CPA。实体按“目标 -> 风险 -> 普通”排序，避免无关近物体挤掉任务目标。
 
-[EntityFeaturesNode](./src/asv_vla/asv_vla/entity_features.py#L283) 负责 ROS 转换；异常时通过 [_publish_invalid](./src/asv_vla/asv_vla/entity_features.py#L354) 显式发布无效输入。
+[EntityFeaturesNode](./src/vla/vla/entity_features.py#L283) 负责 ROS 转换；异常时通过 [_publish_invalid](./src/vla/vla/entity_features.py#L354) 显式发布无效输入。
 
 ### 本章问题与答案
 
@@ -443,7 +441,7 @@ previous_action [B,2]
 
 ### 8.2 网络结构
 
-[SmallActionPolicy](./src/asv_vla/asv_vla/policy_model.py#L116)：
+[SmallActionPolicy](./src/vla/vla/policy_model.py#L116)：
 
 ```text
 language -> MLP -------------------------+
@@ -452,23 +450,23 @@ previous action -> MLP ------------------+          -> stop_head
 previous_action_valid -------------------+
 ```
 
-[forward](./src/asv_vla/asv_vla/policy_model.py#L225) 先检查 shape/device/dtype，再用 mask 将无效实体清零。语言生成 query，与实体 token 计算注意力，因此不同任务能关注不同实体。
+[forward](./src/vla/vla/policy_model.py#L225) 先检查 shape/device/dtype，再用 mask 将无效实体清零。语言生成 query，与实体 token 计算注意力，因此不同任务能关注不同实体。
 
 `previous_action_valid` 让网络区分“第一帧没有历史”和“上一帧真实执行零动作”。stop head 选择停止时，输出被精确置零。
 
 ### 8.3 模型运行器
 
-[TorchPolicyRunner.load](./src/asv_vla/asv_vla/policy_model.py#L429) 加载 checkpoint、恢复配置、检查 state dict 和 CUDA 设备；请求 CUDA 失败时不允许静默 CPU fallback。[run](./src/asv_vla/asv_vla/policy_model.py#L495) 负责张量转换和推理。
+[TorchPolicyRunner.load](./src/vla/vla/policy_model.py#L429) 加载 checkpoint、恢复配置、检查 state dict 和 CUDA 设备；请求 CUDA 失败时不允许静默 CPU fallback。[run](./src/vla/vla/policy_model.py#L495) 负责张量转换和推理。
 
 ### 8.4 ROS 策略节点
 
-[VLAPolicyNode](./src/asv_vla/asv_vla/vla_policy_node.py#L289) 订阅语言、实体 tensor 和安全门最终动作，发布 `/vla/policy_displacement`。
+[VLAPolicyNode](./src/vla/vla/vla_policy_node.py#L289) 订阅语言、实体 tensor 和安全门最终动作，发布 `/vla/policy_displacement`。
 
-[FrameSyncCache](./src/asv_vla/asv_vla/vla_policy_node.py#L214) 用 `(run_id, scene_seed, frame_index)` 同步异步消息。[_maybe_infer](./src/asv_vla/asv_vla/vla_policy_node.py#L701) 只有在输入完整、有效、未过期且身份一致时推理。
+[FrameSyncCache](./src/vla/vla/vla_policy_node.py#L214) 用 `(run_id, scene_seed, frame_index)` 同步异步消息。[_maybe_infer](./src/vla/vla/vla_policy_node.py#L701) 只有在输入完整、有效、未过期且身份一致时推理。
 
-- [bound_policy_displacement](./src/asv_vla/asv_vla/vla_policy_node.py#L145)：动作范数限制。
-- [smooth_policy_displacement](./src/asv_vla/asv_vla/vla_policy_node.py#L173)：相邻动作变化限制。
-- [_publish_fail_closed](./src/asv_vla/asv_vla/vla_policy_node.py#L668)：异常停止。
+- [bound_policy_displacement](./src/vla/vla/vla_policy_node.py#L145)：动作范数限制。
+- [smooth_policy_displacement](./src/vla/vla/vla_policy_node.py#L173)：相邻动作变化限制。
+- [_publish_fail_closed](./src/vla/vla/vla_policy_node.py#L668)：异常停止。
 
 策略使用安全门通过的实际动作作为下一帧历史，而不是可能已被拒绝的原始动作。
 
@@ -489,22 +487,22 @@ previous_action_valid -------------------+
 
 ### 9.1 跟随距离守卫
 
-[visual_standoff_guard.py](./src/asv_vla/asv_vla/visual_standoff_guard.py#L1) 为 FOLLOW 任务增加可解释几何约束：
+[visual_standoff_guard.py](./src/vla/vla/visual_standoff_guard.py#L1) 为 FOLLOW 任务增加可解释几何约束：
 
-1. [is_follow_instruction](./src/asv_vla/asv_vla/visual_standoff_guard.py#L79) 判断任务。
-2. [extract_target_observation](./src/asv_vla/asv_vla/visual_standoff_guard.py#L146) 恢复目标位置/速度。
-3. [compute_standoff_step](./src/asv_vla/asv_vla/visual_standoff_guard.py#L191) 计算维持距离动作。
-4. [apply_standoff_guard](./src/asv_vla/asv_vla/visual_standoff_guard.py#L247) 决定保留、停止或替换策略动作。
+1. [is_follow_instruction](./src/vla/vla/visual_standoff_guard.py#L79) 判断任务。
+2. [extract_target_observation](./src/vla/vla/visual_standoff_guard.py#L146) 恢复目标位置/速度。
+3. [compute_standoff_step](./src/vla/vla/visual_standoff_guard.py#L191) 计算维持距离动作。
+4. [apply_standoff_guard](./src/vla/vla/visual_standoff_guard.py#L247) 决定保留、停止或替换策略动作。
 
 模式包括 `policy_driven`、`deadband_hold`、`backstop`、`fail_closed` 和非 FOLLOW 的 `pass_through`。
 
 ### 9.2 通用安全门
 
-[safety_gate.py](./src/asv_vla/asv_vla/safety_gate.py#L22) 定义拒绝码：过期、模态/shape 错误、NaN、超速、碰撞风险、不可达和急停。
+[safety_gate.py](./src/vla/vla/safety_gate.py#L22) 定义拒绝码：过期、模态/shape 错误、NaN、超速、碰撞风险、不可达和急停。
 
-[evaluate_safety_gate](./src/asv_vla/asv_vla/safety_gate.py#L197) 检查动作和实体，再返回 `SafetyGateResult`。
+[evaluate_safety_gate](./src/vla/vla/safety_gate.py#L197) 检查动作和实体，再返回 `SafetyGateResult`。
 
-[SafetyGateNode](./src/asv_vla/asv_vla/safety_gate.py#L322) 订阅 `/vla/policy_displacement` 与 `/vla/tracked_entities`，发布最终 `/control/desired_displacement`。它同时调用 [limit_displacement_rate](./src/asv_vla/asv_vla/safety_gate.py#L85) 限制相邻动作变化；[_on_timeout](./src/asv_vla/asv_vla/safety_gate.py#L506) 在上游停止发布时主动停止。
+[SafetyGateNode](./src/vla/vla/safety_gate.py#L322) 订阅 `/vla/policy_displacement` 与 `/vla/tracked_entities`，发布最终 `/control/desired_displacement`。它同时调用 [limit_displacement_rate](./src/vla/vla/safety_gate.py#L85) 限制相邻动作变化；[_on_timeout](./src/vla/vla/safety_gate.py#L506) 在上游停止发布时主动停止。
 
 任务守卫回答“动作是否符合跟随语义”，安全门回答“动作在数值、时效、运动学和碰撞上是否可执行”。
 
@@ -523,15 +521,15 @@ previous_action_valid -------------------+
 
 ## 第 10 章：控制与 UE5 执行
 
-安全门输出的 [DesiredDisplacement.msg](./src/asv_jetson_interfaces/msg/DesiredDisplacement.msg#L1) 已经是经过时效、碰撞、位移和变化率检查的最终任务层控制命令。它是 UE5 和未来 ESP32 控制链共同的分叉点。
+安全门输出的 [DesiredDisplacement.msg](./src/interfaces/msg/DesiredDisplacement.msg#L1) 已经是经过时效、碰撞、位移和变化率检查的最终任务层控制命令。它是 UE5 和未来 ESP32 控制链共同的分叉点。
 
-[UESetpointAdapter](./src/asv_vla/asv_vla/ue_setpoint_adapter.py#L24) 订阅 `/control/desired_displacement`。[_identity_complete](./src/asv_vla/asv_vla/ue_setpoint_adapter.py#L10) 要求完整运行、场景、帧和来源；[_on_displacement](./src/asv_vla/asv_vla/ue_setpoint_adapter.py#L39) 只有在位移有效、非安全停止且身份完整时才发布可执行 UE5 setpoint，否则 `hold_position=true`。
+bridge 直接订阅 `/control/desired_displacement`，在执行边界检查运行身份、有限值、坐标系和 `valid/safe_stop`，然后将位移转换为 UE5 执行 JSON。无效命令统一转换为保持当前位置。
 
 未来 ESP32 adapter 应并行订阅同一个 `/control/desired_displacement`，再补充真实速度和偏航角速度，转换成固件的 `ControlInput`。UE5 专用 setpoint 不应发送给 ESP32。
 
 ### 本章问题与答案
 
-**问：为什么最终 adapter 还要检查身份？**  
+**问：为什么 bridge 还要检查身份？**  
 答：执行边界不能盲目信任上游，必须拒绝其他节点构造的无身份命令。
 
 **问：零位移和 `hold_position` 完全相同吗？**  
@@ -546,7 +544,7 @@ previous_action_valid -------------------+
 
 ### 11.1 节点编排
 
-[launch 参数](./src/asv_bringup/launch/vla_closed_loop.launch.py#L79) 包括模型路径、CUDA 设备、任务、UE5 executor 地址和启动延迟。[节点定义](./src/asv_bringup/launch/vla_closed_loop.launch.py#L144) 启动 bridge、任务、语言、感知、跟踪、tensor、策略、安全、控制和 adapter。
+[launch 参数](./src/bringup/launch/vla_closed_loop.launch.py#L79) 包括模型路径、CUDA 设备、任务、UE5 executor 地址和启动延迟。[节点定义](./src/bringup/launch/vla_closed_loop.launch.py#L144) 启动 bridge、任务、语言、感知、跟踪、tensor、策略、安全、控制和 adapter。
 
 感知和策略通过 `TimerAction` 延迟启动。Qwen 先完成首次 CUDA 编码并释放模型，减少 Jetson 同时加载三类模型的内存峰值。
 
@@ -568,10 +566,10 @@ asv-hil-runtime/
 ```bash
 source /opt/ros/humble/setup.bash
 colcon build --merge-install --symlink-install \
-  --packages-select asv_jetson_interfaces asv_ue_bridge asv_vla asv_bringup
+  --packages-select interfaces bridge vla launch
 source install/setup.bash
 
-ros2 launch asv_bringup vla_closed_loop.launch.py \
+ros2 launch bringup vla_closed_loop.launch.py \
   models_dir:=../models \
   execution_address:=<UE5_HOST_IP> execution_port:=8081 \
   language_device:=cuda visual_device:=cuda policy_device:=cuda \
@@ -595,19 +593,19 @@ ros2 launch asv_bringup vla_closed_loop.launch.py \
 
 ### 12.1 测试地图
 
-- 感知：[test_image_entity_perception.py](./src/asv_vla/test/test_image_entity_perception.py#L1)、[test_image_entity_perception_node.py](./src/asv_vla/test/test_image_entity_perception_node.py#L1)
-- 语言：[test_language_encoder.py](./src/asv_vla/test/test_language_encoder.py#L1)、[test_language_qwen_node.py](./src/asv_vla/test/test_language_qwen_node.py#L1)
-- 跟踪/张量：[test_temporal_entity_tracker.py](./src/asv_vla/test/test_temporal_entity_tracker.py#L1)、[test_entity_features.py](./src/asv_vla/test/test_entity_features.py#L1)
-- 策略：[test_policy_model.py](./src/asv_vla/test/test_policy_model.py#L1)、[test_vla_policy_sync.py](./src/asv_vla/test/test_vla_policy_sync.py#L1)、[test_vla_policy_smoothing.py](./src/asv_vla/test/test_vla_policy_smoothing.py#L1)
-- 安全/控制：[test_safety_gate.py](./src/asv_vla/test/test_safety_gate.py#L1)、[test_visual_standoff_guard.py](./src/asv_vla/test/test_visual_standoff_guard.py#L1)
-- 接口/运行时：[test_entity_interface_contract.py](./src/asv_vla/test/test_entity_interface_contract.py#L1)、[test_runtime_identity_contract.py](./src/asv_vla/test/test_runtime_identity_contract.py#L1)
+- 感知：[test_image_entity_perception.py](./src/vla/test/test_image_entity_perception.py#L1)、[test_image_entity_perception_node.py](./src/vla/test/test_image_entity_perception_node.py#L1)
+- 语言：[test_language_encoder.py](./src/vla/test/test_language_encoder.py#L1)、[test_language_qwen_node.py](./src/vla/test/test_language_qwen_node.py#L1)
+- 跟踪/张量：[test_temporal_entity_tracker.py](./src/vla/test/test_temporal_entity_tracker.py#L1)、[test_entity_features.py](./src/vla/test/test_entity_features.py#L1)
+- 策略：[test_policy_model.py](./src/vla/test/test_policy_model.py#L1)、[test_vla_policy_sync.py](./src/vla/test/test_vla_policy_sync.py#L1)、[test_vla_policy_smoothing.py](./src/vla/test/test_vla_policy_smoothing.py#L1)
+- 安全/控制：[test_safety_gate.py](./src/vla/test/test_safety_gate.py#L1)、[test_visual_standoff_guard.py](./src/vla/test/test_visual_standoff_guard.py#L1)
+- 接口/运行时：[test_entity_interface_contract.py](./src/vla/test/test_entity_interface_contract.py#L1)、[test_runtime_identity_contract.py](./src/vla/test/test_runtime_identity_contract.py#L1)
 
 ### 12.2 PC 检查
 
 ```powershell
-$env:PYTHONPATH=(Resolve-Path 'src/asv_vla').Path
-python -m pytest -q src/asv_vla/test
-python -m compileall -q src/asv_vla/asv_vla src/asv_vla/test src/asv_bringup/launch
+$env:PYTHONPATH=(Resolve-Path 'src/vla').Path
+python -m pytest -q src/vla/test
+python -m compileall -q src/vla/vla src/vla/test src/bringup/launch
 ```
 
 PC 测试不能证明 Jetson CUDA、C++ bridge、UE5 TCP 和同次闭环。
@@ -622,10 +620,10 @@ ros2 topic echo /vla/tracked_entities --once
 ros2 topic echo /vla/entity_features --once
 ros2 topic echo /vla/policy_displacement --once
 ros2 topic echo /control/desired_displacement --once
-ros2 topic echo /ue/kinematic_setpoint --once
+ros2 topic info /control/desired_displacement
 ```
 
-每一层检查 `valid/reason` 和 `run_id/scene_seed/frame_index`。选择一帧 `N`，确认它最终变成 `source_frame_index=N`，这才是完整数据链证据。
+每一层检查 `valid/reason` 和 `run_id/scene_seed/frame_index`。选择一帧 `N`，确认 bridge 的执行 JSON 使用相同的 `frame_index=N`，这才是完整数据链证据。
 
 ### 12.4 主动实验
 
@@ -645,7 +643,7 @@ ros2 topic echo /ue/kinematic_setpoint --once
 答：消息可能 `valid=false`、过期或身份错配。
 
 **问：如何证明动作来自某帧图像？**  
-答：沿消息链检查相同身份，直到最终 `source_frame_index`。
+答：沿消息链检查相同身份，直到 bridge 的最终执行 JSON。
 
 ---
 
@@ -658,82 +656,80 @@ ros2 topic echo /ue/kinematic_setpoint --once
 | [README.md](./README.md) | 部署入口 |
 | [models/manifest.yaml](./models/manifest.yaml) | 模型合同 |
 | [.gitignore](./.gitignore) | 排除产物和权重 |
-| [asv_vla/setup.py](./src/asv_vla/setup.py) | Python 节点入口 |
-| [asv_vla/setup.cfg](./src/asv_vla/setup.cfg) | 安装路径 |
-| [asv_vla/package.xml](./src/asv_vla/package.xml) | Python ROS 依赖 |
-| [interfaces/CMakeLists.txt](./src/asv_jetson_interfaces/CMakeLists.txt) | 消息生成 |
-| [bridge/CMakeLists.txt](./src/asv_ue_bridge/CMakeLists.txt) | C++ bridge 构建 |
-| [bringup/CMakeLists.txt](./src/asv_bringup/CMakeLists.txt) | Launch 安装 |
+| [vla/setup.py](./src/vla/setup.py) | Python 节点入口 |
+| [vla/setup.cfg](./src/vla/setup.cfg) | 安装路径 |
+| [vla/package.xml](./src/vla/package.xml) | Python ROS 依赖 |
+| [interfaces/CMakeLists.txt](./src/interfaces/CMakeLists.txt) | 消息生成 |
+| [bridge/CMakeLists.txt](./src/bridge/CMakeLists.txt) | C++ bridge 构建 |
+| [bringup/CMakeLists.txt](./src/bringup/CMakeLists.txt) | Launch 安装 |
 
 ### 在线代码
 
 | 文件 | 作用 |
 |---|---|
-| [task_instruction_node.py](./src/asv_vla/asv_vla/task_instruction_node.py) | 发布任务 |
-| [language_encoder.py](./src/asv_vla/asv_vla/language_encoder.py) | Qwen 编码算法 |
-| [language_qwen_node.py](./src/asv_vla/asv_vla/language_qwen_node.py) | Qwen ROS 节点 |
-| [visual_encoder.py](./src/asv_vla/asv_vla/visual_encoder.py) | 图像工具 |
-| [image_entity_perception.py](./src/asv_vla/asv_vla/image_entity_perception.py) | 感知算法 |
-| [image_entity_perception_node.py](./src/asv_vla/asv_vla/image_entity_perception_node.py) | 感知节点 |
-| [temporal_entity_tracker.py](./src/asv_vla/asv_vla/temporal_entity_tracker.py) | 跟踪算法和 ROS 跟踪节点 |
-| [entity_features.py](./src/asv_vla/asv_vla/entity_features.py) | 实体特征和 ROS 特征节点 |
-| [policy_model.py](./src/asv_vla/asv_vla/policy_model.py) | 策略网络 |
-| [vla_policy_node.py](./src/asv_vla/asv_vla/vla_policy_node.py) | 在线策略 |
-| [visual_standoff_guard.py](./src/asv_vla/asv_vla/visual_standoff_guard.py) | 跟随距离守卫 |
-| [safety_gate.py](./src/asv_vla/asv_vla/safety_gate.py) | 安全算法和 ROS 安全节点 |
-| [trajectory_contract.py](./src/asv_vla/asv_vla/trajectory_contract.py) | 动作合同 |
-| [ue_setpoint_adapter.py](./src/asv_vla/asv_vla/ue_setpoint_adapter.py) | 最终安全位移到 UE5 setpoint 的适配器 |
-| [ue_object_deliverer_bridge_node.cpp](./src/asv_ue_bridge/src/ue_object_deliverer_bridge_node.cpp) | UE5/ROS bridge |
-| [vla_closed_loop.launch.py](./src/asv_bringup/launch/vla_closed_loop.launch.py) | 系统编排 |
+| [task_instruction_node.py](./src/vla/vla/task_instruction_node.py) | 发布任务 |
+| [language_encoder.py](./src/vla/vla/language_encoder.py) | Qwen 编码算法 |
+| [language_qwen_node.py](./src/vla/vla/language_qwen_node.py) | Qwen ROS 节点 |
+| [visual_encoder.py](./src/vla/vla/visual_encoder.py) | 图像工具 |
+| [image_entity_perception.py](./src/vla/vla/image_entity_perception.py) | 感知算法 |
+| [image_entity_perception_node.py](./src/vla/vla/image_entity_perception_node.py) | 感知节点 |
+| [temporal_entity_tracker.py](./src/vla/vla/temporal_entity_tracker.py) | 跟踪算法和 ROS 跟踪节点 |
+| [entity_features.py](./src/vla/vla/entity_features.py) | 实体特征和 ROS 特征节点 |
+| [policy_model.py](./src/vla/vla/policy_model.py) | 策略网络 |
+| [vla_policy_node.py](./src/vla/vla/vla_policy_node.py) | 在线策略 |
+| [visual_standoff_guard.py](./src/vla/vla/visual_standoff_guard.py) | 跟随距离守卫 |
+| [safety_gate.py](./src/vla/vla/safety_gate.py) | 安全算法和 ROS 安全节点 |
+| [trajectory_contract.py](./src/vla/vla/trajectory_contract.py) | 动作合同 |
+| [ue_object_deliverer_bridge_node.cpp](./src/bridge/src/ue_object_deliverer_bridge_node.cpp) | UE5/ROS bridge |
+| [vla_closed_loop.launch.py](./src/bringup/launch/vla_closed_loop.launch.py) | 系统编排 |
 
 ### 消息文件
 
 | 文件 | 作用 |
 |---|---|
-| [CameraFrame.msg](./src/asv_jetson_interfaces/msg/CameraFrame.msg) | JPEG 相机帧和帧身份 |
-| [ASVState.msg](./src/asv_jetson_interfaces/msg/ASVState.msg) | ASV 位姿和运动状态 |
-| [Entity.msg](./src/asv_jetson_interfaces/msg/Entity.msg) | 单个实体几何、语义和观测有效性 |
-| [EntityArray.msg](./src/asv_jetson_interfaces/msg/EntityArray.msg) | 一帧实体集合及其来源 |
-| [TaskEmbedding.msg](./src/asv_jetson_interfaces/msg/TaskEmbedding.msg) | 语言 embedding |
-| [EntityFeatures.msg](./src/asv_jetson_interfaces/msg/EntityFeatures.msg) | 固定形状实体 tensor |
-| [DesiredDisplacement.msg](./src/asv_jetson_interfaces/msg/DesiredDisplacement.msg) | 策略、安全门和执行适配器共用的位移命令 |
-| [UESetpoint.msg](./src/asv_jetson_interfaces/msg/UESetpoint.msg) | UE5 最终运动学命令 |
+| [CameraFrame.msg](./src/interfaces/msg/CameraFrame.msg) | JPEG 相机帧和帧身份 |
+| [ASVState.msg](./src/interfaces/msg/ASVState.msg) | ASV 位姿和运动状态 |
+| [Entity.msg](./src/interfaces/msg/Entity.msg) | 单个实体几何、语义和观测有效性 |
+| [EntityArray.msg](./src/interfaces/msg/EntityArray.msg) | 一帧实体集合及其来源 |
+| [TaskEmbedding.msg](./src/interfaces/msg/TaskEmbedding.msg) | 语言 embedding |
+| [EntityFeatures.msg](./src/interfaces/msg/EntityFeatures.msg) | 固定形状实体 tensor |
+| [DesiredDisplacement.msg](./src/interfaces/msg/DesiredDisplacement.msg) | 策略、安全门和执行适配器共用的位移命令 |
 
 ### 测试文件
 
 | 文件 | 主要验证内容 |
 |---|---|
-| [test_entity_interface_contract.py](./src/asv_vla/test/test_entity_interface_contract.py) | 实体消息字段和来源合同 |
-| [test_image_entity_perception.py](./src/asv_vla/test/test_image_entity_perception.py) | 图像特征、模型加载和预测 |
-| [test_image_entity_perception_node.py](./src/asv_vla/test/test_image_entity_perception_node.py) | 感知节点输入输出和失败路径 |
-| [test_language_encoder.py](./src/asv_vla/test/test_language_encoder.py) | Qwen 编码、缓存和异常 |
-| [test_language_qwen_node.py](./src/asv_vla/test/test_language_qwen_node.py) | 语言 ROS 节点合同 |
-| [test_policy_model.py](./src/asv_vla/test/test_policy_model.py) | 策略 shape、mask、停止头和加载 |
-| [test_runtime_identity_contract.py](./src/asv_vla/test/test_runtime_identity_contract.py) | Launch、模型、身份和特权边界 |
-| [test_safety_gate.py](./src/asv_vla/test/test_safety_gate.py) | 安全拒绝码和碰撞检查 |
-| [test_entity_features.py](./src/asv_vla/test/test_entity_features.py) | 16 维实体特征、排序和 mask |
-| [test_task_instruction_node.py](./src/asv_vla/test/test_task_instruction_node.py) | 任务文本校验和发布 |
-| [test_temporal_entity_tracker.py](./src/asv_vla/test/test_temporal_entity_tracker.py) | 速度估计、重置和轨迹过期 |
-| [test_trajectory_contract.py](./src/asv_vla/test/test_trajectory_contract.py) | 动作常量和 safe-stop 合同 |
-| [test_visual_standoff_guard.py](./src/asv_vla/test/test_visual_standoff_guard.py) | 跟随距离和后备动作 |
-| [test_vla_policy_smoothing.py](./src/asv_vla/test/test_vla_policy_smoothing.py) | 动作历史、变化率和平滑 |
-| [test_vla_policy_sync.py](./src/asv_vla/test/test_vla_policy_sync.py) | 异步消息帧同步和错帧拒绝 |
+| [test_entity_interface_contract.py](./src/vla/test/test_entity_interface_contract.py) | 实体消息字段和来源合同 |
+| [test_image_entity_perception.py](./src/vla/test/test_image_entity_perception.py) | 图像特征、模型加载和预测 |
+| [test_image_entity_perception_node.py](./src/vla/test/test_image_entity_perception_node.py) | 感知节点输入输出和失败路径 |
+| [test_language_encoder.py](./src/vla/test/test_language_encoder.py) | Qwen 编码、缓存和异常 |
+| [test_language_qwen_node.py](./src/vla/test/test_language_qwen_node.py) | 语言 ROS 节点合同 |
+| [test_policy_model.py](./src/vla/test/test_policy_model.py) | 策略 shape、mask、停止头和加载 |
+| [test_runtime_identity_contract.py](./src/vla/test/test_runtime_identity_contract.py) | Launch、模型、身份和特权边界 |
+| [test_safety_gate.py](./src/vla/test/test_safety_gate.py) | 安全拒绝码和碰撞检查 |
+| [test_entity_features.py](./src/vla/test/test_entity_features.py) | 16 维实体特征、排序和 mask |
+| [test_task_instruction_node.py](./src/vla/test/test_task_instruction_node.py) | 任务文本校验和发布 |
+| [test_temporal_entity_tracker.py](./src/vla/test/test_temporal_entity_tracker.py) | 速度估计、重置和轨迹过期 |
+| [test_trajectory_contract.py](./src/vla/test/test_trajectory_contract.py) | 动作常量和 safe-stop 合同 |
+| [test_visual_standoff_guard.py](./src/vla/test/test_visual_standoff_guard.py) | 跟随距离和后备动作 |
+| [test_vla_policy_smoothing.py](./src/vla/test/test_vla_policy_smoothing.py) | 动作历史、变化率和平滑 |
+| [test_vla_policy_sync.py](./src/vla/test/test_vla_policy_sync.py) | 异步消息帧同步和错帧拒绝 |
 
 ### 元数据和许可证
 
 | 文件 | 作用 |
 |---|---|
 | [根 LICENSE](./LICENSE) | 仓库 Apache-2.0 许可证 |
-| [interfaces LICENSE](./src/asv_jetson_interfaces/LICENSE) | 接口包许可证副本 |
-| [bridge LICENSE](./src/asv_ue_bridge/LICENSE) | bridge 包许可证副本 |
-| [bringup LICENSE](./src/asv_bringup/LICENSE) | bringup 包许可证副本 |
-| [interfaces package.xml](./src/asv_jetson_interfaces/package.xml) | 接口依赖元数据 |
-| [bridge package.xml](./src/asv_ue_bridge/package.xml) | bridge 依赖元数据 |
-| [bringup package.xml](./src/asv_bringup/package.xml) | launch 包元数据 |
-| [ue_bridge.yaml](./src/asv_ue_bridge/config/ue_bridge.yaml) | 通信、单位、坐标和端口参数 |
-| [requirements-language.txt](./src/asv_vla/requirements-language.txt) | 语言模型额外依赖 |
-| [resource/asv_vla](./src/asv_vla/resource/asv_vla) | ament Python 包索引标记 |
-| [__init__.py](./src/asv_vla/asv_vla/__init__.py) | Python 包标记 |
+| [interfaces LICENSE](./src/interfaces/LICENSE) | 接口包许可证副本 |
+| [bridge LICENSE](./src/bridge/LICENSE) | bridge 包许可证副本 |
+| [bringup LICENSE](./src/bringup/LICENSE) | bringup 包许可证副本 |
+| [interfaces package.xml](./src/interfaces/package.xml) | 接口依赖元数据 |
+| [bridge package.xml](./src/bridge/package.xml) | bridge 依赖元数据 |
+| [bringup package.xml](./src/bringup/package.xml) | bringup 包元数据 |
+| [ue_bridge.yaml](./src/bridge/config/ue_bridge.yaml) | 通信、单位、坐标和端口参数 |
+| [requirements-language.txt](./src/vla/requirements-language.txt) | 语言模型额外依赖 |
+| [resource/vla](./src/vla/resource/vla) | ament Python 包索引标记 |
+| [__init__.py](./src/vla/vla/__init__.py) | Python 包标记 |
 
 ## 学习完成标准
 
@@ -741,7 +737,7 @@ ros2 topic echo /ue/kinematic_setpoint --once
 
 1. 不看 launch 画出节点和 topic。
 2. 解释实体张量 16 个特征。
-3. 从 `CameraFrame` 追踪到 `UESetpoint`。
+3. 从 `CameraFrame` 追踪到 `DesiredDisplacement`，再检查 bridge 的 UE5 执行 JSON。
 4. 解释语言条件注意力和上一动作有效位。
 5. 指出每层 fail-closed 位置。
 6. 区分 PC 测试、Jetson CUDA、UE5 联调和同次闭环证据。

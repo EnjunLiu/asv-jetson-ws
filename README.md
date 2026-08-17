@@ -4,7 +4,7 @@ This repository is the Jetson online runtime for the ASV hardware-in-the-loop pl
 
 ## Scope
 
-- ROS 2 packages: `asv_jetson_interfaces`, `asv_ue_bridge`, `asv_vla`, `asv_bringup`.
+- ROS 2 packages: `interfaces`, `bridge`, `vla`, `launch`.
 - Policy output: two-dimensional body-frame desired displacement in meters.
 - Unified control boundary: `DesiredDisplacement` on
   `/control/desired_displacement`; UE5 and future ESP32 adapters branch here.
@@ -47,10 +47,10 @@ The repository does not contain model weights or credentials.
 cd jetson
 source /opt/ros/humble/setup.bash
 colcon build --merge-install --symlink-install \
-  --packages-select asv_jetson_interfaces asv_ue_bridge asv_vla asv_bringup
+  --packages-select interfaces bridge vla launch
 source install/setup.bash
 
-ros2 launch asv_bringup vla_closed_loop.launch.py \
+ros2 launch bringup vla_closed_loop.launch.py \
   models_dir:=../models \
   execution_address:=<UE5_HOST_IP> execution_port:=8081 \
   language_model_id:=Qwen/Qwen3-Embedding-0.6B \
