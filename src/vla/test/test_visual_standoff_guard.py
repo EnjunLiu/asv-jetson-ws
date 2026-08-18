@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from vla.visual_standoff_guard import (
+from vla.decision import (
     GUARD_BACKSTOP,
     GUARD_FAIL_CLOSED,
     GUARD_HOLD,

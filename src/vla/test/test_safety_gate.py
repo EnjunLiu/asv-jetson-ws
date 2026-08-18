@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vla.safety_gate import (
+from vla.decision import (
     COLLISION_RISK,
     ESTOP,
     INVALID_MODALITY,
@@ -19,15 +19,14 @@ from vla.safety_gate import (
     evaluate_safety_gate,
     limit_displacement_rate,
 )
-from vla.trajectory_contract import DT_SEC, FRAME_ID, MAX_DISPLACEMENT_M
+from vla.decision import DT_SEC, FRAME_ID, MAX_DISPLACEMENT_M
 
 
 def test_safety_gate_module_owns_ros_node_entrypoint() -> None:
-    source = (Path(__file__).parents[1] / "vla" / "safety_gate.py").read_text(
+    source = (Path(__file__).parents[1] / "vla" / "decision.py").read_text(
         encoding="utf-8"
     )
-    assert "class SafetyGateNode" in source
-    assert "def main(args=None)" in source
+    assert "def evaluate_safety_gate" in source
     assert "allow_truth_entities" not in source
     assert "UNTRUSTED_ENTITY_SOURCE" not in source
 

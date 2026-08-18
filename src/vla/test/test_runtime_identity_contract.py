@@ -13,9 +13,9 @@ from types import SimpleNamespace
 REPOSITORY = Path(__file__).resolve().parents[3]
 INTERFACES = REPOSITORY / "src/interfaces/msg"
 VLA = REPOSITORY / "src/vla/vla"
-POLICY = VLA / "vla_policy_node.py"
+POLICY = VLA / "decision.py"
 LAUNCH = REPOSITORY / "src/bringup/launch/vla_closed_loop.launch.py"
-PERCEPTION_NODE = REPOSITORY / "src/vla/vla/image_entity_perception_node.py"
+PERCEPTION_NODE = REPOSITORY / "src/vla/vla/perception_node.py"
 MANIFEST = REPOSITORY / "models/manifest.yaml"
 README = REPOSITORY / "README.md"
 
@@ -105,7 +105,7 @@ def test_closed_loop_launch_exposes_runtime_selection_parameters() -> None:
     assert 'DeclareLaunchArgument("visual_device", default_value="cuda")' in source
     assert '"models_dir"' in source
     assert "demo_instruction_embedding.npy" not in source
-    assert 'executable="language_qwen"' in source
+    assert 'executable="language"' in source
     assert 'executable="language_stub"' not in source
     assert 'executable="expert_trajectory"' not in source
     assert 'executable="expert_kinematic_executor"' not in source
@@ -211,7 +211,7 @@ def test_runtime_uses_current_single_point_cuda_artifacts() -> None:
 def test_online_perception_boundary_excludes_privileged_entities_and_cpu_policy() -> None:
     perception_source = PERCEPTION_NODE.read_text(encoding="utf-8")
     launch_source = LAUNCH.read_text(encoding="utf-8")
-    policy_source = (VLA / "vla_policy_node.py").read_text(encoding="utf-8")
+    policy_source = POLICY.read_text(encoding="utf-8")
 
     assert '"/ue/entities"' not in perception_source
     assert '"/ue/entities"' not in launch_source
@@ -233,23 +233,21 @@ def test_bridge_consumes_final_displacement_directly() -> None:
 
 
 def test_identity_is_copied_and_mixed_frames_stop_before_inference() -> None:
-    policy = (VLA / "vla_policy_node.py").read_text(encoding="utf-8")
+    policy = POLICY.read_text(encoding="utf-8")
     assert 'self._publish_fail_closed(ent, identity_reason)' in policy
     assert 'message.reason = str(reason)' in policy
     assert "identity_mismatch_reason(self._language, ent)" in policy
-    assert "self._pending_actions" in policy
-    assert "self._previous_action_identity" in policy
-    assert "self._previous_action if previous_action_valid else None" in policy
+    assert "self._previous_action" in policy
     assert "self._recent_actions" not in policy
     assert "self._frame_sync.clear()" in policy
     assert "self._clear_control_history()" in policy
 
-    safety_gate = (VLA / "safety_gate.py").read_text(encoding="utf-8")
-    for field in ("output.scene_seed", "output.frame_index"):
-        assert field in safety_gate
+    for field in ("message.scene_seed", "message.frame_index"):
+        assert field in policy
 
 
 def test_setup_points_merged_nodes_at_algorithm_modules() -> None:
     setup = (REPOSITORY / "src/vla/setup.py").read_text(encoding="utf-8")
-    assert '"temporal_entity_tracker = vla.temporal_entity_tracker:main"' in setup
-    assert '"safety_gate = vla.safety_gate:main"' in setup
+    assert '"decision = vla.decision_node:main"' in setup
+    assert '"temporal_entity_tracker =' not in setup
+    assert '"safety_gate =' not in setup

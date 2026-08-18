@@ -14,12 +14,13 @@ detector can replace this file without changing the ROS topic contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
+from io import BytesIO
 import re
-from typing import Any, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 import numpy as np
 from PIL import Image
@@ -40,7 +41,7 @@ STRUCTURED_ENTITY_OUTPUT_CONTRACT = (
     "entity_id,class_name,color,relative_position_m,visible_mask,bbox_px,"
     "confidence,valid,relative_velocity_mps,velocity_valid"
 )
-VELOCITY_SOURCE = "temporal_entity_tracker"
+VELOCITY_SOURCE = "perception"
 GRID_WIDTH = 32
 GRID_HEIGHT = 18
 CHANNELS = 7  # RGB plus red/blue/white/bright spatial evidence maps
@@ -65,16 +66,6 @@ IMAGE_ONLY_MODEL_VERSIONS = frozenset(
 )
 COLOR_CALIBRATION_WIDTH = 320
 COLOR_CALIBRATION_HEIGHT = 180
-# The image model is retrained against this exact transform. Keep these
-# values in the perception contract rather than exposing per-node tuning.
-LOW_LIGHT_PREPROCESS_CONTRACT = "ue5_capture_gamma065_brightness100_contrast100"
-# The UE5 bridge applies this transform before publishing JPEG bytes. Applying
-# it again in the Jetson node would double-lift the image and change the color
-# margins used by the calibrated visibility checks.
-LOW_LIGHT_PREPROCESS_ENABLED = False
-LOW_LIGHT_PREPROCESS_GAMMA = 0.65
-LOW_LIGHT_PREPROCESS_BRIGHTNESS = 1.0
-LOW_LIGHT_PREPROCESS_CONTRAST = 1.0
 # Fit on the available near-range S2 red masks.  The form is intentionally
 # explicit so the PC calibration script can replace these values in a model
 # artifact without changing the online image-only contract.
@@ -1107,3 +1098,868 @@ def save_model(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+TOKEN_COUNT = 2
+VISUAL_FEATURE_DIM = 576
+INPUT_SIZE = 224
+BACKBONE_ID = "torchvision:mobilenet_v3_small:IMAGENET1K_V1"
+
+IMAGENET_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
+IMAGENET_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
+
+
+
+class VisualEncoderError(RuntimeError):
+    """Base class for deterministic visual-encoder failures."""
+
+
+class InvalidImageError(VisualEncoderError):
+    """Raised when a camera payload cannot satisfy the frozen contract."""
+
+
+class TargetSelectionError(VisualEncoderError):
+    """Raised when no valid, visible target entity is available."""
+
+
+class TargetProjectionError(VisualEncoderError):
+    """Raised when the selected target cannot be projected into the image."""
+
+
+class InvalidVisualFeaturesError(VisualEncoderError):
+    """Raised when the backbone returns an unusable tensor."""
+
+
+@dataclass(frozen=True)
+class CameraProfile:
+    width: int = 1280
+    height: int = 720
+    horizontal_fov_deg: float = 90.0
+    mount_x_m: float = 0.42
+    mount_y_m: float = 0.0
+    mount_z_m: float = 0.20
+    pitch_deg: float = -5.0
+    crop_size_px: int = 224
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError("camera width and height must be positive")
+        if not 0.0 < self.horizontal_fov_deg < 180.0:
+            raise ValueError("horizontal_fov_deg must be between 0 and 180")
+        if self.crop_size_px <= 0:
+            raise ValueError("crop_size_px must be positive")
+
+
+def decode_camera_image(data: bytes | bytearray, encoding: str) -> Image.Image:
+    normalized_encoding = encoding.strip().lower()
+    if normalized_encoding not in {"jpeg", "jpg"}:
+        raise InvalidImageError(
+            f"unsupported camera encoding {encoding!r}; expected jpeg"
+        )
+    if not data:
+        raise InvalidImageError("camera payload is empty")
+    try:
+        with Image.open(BytesIO(bytes(data))) as source:
+            source.load()
+            return source.convert("RGB")
+    except Exception as exc:
+        raise InvalidImageError(
+            f"failed to decode JPEG: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def select_target(entities: Iterable[Any]) -> Any:
+    candidates = []
+    for entity in entities:
+        coordinates = (
+            float(entity.relative_x),
+            float(entity.relative_y),
+            float(entity.relative_z),
+        )
+        if (
+            bool(entity.valid)
+            and bool(entity.visible)
+            and bool(entity.is_target)
+            and all(math.isfinite(value) for value in coordinates)
+        ):
+            distance_squared = sum(value * value for value in coordinates)
+            candidates.append(
+                (distance_squared, str(entity.entity_id), entity)
+            )
+    if not candidates:
+        raise TargetSelectionError(
+            "no entity is simultaneously target, visible, valid, and finite"
+        )
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def project_target_to_pixel(
+    relative_x: float,
+    relative_y: float,
+    relative_z: float,
+    profile: CameraProfile,
+) -> tuple[float, float, float]:
+    values = (relative_x, relative_y, relative_z)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise TargetProjectionError("target coordinates contain NaN or Inf")
+
+    # Entity positions use ROS base_link: +X forward, +Y left, +Z up.
+    # The UE camera uses +X forward, +Y right, +Z up.  The frozen UE component
+    # pitch is -5 degrees, so transform the base_link vector into the pitched
+    # camera frame before applying the pinhole projection.
+    dx = float(relative_x) - profile.mount_x_m
+    dy_right = -(float(relative_y) - profile.mount_y_m)
+    dz = float(relative_z) - profile.mount_z_m
+    pitch = math.radians(profile.pitch_deg)
+    cos_pitch = math.cos(pitch)
+    sin_pitch = math.sin(pitch)
+    depth = cos_pitch * dx + sin_pitch * dz
+    camera_z = -sin_pitch * dx + cos_pitch * dz
+    if depth <= 1.0e-6:
+        raise TargetProjectionError(
+            f"target is behind the camera or too close; depth={depth:.6f}"
+        )
+
+    focal_px = profile.width / (
+        2.0 * math.tan(math.radians(profile.horizontal_fov_deg) / 2.0)
+    )
+    center_x = profile.width / 2.0
+    center_y = profile.height / 2.0
+    pixel_x = center_x + focal_px * dy_right / depth
+    pixel_y = center_y - focal_px * camera_z / depth
+    if not (
+        0.0 <= pixel_x < profile.width
+        and 0.0 <= pixel_y < profile.height
+    ):
+        raise TargetProjectionError(
+            "target projects outside the image; "
+            f"pixel=({pixel_x:.2f},{pixel_y:.2f})"
+        )
+    return pixel_x, pixel_y, depth
+
+
+def crop_around_pixel(
+    image: Image.Image,
+    pixel_x: float,
+    pixel_y: float,
+    crop_size_px: int,
+) -> Image.Image:
+    if crop_size_px <= 0:
+        raise ValueError("crop_size_px must be positive")
+    if not (
+        math.isfinite(pixel_x)
+        and math.isfinite(pixel_y)
+        and 0.0 <= pixel_x < image.width
+        and 0.0 <= pixel_y < image.height
+    ):
+        raise TargetProjectionError("crop centre is outside the image")
+
+    left = int(round(pixel_x)) - crop_size_px // 2
+    top = int(round(pixel_y)) - crop_size_px // 2
+    right = left + crop_size_px
+    bottom = top + crop_size_px
+
+    source_left = max(0, left)
+    source_top = max(0, top)
+    source_right = min(image.width, right)
+    source_bottom = min(image.height, bottom)
+    result = Image.new("RGB", (crop_size_px, crop_size_px), (0, 0, 0))
+    region = image.crop(
+        (source_left, source_top, source_right, source_bottom)
+    )
+    result.paste(region, (source_left - left, source_top - top))
+    return result
+
+
+def make_target_crop(
+    image: Image.Image,
+    target: Any,
+    profile: CameraProfile,
+) -> tuple[Image.Image, tuple[float, float, float]]:
+    if image.size != (profile.width, profile.height):
+        raise InvalidImageError(
+            f"camera image shape {image.width}x{image.height} does not match "
+            f"frozen profile {profile.width}x{profile.height}"
+        )
+    projection = project_target_to_pixel(
+        target.relative_x,
+        target.relative_y,
+        target.relative_z,
+        profile,
+    )
+    crop = crop_around_pixel(
+        image,
+        projection[0],
+        projection[1],
+        profile.crop_size_px,
+    )
+    return crop, projection
+
+
+def _letterbox_and_normalize(
+    image: Image.Image,
+    output_size: int = INPUT_SIZE,
+) -> np.ndarray:
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    scale = min(output_size / width, output_size / height)
+    resized = rgb.resize(
+        (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        ),
+        Image.Resampling.BILINEAR,
+    )
+    canvas = Image.new("RGB", (output_size, output_size), (0, 0, 0))
+    offset = (
+        (output_size - resized.width) // 2,
+        (output_size - resized.height) // 2,
+    )
+    canvas.paste(resized, offset)
+    array = np.asarray(canvas, dtype=np.float32) / 255.0
+    array = (array - IMAGENET_MEAN) / IMAGENET_STD
+    return np.ascontiguousarray(array.transpose(2, 0, 1))
+
+
+class FrozenMobileNetEncoder:
+    """Frozen MobileNetV3-small backbone producing normalized 576-D tokens."""
+
+    def __init__(
+        self,
+        *,
+        device: str = "cuda",
+        backbone: Any | None = None,
+        feature_dim: int = VISUAL_FEATURE_DIM,
+    ) -> None:
+        if feature_dim <= 0:
+            raise ValueError("feature_dim must be positive")
+        try:
+            import torch
+        except ImportError as exc:
+            raise VisualEncoderError("PyTorch is not installed") from exc
+
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise VisualEncoderError(
+                "CUDA was requested but torch.cuda.is_available() is false"
+            )
+        self._torch = torch
+        self.device = device
+        self.feature_dim = int(feature_dim)
+
+        if backbone is None:
+            try:
+                from torchvision.models import (
+                    MobileNet_V3_Small_Weights,
+                    mobilenet_v3_small,
+                )
+
+                model = mobilenet_v3_small(
+                    weights=MobileNet_V3_Small_Weights.DEFAULT
+                )
+                backbone = model.features
+            except Exception as exc:
+                raise VisualEncoderError(
+                    "failed to load torchvision MobileNetV3-small weights: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
+        self.backbone = backbone.eval().to(device)
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad_(False)
+
+    @property
+    def frozen(self) -> bool:
+        return all(
+            not parameter.requires_grad
+            for parameter in self.backbone.parameters()
+        )
+
+    def encode_pair(
+        self,
+        global_image: Image.Image,
+        target_crop: Image.Image,
+    ) -> np.ndarray:
+        result = self.encode_images((global_image, target_crop))
+        expected_shape = (TOKEN_COUNT, self.feature_dim)
+        if result.shape != expected_shape:
+            raise InvalidVisualFeaturesError(
+                f"backbone returned shape {result.shape}; "
+                f"expected {expected_shape}"
+            )
+        return result
+
+    def encode_images(
+        self,
+        images: Iterable[Image.Image],
+    ) -> np.ndarray:
+        """Encode an arbitrary non-empty image batch.
+
+        Day 6 used exactly two images (global plus one selected target).  Day
+        13 reuses the same frozen backbone and preprocessing for one global
+        image plus every projectable entity crop.  Keeping the batching here
+        prevents the feature-cache builder from running one CUDA inference per
+        entity.
+        """
+
+        image_batch = tuple(images)
+        if not image_batch:
+            raise InvalidVisualFeaturesError("image batch must not be empty")
+        torch = self._torch
+        batch_array = np.stack(
+            tuple(_letterbox_and_normalize(image) for image in image_batch)
+        )
+        batch = torch.from_numpy(batch_array).to(self.device)
+        try:
+            with torch.inference_mode():
+                raw = self.backbone(batch)
+                pooled = torch.nn.functional.adaptive_avg_pool2d(
+                    raw, 1
+                ).flatten(1)
+                features = torch.nn.functional.normalize(
+                    pooled.float(), p=2.0, dim=1
+                )
+        except Exception as exc:
+            raise VisualEncoderError(
+                f"MobileNet inference failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        result = np.ascontiguousarray(
+            features.detach().cpu().numpy(), dtype=np.float32
+        )
+        expected_shape = (len(image_batch), self.feature_dim)
+        if result.shape != expected_shape:
+            raise InvalidVisualFeaturesError(
+                f"backbone returned shape {result.shape}; "
+                f"expected {expected_shape}"
+            )
+        if not np.all(np.isfinite(result)):
+            raise InvalidVisualFeaturesError(
+                "visual feature tensor contains NaN or Inf"
+            )
+        norms = np.linalg.norm(result, axis=1)
+        if not np.allclose(norms, 1.0, atol=1.0e-5):
+            raise InvalidVisualFeaturesError(
+                f"visual token norms are invalid: {norms.tolist()}"
+            )
+        return result
+
+
+Position3 = tuple[float, float, float]
+BBox4 = tuple[float, float, float, float]
+VelocityFilter = Literal["none", "ema", "alpha_beta"]
+
+
+class TemporalEntityTrackerError(ValueError):
+    """Raised when a geometry frame cannot satisfy the tracker contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class FrameMetadata:
+    """Identity and timing attached to one observation frame."""
+
+    run_id: str
+    scene_seed: int
+    frame_index: int
+    stamp_us: int
+
+    def __post_init__(self) -> None:
+        run_id = str(self.run_id).strip()
+        if not run_id:
+            raise TemporalEntityTrackerError("run_id must not be empty")
+        scene_seed = int(self.scene_seed)
+        frame_index = int(self.frame_index)
+        stamp_us = int(self.stamp_us)
+        if frame_index < 0:
+            raise TemporalEntityTrackerError("frame_index must be non-negative")
+        if stamp_us < 0:
+            raise TemporalEntityTrackerError("stamp_us must be non-negative")
+        object.__setattr__(self, "run_id", run_id)
+        object.__setattr__(self, "scene_seed", scene_seed)
+        object.__setattr__(self, "frame_index", frame_index)
+        object.__setattr__(self, "stamp_us", stamp_us)
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        return self.run_id, self.scene_seed
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryObservation:
+    """One entity observation containing geometry and semantic metadata."""
+
+    entity_id: str
+    relative_x: float
+    relative_y: float
+    relative_z: float
+    class_name: str = ""
+    color: str = ""
+    is_target: bool = False
+    visible: bool = True
+    bbox: BBox4 | None = None
+    confidence: float = 1.0
+    run_id: str = ""
+    scene_seed: int = 0
+    frame_index: int = 0
+    stamp_us: int = 0
+
+    def __post_init__(self) -> None:
+        entity_id = str(self.entity_id).strip()
+        if not entity_id:
+            raise TemporalEntityTrackerError("entity_id must not be empty")
+        values = (
+            float(self.relative_x),
+            float(self.relative_y),
+            float(self.relative_z),
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise TemporalEntityTrackerError(
+                f"entity {entity_id!r} position must be finite"
+            )
+        confidence = float(self.confidence)
+        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            raise TemporalEntityTrackerError(
+                f"entity {entity_id!r} confidence must be in [0, 1]"
+            )
+        bbox = None if self.bbox is None else tuple(float(v) for v in self.bbox)
+        if bbox is not None and (
+            len(bbox) != 4 or not all(math.isfinite(value) for value in bbox)
+        ):
+            raise TemporalEntityTrackerError(
+                f"entity {entity_id!r} bbox must contain four finite values"
+            )
+        metadata = FrameMetadata(
+            run_id=self.run_id,
+            scene_seed=self.scene_seed,
+            frame_index=self.frame_index,
+            stamp_us=self.stamp_us,
+        )
+        object.__setattr__(self, "entity_id", entity_id)
+        object.__setattr__(self, "relative_x", values[0])
+        object.__setattr__(self, "relative_y", values[1])
+        object.__setattr__(self, "relative_z", values[2])
+        object.__setattr__(self, "class_name", str(self.class_name))
+        object.__setattr__(self, "color", str(self.color))
+        object.__setattr__(self, "is_target", bool(self.is_target))
+        object.__setattr__(self, "visible", bool(self.visible))
+        object.__setattr__(self, "bbox", bbox)
+        object.__setattr__(self, "confidence", confidence)
+        object.__setattr__(self, "run_id", metadata.run_id)
+        object.__setattr__(self, "scene_seed", metadata.scene_seed)
+        object.__setattr__(self, "frame_index", metadata.frame_index)
+        object.__setattr__(self, "stamp_us", metadata.stamp_us)
+
+    @property
+    def position(self) -> Position3:
+        return self.relative_x, self.relative_y, self.relative_z
+
+    @property
+    def metadata(self) -> FrameMetadata:
+        return FrameMetadata(
+            self.run_id, self.scene_seed, self.frame_index, self.stamp_us
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedEntity:
+    """Current geometry plus an explicitly validity-gated velocity estimate."""
+
+    entity_id: str
+    relative_x: float
+    relative_y: float
+    relative_z: float
+    relative_velocity_x: float
+    relative_velocity_y: float
+    relative_velocity_z: float
+    velocity_valid: bool
+    class_name: str
+    color: str
+    is_target: bool
+    visible: bool
+    bbox: BBox4 | None
+    confidence: float
+    run_id: str
+    scene_seed: int
+    frame_index: int
+    stamp_us: int
+    frame_gap: int = 0
+    valid: bool = True
+    source: str = "temporal_tracker"
+
+    @property
+    def position(self) -> Position3:
+        return self.relative_x, self.relative_y, self.relative_z
+
+    @property
+    def velocity(self) -> Position3:
+        return (
+            self.relative_velocity_x,
+            self.relative_velocity_y,
+            self.relative_velocity_z,
+        )
+
+    def as_entity_kwargs(self) -> dict[str, object]:
+        """Return fields accepted by the ``Entity`` message."""
+
+        bbox = self.bbox or (0.0, 0.0, 0.0, 0.0)
+        return {
+            "entity_id": self.entity_id,
+            "class_name": self.class_name,
+            "color": self.color,
+            "is_target": self.is_target,
+            "visible": self.visible,
+            "relative_x": self.relative_x,
+            "relative_y": self.relative_y,
+            "relative_z": self.relative_z,
+            "relative_velocity_x": self.relative_velocity_x,
+            "relative_velocity_y": self.relative_velocity_y,
+            "relative_velocity_z": self.relative_velocity_z,
+            "valid": self.valid,
+            "source": self.source,
+            "bbox_x_min": bbox[0],
+            "bbox_y_min": bbox[1],
+            "bbox_x_max": bbox[2],
+            "bbox_y_max": bbox[3],
+            "bbox_valid": self.bbox is not None,
+            "confidence": self.confidence,
+            "velocity_valid": self.velocity_valid,
+        }
+
+@dataclass(slots=True)
+class _TrackState:
+    position: Position3
+    filter_position: Position3
+    frame_index: int
+    stamp_us: int
+    velocity: Position3 = (0.0, 0.0, 0.0)
+    velocity_valid: bool = False
+
+
+class TemporalEntityTracker:
+    """Track geometry observations and estimate velocity by finite difference."""
+
+    def __init__(
+        self,
+        *,
+        ttl_frames: int = 2,
+        ttl_sec: float | None = None,
+        velocity_filter: VelocityFilter = "none",
+        alpha: float = 1.0,
+        beta: float = 0.85,
+    ) -> None:
+        if ttl_frames < 0:
+            raise ValueError("ttl_frames must be non-negative")
+        if ttl_sec is not None and ttl_sec <= 0.0:
+            raise ValueError("ttl_sec must be positive when provided")
+        if velocity_filter not in {"none", "ema", "alpha_beta"}:
+            raise ValueError("velocity_filter must be none, ema, or alpha_beta")
+        if not 0.0 < alpha <= 1.0:
+            raise ValueError("alpha must be in (0, 1]")
+        if not 0.0 < beta <= 2.0:
+            raise ValueError("beta must be in (0, 2]")
+        self.ttl_frames = int(ttl_frames)
+        self.ttl_sec = None if ttl_sec is None else float(ttl_sec)
+        self.velocity_filter = velocity_filter
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self._tracks: dict[str, _TrackState] = {}
+        self._identity: tuple[str, int] | None = None
+        self._last_frame_index: int | None = None
+        self._last_stamp_us: int | None = None
+
+    @property
+    def identity(self) -> tuple[str, int] | None:
+        return self._identity
+
+    @property
+    def track_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._tracks))
+
+    def reset(self) -> None:
+        self._tracks.clear()
+        self._identity = None
+        self._last_frame_index = None
+        self._last_stamp_us = None
+
+    def update(
+        self,
+        observations: Iterable[GeometryObservation],
+        *,
+        frame: FrameMetadata | None = None,
+    ) -> tuple[TrackedEntity, ...]:
+        """Consume one frame and return records for entities seen in it.
+
+        A frame with no observations can be represented by passing ``frame``;
+        this advances TTL bookkeeping without fabricating entity positions.
+        Frames with a non-increasing index are ignored.  A timestamp regression
+        is accepted as a geometry update but invalidates velocity for that
+        frame, rather than guessing a time interval.
+        """
+
+        items = tuple(observations)
+        metadata = self._metadata_for(items, frame)
+        if any(item.metadata != metadata for item in items):
+            raise TemporalEntityTrackerError(
+                "all observations in a frame must share run/scene/frame/stamp"
+            )
+        ids = [item.entity_id for item in items]
+        if len(ids) != len(set(ids)):
+            raise TemporalEntityTrackerError("duplicate entity_id in frame")
+
+        if self._identity != metadata.identity:
+            self._tracks.clear()
+            self._identity = metadata.identity
+            self._last_frame_index = None
+            self._last_stamp_us = None
+
+        if (
+            self._last_frame_index is not None
+            and metadata.frame_index <= self._last_frame_index
+        ):
+            return ()
+
+        monotonic_stamp = (
+            self._last_stamp_us is None
+            or metadata.stamp_us > self._last_stamp_us
+        )
+        self._expire_tracks(metadata)
+        records = tuple(
+            self._record_for(item, metadata, monotonic_stamp) for item in items
+        )
+        self._last_frame_index = metadata.frame_index
+        self._last_stamp_us = metadata.stamp_us
+        return records
+
+    # Explicit alias makes the intended frame-processing operation discoverable.
+    process_frame = update
+
+    def _metadata_for(
+        self,
+        items: Sequence[GeometryObservation],
+        frame: FrameMetadata | None,
+    ) -> FrameMetadata:
+        if frame is not None and not isinstance(frame, FrameMetadata):
+            raise TypeError("frame must be FrameMetadata")
+        if items:
+            metadata = items[0].metadata
+            if frame is not None and frame != metadata:
+                raise TemporalEntityTrackerError(
+                    "explicit frame metadata does not match observation"
+                )
+            return metadata
+        if frame is None:
+            raise TemporalEntityTrackerError(
+                "an empty frame requires explicit FrameMetadata"
+            )
+        return frame
+
+    def _expire_tracks(self, metadata: FrameMetadata) -> None:
+        expired = []
+        for entity_id, state in self._tracks.items():
+            frame_gap = metadata.frame_index - state.frame_index
+            time_gap = (metadata.stamp_us - state.stamp_us) / 1.0e6
+            too_many_frames = frame_gap > self.ttl_frames
+            too_long = self.ttl_sec is not None and time_gap > self.ttl_sec
+            if too_many_frames or (time_gap >= 0.0 and too_long):
+                expired.append(entity_id)
+        for entity_id in expired:
+            del self._tracks[entity_id]
+
+    def _record_for(
+        self,
+        item: GeometryObservation,
+        metadata: FrameMetadata,
+        monotonic_stamp: bool,
+    ) -> TrackedEntity:
+        state = self._tracks.get(item.entity_id)
+        velocity = (0.0, 0.0, 0.0)
+        velocity_valid = False
+        frame_gap = 0
+        if state is not None:
+            frame_gap = metadata.frame_index - state.frame_index
+            dt_sec = (metadata.stamp_us - state.stamp_us) / 1.0e6
+            if monotonic_stamp and frame_gap > 0 and dt_sec > 0.0:
+                raw_velocity = tuple(
+                    (current - previous) / dt_sec
+                    for current, previous in zip(item.position, state.position)
+                )
+                velocity, filter_position = self._filter_velocity(
+                    state, raw_velocity, dt_sec, item
+                )
+                velocity_valid = all(math.isfinite(value) for value in velocity)
+                if not velocity_valid:
+                    velocity = (0.0, 0.0, 0.0)
+                    filter_position = item.position
+            else:
+                filter_position = item.position
+        else:
+            filter_position = item.position
+
+        self._tracks[item.entity_id] = _TrackState(
+            position=item.position,
+            filter_position=filter_position,
+            frame_index=metadata.frame_index,
+            stamp_us=metadata.stamp_us,
+            velocity=velocity,
+            velocity_valid=velocity_valid,
+        )
+        return TrackedEntity(
+            entity_id=item.entity_id,
+            relative_x=item.relative_x,
+            relative_y=item.relative_y,
+            relative_z=item.relative_z,
+            relative_velocity_x=velocity[0],
+            relative_velocity_y=velocity[1],
+            relative_velocity_z=velocity[2],
+            velocity_valid=velocity_valid,
+            class_name=item.class_name,
+            color=item.color,
+            is_target=item.is_target,
+            visible=item.visible,
+            bbox=item.bbox,
+            confidence=item.confidence,
+            run_id=metadata.run_id,
+            scene_seed=metadata.scene_seed,
+            frame_index=metadata.frame_index,
+            stamp_us=metadata.stamp_us,
+            frame_gap=frame_gap,
+        )
+
+    def _filter_velocity(
+        self,
+        state: _TrackState,
+        raw_velocity: Position3,
+        dt_sec: float,
+        item: GeometryObservation,
+    ) -> tuple[Position3, Position3]:
+        if not state.velocity_valid or self.velocity_filter == "none":
+            return raw_velocity, item.position
+        if self.velocity_filter == "ema":
+            return (
+                tuple(
+                    self.alpha * raw + (1.0 - self.alpha) * previous
+                    for raw, previous in zip(raw_velocity, state.velocity)
+                ),
+                item.position,
+            )
+
+        # Alpha-beta: the position residual corrects the prior velocity.  The
+        # reported position remains the actual geometry observation.
+        residual = tuple(
+            current - (previous + velocity * dt_sec)
+            for current, previous, velocity in zip(
+                item.position, state.filter_position, state.velocity
+            )
+        )
+        predicted_position = tuple(
+            previous + velocity * dt_sec
+            for previous, velocity in zip(state.filter_position, state.velocity)
+        )
+        corrected_position = tuple(
+            predicted + self.alpha * error
+            for predicted, error in zip(predicted_position, residual)
+        )
+        return (
+            tuple(
+                velocity + self.beta * error / dt_sec
+                for velocity, error in zip(state.velocity, residual)
+            ),
+            corrected_position,
+        )
+
+
+DEFAULT_DROPOUT_HOLD_FRAMES = 30
+DEFAULT_DROPOUT_HOLD_SEC = 3.0
+
+
+class _DropoutRecovery:
+    """Bounded, identity-scoped recovery for short perception dropouts."""
+
+    def __init__(
+        self,
+        *,
+        dropout_hold_frames: int = DEFAULT_DROPOUT_HOLD_FRAMES,
+        dropout_hold_sec: float = DEFAULT_DROPOUT_HOLD_SEC,
+    ) -> None:
+        if int(dropout_hold_frames) < 0:
+            raise ValueError("dropout_hold_frames must be non-negative")
+        if not math.isfinite(float(dropout_hold_sec)) or float(dropout_hold_sec) <= 0.0:
+            raise ValueError("dropout_hold_sec must be finite and positive")
+        self.dropout_hold_frames = int(dropout_hold_frames)
+        self.dropout_hold_sec = float(dropout_hold_sec)
+        self._identity: tuple[str, int] | None = None
+        self._tracks: dict[str, TrackedEntity] = {}
+        self.last_predicted_ids: tuple[str, ...] = ()
+
+    def reset(self) -> None:
+        self._identity = None
+        self._tracks.clear()
+        self.last_predicted_ids = ()
+
+    def update(
+        self,
+        observed: tuple[TrackedEntity, ...],
+        *,
+        frame: FrameMetadata,
+    ) -> tuple[TrackedEntity, ...]:
+        if self._identity != frame.identity:
+            self.reset()
+            self._identity = frame.identity
+
+        observed_ids = set()
+        for item in observed:
+            if item.run_id != frame.run_id or item.scene_seed != frame.scene_seed:
+                raise TemporalEntityTrackerError(
+                    "tracked entities must share the current run and scene"
+                )
+            observed_ids.add(item.entity_id)
+            self._tracks[item.entity_id] = item
+
+        predicted: list[TrackedEntity] = []
+        expired: list[str] = []
+        for entity_id, item in tuple(self._tracks.items()):
+            if entity_id in observed_ids:
+                continue
+            frame_gap = frame.frame_index - item.frame_index
+            elapsed_sec = (frame.stamp_us - item.stamp_us) / 1.0e6
+            within_window = (
+                frame_gap > 0
+                and elapsed_sec >= 0.0
+                and frame_gap <= self.dropout_hold_frames
+                and elapsed_sec <= self.dropout_hold_sec
+            )
+            if not within_window:
+                if frame_gap > self.dropout_hold_frames or elapsed_sec > self.dropout_hold_sec:
+                    expired.append(entity_id)
+                continue
+            velocity = item.velocity if item.velocity_valid else (0.0, 0.0, 0.0)
+            predicted_position = tuple(
+                position + component * elapsed_sec
+                for position, component in zip(item.position, velocity)
+            )
+            predicted.append(
+                replace(
+                    item,
+                    relative_x=predicted_position[0],
+                    relative_y=predicted_position[1],
+                    relative_z=predicted_position[2],
+                    frame_index=frame.frame_index,
+                    stamp_us=frame.stamp_us,
+                    frame_gap=frame_gap,
+                    source="temporal_tracker",
+                )
+            )
+
+        for entity_id in expired:
+            self._tracks.pop(entity_id, None)
+        self.last_predicted_ids = tuple(item.entity_id for item in predicted)
+        return tuple(observed) + tuple(predicted)
+
+
+__all__ = [
+    "FrameMetadata",
+    "GeometryObservation",
+    "TemporalEntityTracker",
+    "TemporalEntityTrackerError",
+    "TrackedEntity",
+]

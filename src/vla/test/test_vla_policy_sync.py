@@ -11,7 +11,7 @@ import math
 import time
 
 
-POLICY = Path(__file__).resolve().parents[1] / "vla" / "vla_policy_node.py"
+POLICY = Path(__file__).resolve().parents[1] / "vla" / "decision.py"
 
 
 def _load_sync_cache():

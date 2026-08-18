@@ -3,20 +3,12 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from vla.temporal_entity_tracker import (
+from vla.perception import (
     FrameMetadata,
     GeometryObservation,
     TemporalEntityTracker,
     TemporalEntityTrackerError,
 )
-
-
-def test_temporal_tracker_module_owns_ros_node_entrypoint() -> None:
-    source = (
-        Path(__file__).parents[1] / "vla" / "temporal_entity_tracker.py"
-    ).read_text(encoding="utf-8")
-    assert "class TemporalEntityTrackerNode" in source
-    assert "def main(args=None)" in source
 
 
 def observation(

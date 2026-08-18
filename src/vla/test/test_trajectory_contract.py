@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from vla.trajectory_contract import (
+from vla.decision import (
     DT_SEC,
     FRAME_ID,
     MAX_DISPLACEMENT_M,

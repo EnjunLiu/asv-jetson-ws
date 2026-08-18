@@ -1,4 +1,4 @@
-ue_object_deliverer_bridge_node:
+bridge_node:
   ros__parameters:
     listen_address: "0.0.0.0"
     port: 8080

@@ -2,63 +2,30 @@
 
 from __future__ import annotations
 
-import ast
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-NODE = REPOSITORY / "src/vla/vla/language_qwen_node.py"
-ENCODER = REPOSITORY / "src/vla/vla/language_encoder.py"
+NODE = REPOSITORY / "src/vla/vla/language_node.py"
+ALGORITHM = REPOSITORY / "src/vla/vla/language.py"
 SETUP = REPOSITORY / "src/vla/setup.py"
 LAUNCH = REPOSITORY / "src/bringup/launch/vla_closed_loop.launch.py"
 
 
-def _load_ros_independent_helpers() -> dict[str, Any]:
-    """Extract helper/state code so tests run before a ROS interface build."""
+def _load_algorithm():
+    import sys
 
-    tree = ast.parse(NODE.read_text(encoding="utf-8"))
-    names = {
-        "EMBEDDING_DIM",
-        "DEFAULT_MODEL_ID",
-        "_bounded_detail",
-        "_zero_embedding",
-        "LanguageEmbeddingState",
-        "_state_payload",
-        "_embedding_tuple",
-    }
-    selected = [
-        node
-        for node in tree.body
-        if (
-            isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef))
-            and any(
-                getattr(target, "id", None) in names
-                for target in getattr(node, "targets", [])
-            )
-            or isinstance(node, (ast.FunctionDef, ast.ClassDef))
-            and node.name in names
-        )
-    ]
-    namespace: dict[str, Any] = {
-        "Any": Any,
-        "np": np,
-        "dataclass": dataclass,
-        "field": field,
-    }
-    exec(
-        compile(ast.Module(body=selected, type_ignores=[]), str(NODE), "exec"),
-        namespace,
-    )
-    return namespace
+    sys.path.insert(0, str(REPOSITORY / "src/vla"))
+    from vla import language
+
+    return language
 
 
 def test_state_payload_preserves_instruction_model_and_cache_metadata():
-    namespace = _load_ros_independent_helpers()
-    state = namespace["LanguageEmbeddingState"](
+    algorithm = _load_algorithm()
+    state = algorithm.LanguageEmbeddingState(
         instruction="follow the red boat",
         embedding=tuple(np.linspace(0.0, 1.0, 256, dtype=np.float32)),
         model_id="qwen:test",
@@ -67,7 +34,7 @@ def test_state_payload_preserves_instruction_model_and_cache_metadata():
         detail="x" * 400,
     )
 
-    payload = namespace["_state_payload"](state, run_id="run-7", stamp_us=123)
+    payload = algorithm.state_payload(state, run_id="run-7", stamp_us=123)
 
     assert payload["stamp_us"] == 123
     assert payload["run_id"] == "run-7"
@@ -81,8 +48,10 @@ def test_state_payload_preserves_instruction_model_and_cache_metadata():
 
 
 def test_embedding_helper_enforces_fixed_finite_contract():
-    namespace = _load_ros_independent_helpers()
-    vector = namespace["_embedding_tuple"](np.ones(256, dtype=np.float32))
+    import numpy as np
+
+    algorithm = _load_algorithm()
+    vector = algorithm.embedding_tuple(np.ones(256, dtype=np.float32))
     assert isinstance(vector, tuple)
     assert len(vector) == 256
 
@@ -91,7 +60,7 @@ def test_embedding_helper_enforces_fixed_finite_contract():
         np.full(256, np.nan, dtype=np.float32),
     ):
         try:
-            namespace["_embedding_tuple"](invalid)
+            algorithm.embedding_tuple(invalid)
         except ValueError:
             pass
         else:
@@ -100,8 +69,8 @@ def test_embedding_helper_enforces_fixed_finite_contract():
 
 def test_qwen_node_contract_is_fail_closed_and_cuda_explicit():
     source = NODE.read_text(encoding="utf-8")
-    encoder_source = ENCODER.read_text(encoding="utf-8")
-    assert 'DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"' in source
+    encoder_source = ALGORITHM.read_text(encoding="utf-8")
+    assert 'DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"' in encoder_source
     assert "USVLanguageEncoder" in source
     assert 'device=self.device' in source
     assert "LanguageEncoderError" in source
@@ -112,7 +81,7 @@ def test_qwen_node_contract_is_fail_closed_and_cuda_explicit():
     assert '"/vla/language_embedding"' in source
     assert "DurabilityPolicy.TRANSIENT_LOCAL" in source
     assert "cached=bool(result.cached)" in source
-    assert "embedding_dim" in source
+    assert "embedding_dim" in encoder_source
     assert '"release_model_after_encode", False' in source
     assert "_released_state" in source
     assert "gc.collect()" in source
@@ -135,7 +104,7 @@ def test_first_task_trace_is_bounded_and_includes_instruction():
 
 def test_launch_uses_real_qwen_cuda_without_cached_stub_backend():
     launch = LAUNCH.read_text(encoding="utf-8")
-    assert 'executable="language_qwen"' in launch
+    assert 'executable="language"' in launch
     assert 'executable="language_stub"' not in launch
     assert "demo_instruction_embedding.npy" not in launch
     assert 'LaunchConfiguration("language_model_path")' in launch
@@ -154,4 +123,4 @@ def test_launch_uses_real_qwen_cuda_without_cached_stub_backend():
 
 def test_setup_registers_online_qwen_entrypoint():
     setup = SETUP.read_text(encoding="utf-8")
-    assert '"language_qwen = vla.language_qwen_node:main"' in setup
+    assert '"language = vla.language_node:main"' in setup

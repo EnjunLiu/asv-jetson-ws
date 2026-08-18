@@ -1,19 +1,8 @@
-"""ROS 2 adapter for the live Qwen language encoder.
-
-The node deliberately treats CUDA as a requested execution contract. If the
-model cannot be loaded on the requested device, it stays alive and publishes
-an invalid embedding plus an ``ERROR`` module status; it never silently
-retries on CPU. The model remains resident by default so new task text is
-encoded online rather than read from a cached ``.npy`` file.
-"""
+"""Subscribe to ``/task/text`` and publish ``/vla/language_embedding``."""
 
 from __future__ import annotations
 
 import gc
-from dataclasses import dataclass, field
-from typing import Any
-
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import (
@@ -26,19 +15,18 @@ from std_msgs.msg import String
 
 from interfaces.msg import TaskEmbedding
 
-from .language_encoder import (
+from .language import (
     DEFAULT_TASK_DESCRIPTION,
+    DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_PATH,
+    EMBEDDING_DIM,
+    LanguageEmbeddingState,
     LanguageEncoderError,
     USVLanguageEncoder,
+    _bounded_detail,
+    embedding_tuple,
+    state_payload,
 )
-
-
-EMBEDDING_DIM = 256
-DEFAULT_MODEL_PATH = "models/Qwen3-Embedding-0.6B"
-# Match the identifier embedded in the PC-trained perception checkpoints.
-# The local directory name remains the short ``Qwen3-Embedding-0.6B`` name;
-# the published model identity is the canonical Hugging Face identifier.
-DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 
 LANGUAGE_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
@@ -53,63 +41,10 @@ LANG_QOS = LANGUAGE_QOS
 LANGUAGE_TASK_TRACE_LIMIT = 1
 
 
-def _bounded_detail(detail: object, limit: int = 240) -> str:
-    """Keep status/message diagnostics bounded and single-line."""
-
-    text = " ".join(str(detail).split())
-    return text[:limit]
-
-
-def _zero_embedding() -> tuple[float, ...]:
-    return (0.0,) * EMBEDDING_DIM
-
-
-@dataclass(frozen=True)
-class LanguageEmbeddingState:
-    """ROS-independent state used to construct each published embedding."""
-
-    instruction: str = ""
-    embedding: tuple[float, ...] = field(default_factory=_zero_embedding)
-    model_id: str = DEFAULT_MODEL_ID
-    cached: bool = False
-    valid: bool = False
-    detail: str = "WAITING_FOR_INSTRUCTION"
-
-
-def _state_payload(
-    state: LanguageEmbeddingState, *, run_id: str, stamp_us: int
-) -> dict[str, Any]:
-    """Return the exact ``TaskEmbedding`` fields without requiring ROS types."""
-
-    return {
-        "stamp_us": int(stamp_us),
-        "run_id": str(run_id),
-        "instruction": str(state.instruction),
-        "model_id": str(state.model_id),
-        "embedding_dim": EMBEDDING_DIM,
-        "embedding": list(state.embedding),
-        "cached": bool(state.cached),
-        "valid": bool(state.valid),
-        "detail": _bounded_detail(state.detail),
-    }
-
-
-def _embedding_tuple(values: object) -> tuple[float, ...]:
-    """Validate and copy an encoder result into the fixed ROS contract."""
-
-    array = np.asarray(values, dtype=np.float32).reshape(-1)
-    if array.size != EMBEDDING_DIM or not np.all(np.isfinite(array)):
-        raise ValueError(
-            f"encoder returned an invalid {array.size}-value embedding"
-        )
-    return tuple(float(value) for value in array)
-
-
-class LanguageQwenNode(Node):
-    """Publish Qwen ``TaskEmbedding`` messages from ``/task/text``."""
+class LanguageNode(Node):
 
     def __init__(self) -> None:
-        super().__init__("language_qwen")
+        super().__init__("language")
 
         self.run_id = str(self.declare_parameter("run_id", "language-qwen").value)
         self.model_path = str(
@@ -264,7 +199,7 @@ class LanguageQwenNode(Node):
 
         try:
             result = self._encoder.encode_with_metadata(instruction)
-            embedding = _embedding_tuple(result.embedding)
+            embedding = embedding_tuple(result.embedding)
         except Exception as exc:
             error_kind = (
                 "LANGUAGE_ENCODER_ERROR"
@@ -314,7 +249,7 @@ class LanguageQwenNode(Node):
 
     def _publish_current(self) -> None:
         message = TaskEmbedding()
-        fields = _state_payload(
+        fields = state_payload(
             self._state,
             run_id=self.run_id,
             stamp_us=self.get_clock().now().nanoseconds // 1000,
@@ -325,7 +260,7 @@ class LanguageQwenNode(Node):
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
-    node = LanguageQwenNode()
+    node = LanguageNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

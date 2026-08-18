@@ -1,11 +1,4 @@
-"""Image-only entity perception node.
-
-The node consumes camera JPEGs and emits geometry/semantics on
-``/vla/perceived_entities``.  It deliberately has no subscription to
-``/ue/entities``; that topic is reserved for the recorder and offline labels.
-Velocity is always zero with ``velocity_valid=false`` until the temporal
-tracker observes a second frame.
-"""
+"""Subscribe to camera/language messages and publish tracked entities."""
 
 from __future__ import annotations
 
@@ -22,37 +15,27 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from std_msgs.msg import String
+from interfaces.msg import CameraFrame, Entity, EntityArray, TaskEmbedding
 
-from interfaces.msg import (
-    CameraFrame,
-    TaskEmbedding,
-    Entity,
-    EntityArray,
-)
-
-from .image_entity_perception import (
+from .perception import (
     COLOR_CALIBRATED_MODEL_VERSION,
     COLOR_CALIBRATED_MODEL_VERSION_V2,
     ImageEntityModel,
     ImageEntityPerceptionError,
     LANGUAGE_EMBEDDING_DIM,
-    LOW_LIGHT_PREPROCESS_BRIGHTNESS,
-    LOW_LIGHT_PREPROCESS_CONTRAST,
-    LOW_LIGHT_PREPROCESS_CONTRACT,
-    LOW_LIGHT_PREPROCESS_ENABLED,
-    LOW_LIGHT_PREPROCESS_GAMMA,
+    FrameMetadata,
+    GeometryObservation,
+    TemporalEntityTracker,
+    TemporalEntityTrackerError,
+    _DropoutRecovery,
     TaskSpec,
     parse_task_instruction,
     select_task_entities,
     validate_task_embedding,
-)
-from .visual_encoder import (
     CameraProfile,
     InvalidImageError,
     TargetProjectionError,
     decode_camera_image,
-    enhance_low_light_image,
     project_target_to_pixel,
 )
 
@@ -62,7 +45,7 @@ RELIABLE_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.RELIABLE,
 )
-TASK_QOS = QoSProfile(
+EMBEDDING_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
     reliability=ReliabilityPolicy.RELIABLE,
@@ -91,7 +74,7 @@ def _predict_with_color_reference(
     The deployed ``ImageEntityModel`` exposes ``color_image`` explicitly.
     Non-calibrated test doubles may keep their older signature; a calibrated
     model without this contract fails closed instead of masking colors on
-    enhanced RGB.
+    decoded sRGB.
     """
 
     predict = model.predict
@@ -202,9 +185,9 @@ def _apply_prediction_projection(
         return
 
 
-class ImageEntityPerceptionNode(Node):
+class PerceptionNode(Node):
     def __init__(self) -> None:
-        super().__init__("image_entity_perception")
+        super().__init__("perception")
         self.device = str(
             self.declare_parameter("device", "cuda").value
         ).strip() or "cuda"
@@ -227,26 +210,6 @@ class ImageEntityPerceptionNode(Node):
         self.allow_legacy_image_only = bool(
             self.declare_parameter("allow_legacy_image_only", False).value
         )
-        self.image_preprocess_enabled = bool(
-            self.declare_parameter(
-                "image_preprocess_enabled", LOW_LIGHT_PREPROCESS_ENABLED
-            ).value
-        )
-        self.image_preprocess_gamma = float(
-            self.declare_parameter(
-                "image_preprocess_gamma", LOW_LIGHT_PREPROCESS_GAMMA
-            ).value
-        )
-        self.image_preprocess_brightness = float(
-            self.declare_parameter(
-                "image_preprocess_brightness", LOW_LIGHT_PREPROCESS_BRIGHTNESS
-            ).value
-        )
-        self.image_preprocess_contrast = float(
-            self.declare_parameter(
-                "image_preprocess_contrast", LOW_LIGHT_PREPROCESS_CONTRAST
-            ).value
-        )
         self.profile = CameraProfile(
             width=int(self.declare_parameter("image_width", 1280).value),
             height=int(self.declare_parameter("image_height", 720).value),
@@ -259,21 +222,31 @@ class ImageEntityPerceptionNode(Node):
             pitch_deg=float(self.declare_parameter("camera_pitch_deg", -5.0).value),
         )
         self.publisher = self.create_publisher(
-            EntityArray, "/vla/perceived_entities", RELIABLE_QOS
+            EntityArray, "/vla/entities", RELIABLE_QOS
         )
         self.create_subscription(CameraFrame, "/ue/camera_frame", self.on_frame, SENSOR_QOS)
-        self.create_subscription(String, "/task/text", self.on_task, TASK_QOS)
         self.create_subscription(
             TaskEmbedding,
             "/vla/language_embedding",
             self.on_embedding,
-            TASK_QOS,
+            EMBEDDING_QOS,
         )
         self.task_text = ""
         self.task_spec: TaskSpec = parse_task_instruction("")
         self.task_embedding = None
         self.embedding_model_id = ""
         self.embedding_detail = "WAITING_FOR_TASK_EMBEDDING"
+        self.tracker = TemporalEntityTracker(
+            ttl_frames=int(self.declare_parameter("ttl_frames", 2).value),
+            ttl_sec=float(self.declare_parameter("ttl_sec", 0.5).value),
+            velocity_filter=str(self.declare_parameter("velocity_filter", "ema").value),
+            alpha=float(self.declare_parameter("alpha", 0.6).value),
+            beta=float(self.declare_parameter("beta", 0.85).value),
+        )
+        self.dropout_recovery = _DropoutRecovery(
+            dropout_hold_frames=int(self.declare_parameter("dropout_hold_frames", 30).value),
+            dropout_hold_sec=float(self.declare_parameter("dropout_hold_sec", 3.0).value),
+        )
         self._trace_run_id = ""
         self._trace_count = 0
         self._frame_count = 0
@@ -298,22 +271,9 @@ class ImageEntityPerceptionNode(Node):
                 f"input={self.model.input_contract};"
                 f"language_model={self.model.language_model_id or 'legacy'};"
                 f"legacy_image_only={self.model.model_version in {'image_entity_ridge_v1', 'image_entity_ridge_v2', 'image_entity_color_calibrated_v1'}};"
-                f"preprocess={LOW_LIGHT_PREPROCESS_CONTRACT};"
-                f"enabled={self.image_preprocess_enabled};"
-                f"gamma={self.image_preprocess_gamma:.3f};"
-                f"brightness={self.image_preprocess_brightness:.3f};"
-                f"contrast={self.image_preprocess_contrast:.3f}"
+                "input_color_contract=ue5_srgb_jpeg"
             )
             self.get_logger().info(self.detail)
-
-    def on_task(self, message: String) -> None:
-        next_text = str(message.data).strip()
-        if next_text != self.task_text:
-            self.task_embedding = None
-            self.embedding_model_id = ""
-            self.embedding_detail = "WAITING_FOR_TASK_EMBEDDING"
-        self.task_text = next_text
-        self.task_spec = parse_task_instruction(self.task_text)
 
     def on_embedding(self, message: TaskEmbedding) -> None:
         """Accept only a valid embedding for the current instruction/model."""
@@ -334,14 +294,6 @@ class ImageEntityPerceptionNode(Node):
             "image_entity_color_calibrated_v1",
         }:
             self.embedding_detail = "LEGACY_IMAGE_ONLY_MODE_IGNORES_TASK_EMBEDDING"
-            return
-        if instruction and self.task_text and instruction != self.task_text:
-            self.task_embedding = None
-            self.embedding_model_id = ""
-            self.embedding_detail = (
-                "TASK_EMBEDDING_INSTRUCTION_MISMATCH:"
-                f"text={self.task_text!r};embedding={instruction!r}"
-            )
             return
         model_id = str(getattr(message, "model_id", "")).strip()
         if model_id != self.model.language_model_id:
@@ -371,9 +323,8 @@ class ImageEntityPerceptionNode(Node):
                 f"expected={self.model.task_embedding_dim};got={embedding_dim}"
             )
             return
-        if instruction and not self.task_text:
-            self.task_text = instruction
-            self.task_spec = parse_task_instruction(instruction)
+        self.task_text = instruction
+        self.task_spec = parse_task_instruction(instruction)
         self.task_embedding = embedding
         self.embedding_model_id = model_id
         self.embedding_detail = "VALID_TASK_EMBEDDING"
@@ -392,6 +343,70 @@ class ImageEntityPerceptionNode(Node):
         message.instruction_id = ""
         message.detail = "UNINITIALIZED"
         return message
+
+    def _apply_tracking(self, message: EntityArray) -> None:
+        if not message.valid or not str(message.run_id).strip():
+            self.tracker.reset()
+            self.dropout_recovery.reset()
+            message.valid = False
+            message.detail = f"INVALID_SOURCE:{message.detail}"
+            message.source = "perception"
+            return
+        try:
+            frame = FrameMetadata(
+                run_id=message.run_id,
+                scene_seed=message.scene_seed,
+                frame_index=message.frame_index,
+                stamp_us=message.stamp_us,
+            )
+            observations = [
+                GeometryObservation(
+                    entity_id=entity.entity_id,
+                    relative_x=entity.relative_x,
+                    relative_y=entity.relative_y,
+                    relative_z=entity.relative_z,
+                    class_name=entity.class_name,
+                    color=entity.color,
+                    is_target=entity.is_target,
+                    visible=entity.visible,
+                    bbox=(entity.bbox_x_min, entity.bbox_y_min, entity.bbox_x_max, entity.bbox_y_max) if entity.bbox_valid else None,
+                    confidence=entity.confidence,
+                    run_id=message.run_id,
+                    scene_seed=message.scene_seed,
+                    frame_index=message.frame_index,
+                    stamp_us=message.stamp_us,
+                )
+                for entity in message.entities
+                if entity.valid and entity.visible
+            ]
+            tracked = self.tracker.update(observations, frame=frame)
+            tracked = self.dropout_recovery.update(tracked, frame=frame)
+        except (TemporalEntityTrackerError, ValueError) as exc:
+            self.tracker.reset()
+            self.dropout_recovery.reset()
+            message.valid = False
+            message.detail = f"TRACKER_ERROR:{type(exc).__name__}:{exc}"
+            message.source = "perception"
+            message.entities = []
+            return
+
+        tracked_by_id = {}
+        for item in tracked:
+            entity = Entity()
+            for field, value in item.as_entity_kwargs().items():
+                setattr(entity, field, value)
+            tracked_by_id[entity.entity_id] = entity
+        message.entities = [
+            tracked_by_id.get(entity.entity_id, entity)
+            for entity in message.entities
+        ]
+        predicted_ids = self.dropout_recovery.last_predicted_ids
+        predicted_detail = ",".join(predicted_ids) if predicted_ids else "none"
+        message.source = "perception"
+        message.detail = (
+            f"{message.detail};tracked={len(message.entities)};"
+            f"predicted_ids={predicted_detail}"
+        )
 
     def on_frame(self, frame: CameraFrame) -> None:
         message = self._new_array(frame)
@@ -426,27 +441,10 @@ class ImageEntityPerceptionNode(Node):
             return
         try:
             color_image = decode_camera_image(frame.data, frame.encoding)
-            feature_image = enhance_low_light_image(
-                color_image,
-                enabled=getattr(
-                    self, "image_preprocess_enabled", LOW_LIGHT_PREPROCESS_ENABLED
-                ),
-                gamma=getattr(
-                    self, "image_preprocess_gamma", LOW_LIGHT_PREPROCESS_GAMMA
-                ),
-                brightness=getattr(
-                    self,
-                    "image_preprocess_brightness",
-                    LOW_LIGHT_PREPROCESS_BRIGHTNESS,
-                ),
-                contrast=getattr(
-                    self, "image_preprocess_contrast", LOW_LIGHT_PREPROCESS_CONTRAST
-                ),
-            )
             _predict_start = time.monotonic()
             predictions = _predict_with_color_reference(
                 self.model,
-                feature_image,
+                color_image,
                 color_image,
                 task=task_spec,
                 device=str(getattr(self, "device", "numpy")),
@@ -517,9 +515,9 @@ class ImageEntityPerceptionNode(Node):
         message.detail = (
             f"OK:{input_mode};task={task_spec.instruction_id};"
             f"entities={len(message.entities)};"
-            f"model={self.model.model_version};"
-            "velocity_output=false;velocity_source=temporal_entity_tracker"
+            f"model={self.model.model_version}"
         )
+        self._apply_tracking(message)
         target_entity = next(
             (
                 entity
@@ -556,7 +554,7 @@ class ImageEntityPerceptionNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = ImageEntityPerceptionNode()
+    node = PerceptionNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

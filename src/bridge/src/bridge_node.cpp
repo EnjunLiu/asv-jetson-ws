@@ -159,7 +159,7 @@ class BridgeNode final : public rclcpp::Node
 {
 public:
   BridgeNode()
-  : Node("ue_object_deliverer_bridge_node")
+  : Node("bridge_node")
   {
     listen_address_ = declare_parameter<std::string>("listen_address", "0.0.0.0");
     port_ = declare_parameter<int>("port", 8080);

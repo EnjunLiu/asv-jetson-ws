@@ -89,7 +89,7 @@ def _load_node_module():
             "interfaces.msg": interfaces_msg,
         }
     )
-    return importlib.import_module("vla.image_entity_perception_node")
+    return importlib.import_module("vla.perception_node")
 
 
 class _Prediction:
@@ -144,7 +144,7 @@ def _jpeg_bytes() -> bytes:
 
 
 def _test_node(module):
-    node = object.__new__(module.ImageEntityPerceptionNode)
+    node = object.__new__(module.PerceptionNode)
     node.model = _Model()
     node.profile = module.CameraProfile()
     node.confidence_threshold = 0.55
@@ -155,6 +155,8 @@ def _test_node(module):
     node.embedding_model_id = "test-language"
     node.embedding_detail = "VALID_TASK_EMBEDDING"
     node.device = "numpy"
+    node.tracker = module.TemporalEntityTracker()
+    node.dropout_recovery = module._DropoutRecovery()
     node.detail = ""
     node._trace_run_id = ""
     node._trace_count = 0
@@ -222,7 +224,6 @@ def test_task_switch_changes_selected_entity_and_instruction_provenance():
     assert first.entities[0].is_target is True
     assert first.entities[1].visible is False
 
-    node.on_task(types.SimpleNamespace(data="follow blue"))
     node.on_embedding(
         types.SimpleNamespace(
             instruction="follow blue",
@@ -272,15 +273,16 @@ def test_perception_trace_formatter_keeps_required_red_diagnostics():
         assert token in trace
 
 
-def test_task_text_subscription_uses_transient_local_qos():
+def test_perception_subscriptions_are_camera_and_language_only():
     node_source = (
         Path(__file__).resolve().parents[1]
         / "vla"
-        / "image_entity_perception_node.py"
+        / "perception_node.py"
     ).read_text(encoding="utf-8")
     assert "DurabilityPolicy.TRANSIENT_LOCAL" in node_source
-    assert 'String, "/task/text", self.on_task, TASK_QOS' in node_source
+    assert 'CameraFrame, "/ue/camera_frame", self.on_frame' in node_source
     assert 'TaskEmbedding,\n            "/vla/language_embedding"' in node_source
+    assert "/task/text" not in node_source
 
 
 def test_missing_task_embedding_fails_closed_before_prediction():

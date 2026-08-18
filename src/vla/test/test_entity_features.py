@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from vla.vla_policy_node import (
+from vla.decision import (
     ENTITY_COUNT,
     ENTITY_GEOMETRY_DIM,
     EntityFeaturesError,

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 
-POLICY_NODE = Path(__file__).resolve().parents[1] / "vla" / "vla_policy_node.py"
+POLICY_NODE = Path(__file__).resolve().parents[1] / "vla" / "decision.py"
 
 
 def test_policy_node_defaults_to_explicit_torch_cuda_backend() -> None:
@@ -44,7 +44,7 @@ def _inputs(config: Any) -> dict[str, np.ndarray]:
 
 def test_cuda_is_required_without_cpu_fallback(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
-    from vla.policy_model import (  # noqa: E402
+    from vla.decision import (  # noqa: E402
         PolicyRuntimeError,
         TorchPolicyRunner,
     )
@@ -60,7 +60,7 @@ def test_checkpoint_strict_load_and_runtime_contract(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
-    from vla.policy_model import (  # noqa: E402
+    from vla.decision import (  # noqa: E402
         SmallPolicyConfig,
         SmallActionPolicy,
         TorchPolicyRunner,

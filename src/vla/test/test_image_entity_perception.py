@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 from PIL import ImageDraw
 
-from vla.image_entity_perception import (
+from vla.perception import (
     BASE_FEATURE_DIM,
     COLOR_CALIBRATION_WIDTH,
     ENTITY_COUNT,
@@ -15,11 +15,6 @@ from vla.image_entity_perception import (
     FUSED_FEATURE_DIM,
     LEGACY_MODEL_VERSION,
     LANGUAGE_EMBEDDING_DIM,
-    LOW_LIGHT_PREPROCESS_BRIGHTNESS,
-    LOW_LIGHT_PREPROCESS_CONTRAST,
-    LOW_LIGHT_PREPROCESS_CONTRACT,
-    LOW_LIGHT_PREPROCESS_ENABLED,
-    LOW_LIGHT_PREPROCESS_GAMMA,
     MODEL_VERSION,
     OUTPUT_DIM,
     ImageEntityModel,
@@ -34,14 +29,11 @@ from vla.image_entity_perception import (
 )
 
 
-def test_low_light_preprocess_contract_is_fixed() -> None:
-    assert LOW_LIGHT_PREPROCESS_ENABLED is False
-    assert LOW_LIGHT_PREPROCESS_CONTRACT == (
-        "ue5_capture_gamma065_brightness100_contrast100"
-    )
-    assert LOW_LIGHT_PREPROCESS_GAMMA == pytest.approx(0.65)
-    assert LOW_LIGHT_PREPROCESS_BRIGHTNESS == pytest.approx(1.0)
-    assert LOW_LIGHT_PREPROCESS_CONTRAST == pytest.approx(1.0)
+def test_jetson_perception_has_no_low_light_preprocess_contract() -> None:
+    source = Path(__file__).parents[1] / "vla" / "perception.py"
+    text = source.read_text(encoding="utf-8")
+    assert "enhance_low_light_image" not in text
+    assert "LOW_LIGHT_PREPROCESS_" not in text
 
 
 def test_image_features_are_fixed_and_finite() -> None:
@@ -313,11 +305,11 @@ def test_prediction_uses_original_color_reference_for_red_and_blue(
     color: str,
     rgb: tuple[int, int, int],
 ) -> None:
-    import vla.image_entity_perception as perception
+    import vla.perception as perception
 
     original = Image.new("RGB", (1280, 720), (20, 30, 40))
     ImageDraw.Draw(original).rectangle((180, 300, 300, 390), fill=rgb)
-    enhanced = Image.new("RGB", (1280, 720), (120, 130, 140))
+    decoded = original
     model = _color_ridge_model(color=color)
     feature_inputs = []
 
@@ -328,9 +320,9 @@ def test_prediction_uses_original_color_reference_for_red_and_blue(
         or np.zeros(FEATURE_DIM, dtype=np.float32),
     )
     with_reference = model.predict(
-        enhanced, color_image=original, task_embedding=_embedding()
+        decoded, color_image=decoded, task_embedding=_embedding()
     )
-    without_reference = model.predict(enhanced, task_embedding=_embedding())
+    without_reference = model.predict(decoded, task_embedding=_embedding())
     target = next(
         prediction
         for prediction in with_reference
@@ -338,7 +330,7 @@ def test_prediction_uses_original_color_reference_for_red_and_blue(
     )
     expected = calibrated_color_geometry(original, color)
 
-    assert feature_inputs == [enhanced, enhanced]
+    assert feature_inputs == [decoded, decoded]
     assert expected[0]
     assert target.visible
     assert target.confidence == 1.0
@@ -419,17 +411,17 @@ def test_cuda_path_uses_torch_feature_helper_without_numpy_fallback(
 ) -> None:
     model = _all_visible_model()
     monkeypatch.setattr(
-        "vla.image_entity_perception._torch_for_device",
+        "vla.perception._torch_for_device",
         lambda _device: object(),
     )
     monkeypatch.setattr(
-        "vla.image_entity_perception._extract_torch_image_features",
+        "vla.perception._extract_torch_image_features",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             ImageEntityPerceptionError("CUDA_FEATURE_PATH")
         ),
     )
     monkeypatch.setattr(
-        "vla.image_entity_perception.extract_image_features",
+        "vla.perception.extract_image_features",
         lambda _image: pytest.fail("CUDA path used NumPy feature extraction"),
     )
 

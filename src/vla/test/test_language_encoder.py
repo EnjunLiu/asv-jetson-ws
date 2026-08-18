@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from vla.language_encoder import (
+from vla.language import (
     EmptyInstructionError,
     InstructionTooLongError,
     InvalidEmbeddingError,

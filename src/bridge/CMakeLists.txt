@@ -16,12 +16,12 @@ find_package(interfaces REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 add_executable(
-  ue_object_deliverer_bridge_node
+  bridge_node
   src/bridge_node.cpp
 )
 if(COMMAND ament_target_dependencies)
   ament_target_dependencies(
-    ue_object_deliverer_bridge_node
+    bridge_node
     rclcpp
     rosgraph_msgs
     std_msgs
@@ -31,7 +31,7 @@ else()
   # ROS distributions that removed the legacy helper still export the
   # package targets; linking those targets preserves include paths and ABI.
   target_link_libraries(
-    ue_object_deliverer_bridge_node
+    bridge_node
     rclcpp::rclcpp
     rosgraph_msgs::rosgraph_msgs
     std_msgs::std_msgs
@@ -39,12 +39,12 @@ else()
   )
 endif()
 target_link_libraries(
-  ue_object_deliverer_bridge_node
+  bridge_node
   nlohmann_json::nlohmann_json
   pthread
 )
 
-install(TARGETS ue_object_deliverer_bridge_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS bridge_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 ament_package()

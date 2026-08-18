@@ -23,12 +23,9 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
-            "image_entity_perception = vla.image_entity_perception_node:main",
-            "temporal_entity_tracker = vla.temporal_entity_tracker:main",
-            "safety_gate = vla.safety_gate:main",
-            "vla_policy = vla.vla_policy_node:main",
-            "language_qwen = vla.language_qwen_node:main",
-            "task_instruction = vla.task_instruction_node:main",
+            "language = vla.language_node:main",
+            "perception = vla.perception_node:main",
+            "decision = vla.decision_node:main",
         ],
     },
 )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from threading import RLock
@@ -22,6 +22,52 @@ DEFAULT_TASK_DESCRIPTION = (
     "Encode an instruction for a twin-thruster unmanned surface vessel "
     "performing follow or stop tasks."
 )
+
+EMBEDDING_DIM = 256
+DEFAULT_MODEL_PATH = "models/Qwen3-Embedding-0.6B"
+DEFAULT_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
+
+
+def _bounded_detail(detail: object, limit: int = 240) -> str:
+    text = " ".join(str(detail).split())
+    return text[:limit]
+
+
+def _zero_embedding() -> tuple[float, ...]:
+    return (0.0,) * EMBEDDING_DIM
+
+
+@dataclass(frozen=True)
+class LanguageEmbeddingState:
+    instruction: str = ""
+    embedding: tuple[float, ...] = field(default_factory=_zero_embedding)
+    model_id: str = DEFAULT_MODEL_ID
+    cached: bool = False
+    valid: bool = False
+    detail: str = "WAITING_FOR_INSTRUCTION"
+
+
+def state_payload(
+    state: LanguageEmbeddingState, *, run_id: str, stamp_us: int
+) -> dict[str, Any]:
+    return {
+        "stamp_us": int(stamp_us),
+        "run_id": str(run_id),
+        "instruction": str(state.instruction),
+        "model_id": str(state.model_id),
+        "embedding_dim": EMBEDDING_DIM,
+        "embedding": list(state.embedding),
+        "cached": bool(state.cached),
+        "valid": bool(state.valid),
+        "detail": _bounded_detail(state.detail),
+    }
+
+
+def embedding_tuple(values: object) -> tuple[float, ...]:
+    array = np.asarray(values, dtype=np.float32).reshape(-1)
+    if array.size != EMBEDDING_DIM or not np.all(np.isfinite(array)):
+        raise ValueError(f"encoder returned an invalid {array.size}-value embedding")
+    return tuple(float(value) for value in array)
 
 
 class LanguageEncoderError(RuntimeError):

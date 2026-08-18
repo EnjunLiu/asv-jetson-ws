@@ -12,7 +12,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CameraFrame.msg"
   "msg/DesiredDisplacement.msg"
   "msg/TaskEmbedding.msg"
-  "msg/EntityFeatures.msg"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

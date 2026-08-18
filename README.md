@@ -1,68 +1,63 @@
-# Jetson ROS 2 Deployment
+# ASV Jetson Runtime
 
-This repository is the Jetson online runtime for the ASV hardware-in-the-loop platform: image-conditioned perception, language embedding, policy inference, safety gating, trajectory control and the UE bridge.
+Jetson-side ROS 2 runtime for the UE5 ASV simulation loop.
 
-## Scope
+## Runtime nodes
 
-- ROS 2 packages: `interfaces`, `bridge`, `vla`, `launch`.
-- Policy output: two-dimensional body-frame desired displacement in meters.
-- Unified control boundary: `DesiredDisplacement` on
-  `/control/desired_displacement`; UE5 and future ESP32 adapters branch here.
-- `/ue/entities`: collection and offline supervision validation only; never an online privileged-truth feature.
-- Model binaries, datasets, caches, install/build/log directories and device credentials are intentionally absent.
-- Data collection, replay, expert labeling and policy training belong in the separate PC training repository; they are intentionally absent here.
+Only four nodes are exposed:
 
-The corresponding PC-side repository is `asv-vla-training`; it owns dataset
-generation, offline evaluation and training workflows. This repository only
-ships the artifacts and nodes needed after a model has been prepared.
+| Node | Algorithm | Subscribes | Publishes |
+| --- | --- | --- | --- |
+| `language` | `language.py` | `/task/text` | `/vla/language_embedding` |
+| `perception` | `perception.py` | `/ue/camera_frame`, `/vla/language_embedding` | `/vla/entities` |
+| `decision` | `decision.py` | `/vla/entities`, `/vla/language_embedding`, `/ue/asv_state` | `/control/desired_displacement` |
+| `bridge_node` | `src/bridge/src/bridge_node.cpp` | TCP JSON, `/control/desired_displacement` | `/ue/camera_frame`, `/ue/asv_state`, `/ue/entities` |
 
-The model manifest records the selected artifact names and SHA-256 values. Copy artifacts into the controlled deployment location and verify hashes before a Jetson run. Runtime results are environment-dependent and are not inferred from this source checkout.
+Temporal tracking, entity feature construction, policy inference and safety
+checks are internal algorithms. They are not separate ROS nodes or console
+entry points.
 
-## Deployment layout
+The decision output is a bounded two-dimensional body-frame displacement in
+meters. Invalid, stale, mismatched or unavailable inputs fail closed to hold
+position.
 
-The standalone Jetson repository is intended to sit beside the external model directory:
+## Image contract
 
-```text
-asv-hil-runtime/
-├── models/
-└── jetson/       # clone of this repository
-```
-
-From the `jetson` repository root, `vla_closed_loop.launch.py` resolves the three
-artifacts from `../models` by default. Use `models_dir:=<relative-or-absolute-path>`
-when the model directory is elsewhere. The required files are:
-
-```text
-models/
-├── policy_single_point.pt
-├── perception_image_conditioned.npz
-└── Qwen3-Embedding-0.6B/
-```
-
-The repository does not contain model weights or credentials.
+UE5 sends a standard sRGB JPEG. Exposure, tone mapping and the linear-to-sRGB
+conversion are performed in the UE5 capture path. The Jetson perception path
+decodes the JPEG directly and does not apply brightness, gamma or low-light
+preprocessing.
 
 ## Build and run
 
+Models are external deployment artifacts and are intentionally not committed.
+The expected deployment artifacts are `policy_single_point.pt`,
+`perception_image_conditioned.npz` and `Qwen3-Embedding-0.6B/`.
+
 ```bash
-cd jetson
 source /opt/ros/humble/setup.bash
 colcon build --merge-install --symlink-install \
-  --packages-select interfaces bridge vla launch
+  --packages-select interfaces bridge vla bringup
 source install/setup.bash
 
 ros2 launch bringup vla_closed_loop.launch.py \
   models_dir:=../models \
   execution_address:=<UE5_HOST_IP> execution_port:=8081 \
-  language_model_id:=Qwen/Qwen3-Embedding-0.6B \
-  language_device:=cuda visual_device:=cuda policy_device:=cuda \
-  language_release_after_encode:=true \
   task_text:="跟随红色目标船，保持3米距离"
 ```
 
-The UE5 project must be running its TCP executor on port `8081` before the launch
-can complete the software HIL loop. This launch intentionally does not start ESP32,
-thruster allocation, or a physical control manager.
+The launch starts `bridge_node`, `language`, `perception` and `decision`. It
+does not start an ESP32 controller, thruster allocator or physical control
+manager.
 
-## Verification boundary
+## Verification
 
-The imported Python contracts are covered by the host test suite. A current Jetson result requires building on the target, confirming CUDA/Torch loading, and retaining same-run launch and marker logs. Those steps are environment-dependent and are not inferred from PC tests.
+Run the host tests with the package source on `PYTHONPATH`:
+
+```bash
+PYTHONPATH=src/vla python -m pytest -q src/vla/test
+```
+
+CUDA readiness and the complete UE5 closed loop must be verified on the target
+Jetson/UE5 setup with same-run logs. Model identity or CUDA memory failures
+remain fail-closed and are not hidden by a CPU fallback.
