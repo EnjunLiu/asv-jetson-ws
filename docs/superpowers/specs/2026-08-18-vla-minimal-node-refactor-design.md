@@ -1,7 +1,7 @@
 # VLA 最少节点重构设计
 
 日期：2026-08-18  
-状态：已确认设计，待实施计划
+状态：已确认设计（修订版），待实施计划
 
 ## 1. 目标
 
@@ -20,14 +20,14 @@
 - 不把视觉、语言和策略强行合并成一个巨型节点。
 - 不改变 `DesiredDisplacement` 的二维动作合同。
 - 不引入旧路径、旧节点、旧 topic 或旧入口的兼容转发层。
-- 不顺手重构 bridge、interfaces 或 VLA 之外的无关代码。
+- 不顺手重构 bridge 的通信算法、interfaces 或 VLA 之外的无关代码；本次仅统一 bridge 的节点和 executable 名称。
 - 不把 Windows 静态检查视为 Jetson 或 UE5 闭环验证。
 
 ## 3. 最终节点边界
 
 ### 3.1 VLA 包保留三个节点
 
-#### `language_qwen`
+#### `language`
 
 订阅：
 
@@ -46,7 +46,7 @@
 
 部署配置使用 `release_model_after_encode=true` 时，一次运行只接受首次有效任务；更换任务必须重启 launch。只有明确关闭模型释放时，才支持运行中通过 `/task/text` 更新任务。
 
-#### `image_entity_perception`
+#### `perception`
 
 订阅：
 
@@ -67,7 +67,7 @@
 
 该节点不再订阅 `/task/text`；任务文本直接来自 `TaskEmbedding.instruction`，避免同一语义存在两个输入源。
 
-#### `vla_policy`
+#### `decision`
 
 订阅：
 
@@ -88,7 +88,7 @@
 
 ### 3.2 保留 bridge 节点
 
-`ue_object_deliverer_bridge_node` 保持为独立 C++ 节点。它是 UE5 TCP/JSON 与 ROS 消息之间的传输边界，不属于 VLA 算法节点。
+`bridge_node` 保持为独立 C++ 节点。它是 UE5 TCP/JSON 与 ROS 消息之间的传输边界，不属于 VLA 算法节点。
 
 bridge 继续：
 
@@ -98,6 +98,16 @@ bridge 继续：
 - 将最终二维位移转换为现有 UE5 JSON 执行合同。
 
 完整 UE5-Jetson 闭环共有四个 ROS 节点：三个 VLA 节点加一个 bridge 节点。
+
+bridge 的重命名必须同步以下位置：
+
+- `src/bridge/CMakeLists.txt` 的 target、依赖和 install target：`bridge_node`。
+- launch 中的 executable 和 name：`bridge_node`。
+- `src/bridge/config/ue_bridge.yaml` 的节点参数根键：`bridge_node`。
+- C++ 构造函数的 ROS 节点名：`bridge_node`。
+- 仓库内测试、文档和运行脚本中的旧名称引用。
+
+源文件保留为 `src/bridge/src/bridge_node.cpp`，因为它已经是 bridge 的同名节点实现。
 
 ## 4. 删除的节点和中间接口
 
@@ -109,7 +119,7 @@ bridge 继续：
 - `setup.py` 中的 `task_instruction` console entry point。
 - launch 中的 `task_instruction` 节点。
 
-初始 `task_text` 由 `language_qwen` 参数接收。VLA 内部不再用一个节点周期转发固定字符串。部署时 Qwen 在首次编码后释放，因此任务按一次运行固定；需要动态任务的调试配置必须显式保留 Qwen 模型，才能从系统外部向 `/task/text` 发布新任务。
+初始 `task_text` 由 `language` 参数接收。VLA 内部不再用一个节点周期转发固定字符串。部署时 Qwen 在首次编码后释放，因此任务按一次运行固定；需要动态任务的调试配置必须显式保留 Qwen 模型，才能从系统外部向 `/task/text` 发布新任务。
 
 ### 4.2 删除 `temporal_entity_tracker` 节点
 
@@ -120,7 +130,7 @@ bridge 继续：
 - launch 中的 tracker 节点。
 - `/vla/perceived_entities` 和 `/vla/tracked_entities`。
 
-跟踪算法、速度有效性、滤波和丢失恢复并入 `image_entity_perception.py`，由图像感知节点直接发布 `/vla/entities`。
+跟踪算法、速度有效性、滤波和丢失恢复并入 `perception.py`，由感知节点直接发布 `/vla/entities`。
 
 ### 4.3 删除 `safety_gate` 节点
 
@@ -131,7 +141,20 @@ bridge 继续：
 - launch 中的 safety gate 节点。
 - `/vla/policy_displacement`。
 
-纯安全判定逻辑并入 `vla_policy.py`，节点级超时状态和最终发布逻辑并入 `vla_policy_node.py`。`/control/desired_displacement` 必须只有 `vla_policy` 一个 VLA 发布者。
+纯安全判定逻辑并入 `decision.py`，节点级超时状态和最终发布逻辑并入 `decision_node.py`。`/control/desired_displacement` 必须只有 `decision` 一个 VLA 发布者。
+
+### 4.4 节点和算法文件重命名
+
+节点、算法和 executable 使用同一组短名称：
+
+| 节点 | 算法文件 | ROS executable |
+|---|---|---|
+| `language_node.py` | `language.py` | `language` |
+| `perception_node.py` | `perception.py` | `perception` |
+| `decision_node.py` | `decision.py` | `decision` |
+| `bridge_node.cpp` | 节点内部算法 | `bridge_node` |
+
+不保留 `language_qwen`、`image_entity_perception`、`vla_policy` 或 `ue_object_deliverer_bridge_node` 的兼容入口、旧 executable 或旧节点名。
 
 ## 5. 目标代码结构
 
@@ -139,22 +162,24 @@ bridge 继续：
 src/vla/vla/
   __init__.py
 
-  language_qwen.py
-  language_qwen_node.py
+  language.py
+  language_node.py
 
-  image_entity_perception.py
-  image_entity_perception_node.py
+  perception.py
+  perception_node.py
 
-  vla_policy.py
-  vla_policy_node.py
+  decision.py
+  decision_node.py
 
-  policy_model.py
-  trajectory_contract.py
-  visual_encoder.py
-  visual_standoff_guard.py
 ```
 
-`policy_model.py` 等文件是纯算法支持模块，不对应 ROS 节点，也不提供 console entry point。
+不再保留 `language_encoder.py`、`visual_encoder.py`、`policy_model.py`、`trajectory_contract.py` 和 `visual_standoff_guard.py` 这类独立算法支持模块。它们的代码全部归入对应的算法文件：
+
+- `language_encoder.py` 的编码器、缓存和输入校验归入 `language.py`。
+- `image_entity_perception.py`、`visual_encoder.py` 以及跟踪/丢失恢复算法归入 `perception.py`。
+- `policy_model.py`、`trajectory_contract.py`、`visual_standoff_guard.py`、实体特征构造和安全判定归入 `decision.py`。
+
+算法文件不提供 ROS console entry point；每个节点只通过同名的 `_node.py` 暴露一个入口。
 
 ## 6. 文件职责规则
 
@@ -183,17 +208,17 @@ src/vla/vla/
 
 ```text
 /task/text
-  -> language_qwen
+  -> language
   -> /vla/language_embedding
 
 /ue/camera_frame + /vla/language_embedding
-  -> image_entity_perception
+  -> perception
   -> /vla/entities
 
 /vla/language_embedding + /vla/entities
-  -> vla_policy
+  -> decision
   -> /control/desired_displacement
-  -> ue_object_deliverer_bridge_node
+  -> bridge_node
   -> UE5
 ```
 
@@ -204,7 +229,7 @@ src/vla/vla/
 - `EntityArray`：任务相关实体的位置、速度、可见性和有效性。
 - `DesiredDisplacement`：一个控制周期的 `desired_x, desired_y`。
 
-`EntityFeatures.msg` 当前没有独立 topic 消费者。重构时删除该消息，把固定 `(16, 16)` 特征张量改为 `vla_policy.py` 内部数据结构。删除前必须通过仓库残留搜索和 Jetson 运行图确认本项目闭环没有消费者；本设计不保留兼容消息。
+`EntityFeatures.msg` 当前没有独立 topic 消费者。重构时删除该消息，把固定 `(16, 16)` 特征张量改为 `decision.py` 内部数据结构。删除前必须通过仓库残留搜索和 Jetson 运行图确认本项目闭环没有消费者；本设计不保留兼容消息。
 
 ## 8. 图像合同
 
@@ -227,7 +252,7 @@ src/vla/vla/
 
 - 任一任务 embedding、实体数组、帧身份或模型输出无效时，策略发布无效的零位移停车消息。
 - 非有限值、错误坐标系、错误动作维度、超限位移和碰撞风险均被拒绝。
-- 策略流超时后，`vla_policy_node` 发布一次状态变化对应的停车消息，避免高频重复日志。
+- 策略流超时后，`decision_node` 发布一次状态变化对应的停车消息，避免高频重复日志。
 - bridge 保留最终传输边界检查，但不重复 VLA 的完整碰撞算法。
 - 跟踪器在第一帧或时间戳不递增时将 `velocity_valid` 置为 `false`，不伪造速度。
 - 场景身份变化时清空跟踪、同步、动作历史和安全状态。
@@ -241,27 +266,28 @@ src/vla/vla/
 
 ### 阶段二：合并任务输入
 
-- 将初始任务参数移入 `language_qwen_node.py`。
+- 将初始任务参数移入 `language_node.py`。
 - 删除 `task_instruction` 节点和入口。
 - 验证有效和空任务的 fail-closed 行为。
 
 ### 阶段三：合并跟踪
 
-- 将跟踪和丢失恢复迁移到 `image_entity_perception.py`。
+- 将跟踪和丢失恢复迁移到 `perception.py`。
 - 图像节点直接发布 `/vla/entities`。
 - 删除 tracker 节点、入口和两个旧实体 topic。
 - 保留并迁移现有跟踪算法测试。
 
 ### 阶段四：合并安全边界
 
-- 将安全算法迁移到 `vla_policy.py`。
+- 将安全算法迁移到 `decision.py`。
 - 策略节点直接发布 `/control/desired_displacement`。
 - 删除 safety gate 节点、入口和策略中间 topic。
 - 删除策略对最终控制 topic 的反馈订阅，内部记录最后一个已接受动作。
 
-### 阶段五：拆分薄节点
+### 阶段五：统一命名、算法文件和薄节点
 
-- 完成三个 `x.py` / `x_node.py` 对。
+- 将节点和 executable 重命名为 `language`、`perception`、`decision`。
+- 将语言、感知、策略模型及其所有支持逻辑分别收拢到三个 `x.py` / `x_node.py` 对。
 - 删除节点文件中的算法实现和冗余长注释。
 - 删除不再使用的导入、变量和内部消息转换。
 
@@ -277,7 +303,8 @@ src/vla/vla/
 
 - Python `compileall`。
 - console entry point、launch、topic 和旧名称残留搜索。
-- 节点文件不得包含核心算法实现。
+- 节点文件不得包含核心算法实现；算法文件之间不得再通过辅助算法模块间接拆分。
+- `language_encoder.py`、`visual_encoder.py`、`policy_model.py`、`trajectory_contract.py` 和 `visual_standoff_guard.py` 不得作为独立运行时 Python 文件残留。
 - 仓库内不得存在旧节点入口或兼容转发文件。
 
 ### 算法测试
@@ -290,7 +317,8 @@ src/vla/vla/
 ### Jetson ROS 2 验证
 
 - `colcon build` 和完整测试通过。
-- `ros2 node list` 中 VLA 节点恰好为三个。
+- `ros2 node list` 中 VLA 节点恰好为 `language`、`perception`、`decision` 三个。
+- bridge 节点名称和 executable 均为 `bridge_node`。
 - `ros2 topic info -v` 证明每个最终 topic 只有预期发布者和订阅者。
 - CUDA 日志证明 Qwen、视觉模型和策略模型按预期设备运行。
 
@@ -305,7 +333,8 @@ src/vla/vla/
 ## 12. 成功标准
 
 - `src/vla/vla` 路径保持不变。
-- VLA 包只有三个 ROS console entry point 和三个运行时节点。
+- VLA 包只有 `language`、`perception`、`decision` 三个 ROS console entry point 和三个运行时节点。
+- 仓库中不存在旧的 `language_qwen`、`image_entity_perception`、`vla_policy` 或 `ue_object_deliverer_bridge_node` 运行入口。
 - 完整闭环只有三个 VLA 节点加一个 bridge 节点。
 - 不存在 `task_instruction`、`temporal_entity_tracker` 或 `safety_gate` 节点。
 - 不存在 `/vla/perceived_entities`、`/vla/tracked_entities` 或 `/vla/policy_displacement`。
