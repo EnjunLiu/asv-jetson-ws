@@ -14,6 +14,15 @@ MAX_ENTITIES = ENTITY_COUNT
 FEATURE_DIM = ENTITY_GEOMETRY_DIM
 
 
+def test_entity_contract_has_sixteen_features_and_two_color_channels():
+    red = build_entity_features([FakeEntity("red", 1.0, color="red")])
+    unknown = build_entity_features([FakeEntity("unknown", 1.0, color="green")])
+
+    assert ENTITY_GEOMETRY_DIM == 16
+    assert red.features[0, 14:].tolist() == [1.0, 0.0]
+    assert unknown.features[0, 14:].tolist() == [0.0, 0.0]
+
+
 @dataclass
 class FakeEntity:
     entity_id: str

@@ -175,22 +175,22 @@ def test_runtime_uses_current_single_point_cuda_artifacts() -> None:
     manifest = MANIFEST.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
 
-    assert "policy_single_point.pt" in launch
-    assert "perception_image_conditioned.npz" in launch
+    assert "policy.pt" in launch
+    assert "perception.npz" in launch
     assert "default_value=\"models/policy.onnx\"" not in launch
-    assert "path: models/perception_image_conditioned.npz" in manifest
-    assert "source_path: models/perception_image_conditioned.npz" in manifest
-    assert "model_id: image_entity_ridge_language_v3" in manifest
-    assert "path: models/policy_single_point.pt" in manifest
-    assert "source_path: models/policy_single_point.pt" in manifest
-    assert "model_id: policy_single_point" in manifest
+    assert "path: models/perception.npz" in manifest
+    assert "source_path: models/perception.npz" in manifest
+    assert "model_id: perception_ridge_language" in manifest
+    assert "path: models/policy.pt" in manifest
+    assert "source_path: models/policy.pt" in manifest
+    assert "model_id: policy" in manifest
     assert (
         "artifact_sha256: "
-        "a1e7451642c51b879e8b9ce1d7037567c2057d534bcb547c483716188ceb5e6e"
+        "eaecab49bd69443a9b19ce9b651d31007e49b4034f35eb4dd98a6836da5540b5"
     ) in manifest
     assert (
         "source_sha256: "
-        "f2dc38a141a3f230b2ddf55cef26841f00812bbd350f28aa84c84f5d5d1e2483"
+        "1177221999e0753c74ff8bb286915dea371601c4c95601ee9d2fb515b7e9b5ff"
     ) in manifest
     assert "deployment_status: selected_for_deployment" in manifest
     assert "mode: online_qwen_cuda_release_after_encode" in manifest
@@ -201,8 +201,8 @@ def test_runtime_uses_current_single_point_cuda_artifacts() -> None:
     assert "post_encode_embedding_online: true" in manifest
     assert "cached_embedding_file: false" in manifest
     assert "cpu_fallback: false" in manifest
-    assert "policy_single_point.pt" in readme
-    assert "perception_image_conditioned.npz" in readme
+    assert "policy.pt" in readme
+    assert "perception.npz" in readme
     assert "policy_image_seed17.onnx" not in readme
     assert "policy.onnx" not in readme
     assert "device={self.device}" in PERCEPTION_NODE.read_text(encoding="utf-8")
@@ -237,7 +237,8 @@ def test_identity_is_copied_and_mixed_frames_stop_before_inference() -> None:
     assert 'self._publish_fail_closed(ent, identity_reason)' in policy
     assert 'message.reason = str(reason)' in policy
     assert "identity_mismatch_reason(self._language, ent)" in policy
-    assert "self._previous_action" in policy
+    assert 'ASVState, "/ue/asv_state"' in policy
+    assert "ego_state=ego" in policy
     assert "self._recent_actions" not in policy
     assert "self._frame_sync.clear()" in policy
     assert "self._clear_control_history()" in policy

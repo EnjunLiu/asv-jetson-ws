@@ -18,8 +18,7 @@ from rclpy.qos import (
 from interfaces.msg import CameraFrame, Entity, EntityArray, TaskEmbedding
 
 from .perception import (
-    COLOR_CALIBRATED_MODEL_VERSION,
-    COLOR_CALIBRATED_MODEL_VERSION_V2,
+    MODEL_VERSION,
     ImageEntityModel,
     ImageEntityPerceptionError,
     LANGUAGE_EMBEDDING_DIM,
@@ -95,23 +94,12 @@ def _predict_with_color_reference(
     )
     if supports_task_embedding:
         kwargs["task_embedding"] = task_embedding
-    elif model.model_version not in {
-        "image_entity_ridge_v1",
-        "image_entity_ridge_v2",
-        "image_entity_color_calibrated_v1",
-    }:
+    elif model.model_version == MODEL_VERSION:
         raise ImageEntityPerceptionError(
             "MODEL_INPUT_CONTRACT_MISMATCH: model does not accept task_embedding"
         )
     if supports_color_reference:
         kwargs["color_image"] = color_image
-    elif model.model_version in (
-        COLOR_CALIBRATED_MODEL_VERSION,
-        COLOR_CALIBRATED_MODEL_VERSION_V2,
-    ):
-        raise ImageEntityPerceptionError(
-            "calibrated perception model lacks original-RGB color contract"
-        )
     return predict(feature_image, **kwargs)
 
 
@@ -195,7 +183,7 @@ class PerceptionNode(Node):
             Path.home()
             / "jetson_asv_ws"
             / "models"
-            / "perception_image_conditioned_130_v1.npz"
+            / "perception.npz"
         )
         model_path = str(
             self.declare_parameter("model_path", default_model)
@@ -206,9 +194,6 @@ class PerceptionNode(Node):
             self.declare_parameter("confidence_threshold", 0.3)
             .get_parameter_value()
             .double_value
-        )
-        self.allow_legacy_image_only = bool(
-            self.declare_parameter("allow_legacy_image_only", False).value
         )
         self.profile = CameraProfile(
             width=int(self.declare_parameter("image_width", 1280).value),
@@ -256,9 +241,7 @@ class PerceptionNode(Node):
             f"device={self.device}"
         )
         try:
-            self.model = ImageEntityModel.load(
-                model_path, allow_legacy=self.allow_legacy_image_only
-            )
+            self.model = ImageEntityModel.load(model_path)
             self.model.validate_device(self.device)
         except ImageEntityPerceptionError as exc:
             self.model = None
@@ -270,7 +253,7 @@ class PerceptionNode(Node):
                 f"device={self.device};path={model_path};"
                 f"input={self.model.input_contract};"
                 f"language_model={self.model.language_model_id or 'legacy'};"
-                f"legacy_image_only={self.model.model_version in {'image_entity_ridge_v1', 'image_entity_ridge_v2', 'image_entity_color_calibrated_v1'}};"
+                "input_mode=image+task_embedding;"
                 "input_color_contract=ue5_srgb_jpeg"
             )
             self.get_logger().info(self.detail)
@@ -287,13 +270,6 @@ class PerceptionNode(Node):
         if self.model is None:
             self.task_embedding = None
             self.embedding_detail = "MODEL_UNAVAILABLE"
-            return
-        if self.model.model_version in {
-            "image_entity_ridge_v1",
-            "image_entity_ridge_v2",
-            "image_entity_color_calibrated_v1",
-        }:
-            self.embedding_detail = "LEGACY_IMAGE_ONLY_MODE_IGNORES_TASK_EMBEDDING"
             return
         model_id = str(getattr(message, "model_id", "")).strip()
         if model_id != self.model.language_model_id:
@@ -424,14 +400,7 @@ class PerceptionNode(Node):
             message.detail = self.detail
             self.publisher.publish(message)
             return
-        if (
-            self.model.model_version not in {
-                "image_entity_ridge_v1",
-                "image_entity_ridge_v2",
-                "image_entity_color_calibrated_v1",
-            }
-            and self.task_embedding is None
-        ):
+        if self.task_embedding is None:
             message.detail = f"MISSING_TASK_EMBEDDING:{self.embedding_detail}"
             self.publisher.publish(message)
             return
@@ -502,18 +471,8 @@ class PerceptionNode(Node):
 
         message.valid = bool(task_spec.valid)
         message.source = "image_perception"
-        input_mode = (
-            "image-only-legacy"
-            if self.model.model_version
-            in {
-                "image_entity_ridge_v1",
-                "image_entity_ridge_v2",
-                "image_entity_color_calibrated_v1",
-            }
-            else "image+task_embedding"
-        )
         message.detail = (
-            f"OK:{input_mode};task={task_spec.instruction_id};"
+            f"OK:image+task_embedding;task={task_spec.instruction_id};"
             f"entities={len(message.entities)};"
             f"model={self.model.model_version}"
         )

@@ -103,7 +103,7 @@ class _Prediction:
 
 
 class _Model:
-    model_version = "image_entity_ridge_language_v3"
+    model_version = "perception_schema"
     language_model_id = "test-language"
     task_embedding_dim = 256
 
@@ -256,14 +256,14 @@ def test_perception_trace_formatter_keeps_required_red_diagnostics():
         run_id="RUN-TRACE",
         frame_index=7,
         sample_index=2,
-        model_version="image_entity_ridge_v2",
+        model_version="perception_ridge_language",
         entity=entity,
     )
     assert trace.startswith("PERCEPTION_TRACE ")
     for token in (
         "run_id=RUN-TRACE",
         "frame_index=7",
-        "model=image_entity_ridge_v2",
+        "model=perception_ridge_language",
         "relative_x=3.250000",
         "relative_y=-0.750000",
         "visible=True",

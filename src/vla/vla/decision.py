@@ -4,10 +4,10 @@ The perception algorithm owns image understanding and temporal velocity:
 
     camera -> perception -> structured entity tensor -> decision
 
-This node consumes ``TaskEmbedding`` and tracked entities, constructs its
-structured feature tensor, then publishes one bounded body-frame displacement for the next
-control interval.  There is no trajectory horizon, global visual token,
-entity crop token, or ego-state input at this boundary.
+This node consumes ``TaskEmbedding``, tracked entities and the current
+``ASVState``, constructs its structured feature tensor, then publishes one
+bounded body-frame displacement for the next control interval. There is no
+trajectory horizon, global visual token, entity crop token or bbox input.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-    from interfaces.msg import DesiredDisplacement, EntityArray, TaskEmbedding
+    from interfaces.msg import ASVState, DesiredDisplacement, EntityArray, TaskEmbedding
 except ModuleNotFoundError:  # Allow the algorithm half to run in offline tests.
     rclpy = None
 
@@ -41,7 +41,7 @@ except ModuleNotFoundError:  # Allow the algorithm half to run in offline tests.
         def __init__(self, **kwargs) -> None:
             self.settings = kwargs
 
-    DesiredDisplacement = EntityArray = TaskEmbedding = Any
+    ASVState = DesiredDisplacement = EntityArray = TaskEmbedding = Any
 
 import math
 from typing import Protocol
@@ -749,11 +749,11 @@ class SmallPolicyConfig:
     entity_count: int = 16
     entity_geometry_dim: int = 16
     action_dim: int = 2
-    previous_action_dim: int = 2
+    ego_state_dim: int = 2
     language_hidden: int = 128
     entity_geometry_hidden: int = 64
     entity_hidden: int = 192
-    previous_action_hidden: int = 64
+    ego_state_hidden: int = 64
     fusion_hidden: int = 256
     maximum_action_m: float = 0.3
     invalid_stop_logit: float = 20.0
@@ -786,11 +786,11 @@ class SmallPolicyConfig:
             self.entity_count,
             self.entity_geometry_dim,
             self.action_dim,
-            self.previous_action_dim,
+            self.ego_state_dim,
             self.language_hidden,
             self.entity_geometry_hidden,
             self.entity_hidden,
-            self.previous_action_hidden,
+            self.ego_state_hidden,
             self.fusion_hidden,
             self.maximum_trainable_parameters,
         )
@@ -798,8 +798,8 @@ class SmallPolicyConfig:
             raise ValueError("all dimensions and parameter limits must be positive")
         if self.action_dim != 2:
             raise ValueError("single-step body-frame action_dim must be 2")
-        if self.previous_action_dim != 2:
-            raise ValueError("previous_action_dim must be 2")
+        if self.ego_state_dim != 2:
+            raise ValueError("ego_state_dim must be 2: surge_velocity and yaw_rate")
         if self.maximum_action_m <= 0.0:
             raise ValueError("maximum_action_m must be positive")
         if not torch.isfinite(torch.tensor(self.invalid_stop_logit)):
@@ -848,11 +848,9 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
 class SmallActionPolicy(nn.Module):
     """Fuse language and structured entity geometry into one bounded action.
 
-    The decision head receives the task embedding, the structured output of the
-    perception/tracking head, and the previous single-step action. Image and
-    ego tensors are deliberately not accepted here; the entity tensor already
-    contains image-derived color, relative geometry, and tracked relative
-    velocity.
+    The decision head receives task language, structured entity geometry and
+    the current vessel dynamics. It does not receive the previous action or
+    image/bbox tensors; temporal smoothness is learned from current dynamics.
     """
 
     def __init__(self, config: SmallPolicyConfig | None = None) -> None:
@@ -875,10 +873,10 @@ class SmallActionPolicy(nn.Module):
             ),
             nn.GELU(),
         )
-        self.previous_action_encoder = _mlp(
-            cfg.previous_action_dim,
-            cfg.previous_action_hidden,
-            cfg.previous_action_hidden,
+        self.ego_state_encoder = _mlp(
+            cfg.ego_state_dim,
+            cfg.ego_state_hidden,
+            cfg.ego_state_hidden,
         )
         self.entity_attention = nn.Linear(cfg.entity_hidden, 1)
         if cfg.language_conditioned_entity_attention:
@@ -893,7 +891,7 @@ class SmallActionPolicy(nn.Module):
         # The validity bit is part of the decision input so a real zero action
         # is distinguishable from the zero sentinel used at episode start.
         fusion_input_dim = (
-            cfg.language_hidden + cfg.entity_hidden + cfg.previous_action_hidden + 1
+            cfg.language_hidden + cfg.entity_hidden + cfg.ego_state_hidden + 1
         )
         self.fusion = nn.Sequential(
             nn.Linear(fusion_input_dim, cfg.fusion_hidden),
@@ -959,17 +957,17 @@ class SmallActionPolicy(nn.Module):
         *,
         language: Tensor,
         entity_geometry: Tensor,
-        previous_action: Tensor,
+        ego_state: Tensor,
         language_valid: Tensor | None = None,
         entity_geometry_mask: Tensor | None = None,
-        previous_action_valid: Tensor | None = None,
+        ego_state_valid: Tensor | None = None,
         policy_input_valid: Tensor | None = None,
         **legacy_inputs: Tensor,
     ) -> PolicyOutput:
         if legacy_inputs:
             raise ValueError(
                 "decision policy accepts language, entity_geometry, "
-                "previous_action, and their validity masks; "
+                "ego_state, and their validity masks; "
                 f"legacy inputs are unsupported: {sorted(legacy_inputs)}"
             )
         cfg = self.config
@@ -980,10 +978,10 @@ class SmallActionPolicy(nn.Module):
         dtype = language.dtype
         if (
             entity_geometry.device != device
-            or previous_action.device != device
+            or ego_state.device != device
         ):
             raise ValueError("all policy inputs must be on the same device")
-        if entity_geometry.dtype != dtype or previous_action.dtype != dtype:
+        if entity_geometry.dtype != dtype or ego_state.dtype != dtype:
             raise ValueError("all floating policy inputs must share one dtype")
 
         self._expect_shape(
@@ -998,11 +996,7 @@ class SmallActionPolicy(nn.Module):
             ),
             "entity_geometry",
         )
-        self._expect_shape(
-            previous_action,
-            (batch_size, cfg.previous_action_dim),
-            "previous_action",
-        )
+        self._expect_shape(ego_state, (batch_size, cfg.ego_state_dim), "ego_state")
         language_mask = self._as_mask(
             language_valid,
             batch_size=batch_size,
@@ -1031,11 +1025,11 @@ class SmallActionPolicy(nn.Module):
         geometry_entity_mask = entity_geometry_mask.to(
             device=device, dtype=torch.bool
         )
-        previous_mask = self._as_mask(
-            previous_action_valid,
+        ego_mask = self._as_mask(
+            ego_state_valid,
             batch_size=batch_size,
             device=device,
-            name="previous_action_valid",
+            name="ego_state_valid",
         )
 
         valid_mask = language_mask & input_mask
@@ -1047,8 +1041,8 @@ class SmallActionPolicy(nn.Module):
         entity_geometry_clean = self._sanitize_masked(
             entity_geometry, geometry_entity_mask, "entity_geometry"
         )
-        previous_action_clean = self._sanitize_masked(
-            previous_action.detach(), previous_mask & valid_mask, "previous_action"
+        ego_state_clean = self._sanitize_masked(
+            ego_state.detach(), ego_mask & valid_mask, "ego_state"
         )
         language_token = self.language_encoder(language_clean)
         entity_geometry_token = self.entity_geometry_encoder(
@@ -1057,7 +1051,7 @@ class SmallActionPolicy(nn.Module):
         entity_token = self.entity_fusion(
             entity_geometry_token
         )
-        previous_action_token = self.previous_action_encoder(previous_action_clean)
+        ego_state_token = self.ego_state_encoder(ego_state_clean)
 
         attention_score = self.entity_attention(entity_token).squeeze(-1)
         if self.entity_language_query is not None:
@@ -1088,8 +1082,8 @@ class SmallActionPolicy(nn.Module):
                 (
                     language_token,
                     pooled_entity,
-                    previous_action_token,
-                    previous_mask.to(dtype=dtype).unsqueeze(-1),
+                    ego_state_token,
+                    ego_mask.to(dtype=dtype).unsqueeze(-1),
                 ),
                 dim=-1,
             )
@@ -1128,18 +1122,18 @@ class SmallActionPolicy(nn.Module):
 
 DEFAULT_POLICY_MODEL_PATH = (
     "models/"
-    "policy_single_point.pt"
+    "policy.pt"
 )
 
 _FLOAT_INPUT_NAMES = (
     "language",
     "entity_geometry",
-    "previous_action",
+    "ego_state",
 )
 _MASK_INPUT_NAMES = (
     "language_valid",
     "entity_geometry_mask",
-    "previous_action_valid",
+    "ego_state_valid",
     "policy_input_valid",
 )
 
@@ -1293,10 +1287,11 @@ __all__ = [
 
 
 DEFAULT_POLICY_BACKEND = "torch_cuda"
-POLICY_MODEL_VERSION = "vla_torch_cuda_action_history"
+POLICY_MODEL_VERSION = "vla_torch_cuda_ego_dynamics"
 ENTITY_COUNT = 16
 LANGUAGE_DIM = 256
 ENTITY_GEOMETRY_DIM = 16
+EGO_STATE_DIM = 2
 ENTITY_FEATURE_BACKEND = "deterministic_entity_tensor"
 POSITION_SCALE_M = 20.0
 HEIGHT_SCALE_M = 5.0
@@ -1584,8 +1579,8 @@ def smooth_policy_displacement(
 ) -> tuple[float, float] | None:
     """Apply a bounded per-frame action change around the previous command.
 
-    A missing previous command starts from zero, so the first action uses the
-    same delta bound as later frames while preserving the policy direction.
+    Delta smoothing is only meaningful when a previous command is available.
+    Without one, return the bounded policy action directly.
     """
 
     current = bound_policy_displacement(displacement, max_step_m=max_step_m)
@@ -1598,7 +1593,7 @@ def smooth_policy_displacement(
     if not math.isfinite(maximum_delta) or maximum_delta < 0.0:
         return None
     if previous_action is None:
-        previous = np.zeros(ACTION_DIM, dtype=np.float64)
+        return current
     else:
         try:
             previous = np.asarray(previous_action, dtype=np.float64).reshape(-1)
@@ -1734,16 +1729,32 @@ class DecisionNode(Node):
         self._last_entity_frame_index = -1
         self._last_inferred_frame_index = -1
         self._last_gate_frame_index = -1
-        self._pending_actions: OrderedDict[FrameKey, _PendingAction] = OrderedDict()
-        self._previous_action = np.zeros(ACTION_DIM, dtype=np.float32)
-        self._previous_action_valid = False
-        self._previous_action_identity: FrameKey | None = None
+        self._ego_state: ASVState | None = None
+        self._safety_config = SafetyGateConfig(
+            max_step_m=float(
+                self.declare_parameter(
+                    "safety_max_step_m", MAX_DISPLACEMENT_M
+                ).value
+            ),
+            stale_timeout_sec=float(
+                self.declare_parameter("safety_stale_timeout_sec", 1.0).value
+            ),
+            estop_timeout_sec=float(
+                self.declare_parameter("safety_estop_timeout_sec", 2.0).value
+            ),
+            collision_margin_m=float(
+                self.declare_parameter("safety_collision_margin_m", 0.5).value
+            ),
+        )
 
         self._lang_sub = self.create_subscription(
             TaskEmbedding, "/vla/language_embedding", self._on_language, LANG_QOS
         )
         self._ent_sub = self.create_subscription(
             EntityArray, "/vla/entities", self._on_entities, 10
+        )
+        self._ego_sub = self.create_subscription(
+            ASVState, "/ue/asv_state", self._on_ego_state, 10
         )
         self._pub = self.create_publisher(
             DesiredDisplacement, "/control/desired_displacement", 10
@@ -1762,7 +1773,7 @@ class DecisionNode(Node):
             self.get_logger().info(
                 f"POLICY_READY backend={self._backend} device={policy_device} "
                 f"model={requested_path or DEFAULT_POLICY_MODEL_PATH} "
-                "inputs=task_embedding+structured_entities+previous_action "
+                "inputs=task_embedding+structured_entities+ego_dynamics "
                 "output=[desired_x,desired_y]"
             )
         except Exception as exc:
@@ -1782,78 +1793,13 @@ class DecisionNode(Node):
             ).value
         )
 
-    def _clear_previous_action(self) -> None:
-        self._previous_action.fill(0.0)
-        self._previous_action_valid = False
-        self._previous_action_identity = None
-
     def _clear_control_history(self) -> None:
-        self._pending_actions.clear()
         self._last_gate_frame_index = -1
-        self._clear_previous_action()
 
-    def _remember_previous_action(
-        self, action: Sequence[float], *, identity: FrameKey
-    ) -> None:
-        values = np.asarray(action, dtype=np.float32).reshape(-1)
-        if values.size != ACTION_DIM or not np.all(np.isfinite(values)):
-            self._clear_previous_action()
-            return
-        bounded = bound_policy_displacement(
-            values, max_step_m=self._smooth_max_step_m
-        )
-        if bounded is None:
-            self._clear_previous_action()
-            return
-        self._previous_action[:] = bounded
-        self._previous_action_valid = True
-        self._previous_action_identity = identity
+    def _on_ego_state(self, message: ASVState) -> None:
+        """Subscribe to current vessel dynamics for the decision input."""
 
-    def _on_gate_result(self, message: DesiredDisplacement) -> None:
-        """Commit only the gate result for the current pending control frame."""
-
-        identity = _identity_tuple(message)
-        if identity is None or self._active_run is None:
-            return
-        if identity[:2] != self._active_run:
-            return
-        frame_index = identity[2]
-        if (
-            self._last_gate_frame_index >= 0
-            and frame_index <= self._last_gate_frame_index
-        ):
-            self._clear_previous_action()
-            return
-        # A delayed result must not retroactively become the history for a
-        # newer control frame that has already been inferred.
-        if (
-            self._last_inferred_frame_index >= 0
-            and frame_index < self._last_inferred_frame_index
-        ):
-            self._pending_actions.pop(identity, None)
-            self._clear_previous_action()
-            return
-        pending = self._pending_actions.pop(identity, None)
-        if pending is None:
-            self._last_gate_frame_index = frame_index
-            self._clear_previous_action()
-            return
-        try:
-            stamp_matches = int(message.stamp_us) == pending.stamp_us
-        except (AttributeError, TypeError, ValueError):
-            stamp_matches = False
-        if not stamp_matches:
-            self._last_gate_frame_index = frame_index
-            self._clear_previous_action()
-            return
-        self._last_gate_frame_index = frame_index
-        if not bool(message.valid) or bool(message.safe_stop):
-            self._clear_previous_action()
-            return
-        self._remember_previous_action(
-            (float(message.desired_x), float(message.desired_y)),
-            identity=identity,
-        )
+        self._ego_state = message
 
     def _expire_cache(self) -> None:
         self._frame_sync.expire()
@@ -2019,12 +1965,6 @@ class DecisionNode(Node):
             detail="UNINITIALIZED",
             safety_entities=safety_entities,
         )
-        self._safety_config = SafetyGateConfig(
-            max_step_m=float(self.declare_parameter("safety_max_step_m", MAX_DISPLACEMENT_M).value),
-            stale_timeout_sec=float(self.declare_parameter("safety_stale_timeout_sec", 1.0).value),
-            estop_timeout_sec=float(self.declare_parameter("safety_estop_timeout_sec", 2.0).value),
-            collision_margin_m=float(self.declare_parameter("safety_collision_margin_m", 0.5).value),
-        )
 
     def _on_entities(self, source: EntityArray) -> None:
         message = self._new_entity_features(source)
@@ -2149,20 +2089,6 @@ class DecisionNode(Node):
         self._pub.publish(message)
         self._frame_seq += 1
 
-    def _discard_old_pending_actions(self, identity: FrameKey) -> None:
-        discarded_pending = False
-        for pending_identity in tuple(self._pending_actions):
-            if (
-                pending_identity[:2] == identity[:2]
-                and pending_identity[2] < identity[2]
-            ):
-                self._pending_actions.pop(pending_identity, None)
-                discarded_pending = True
-        # A discarded pending action means its gate result was not received;
-        # a frame gap alone does not invalidate a committed action.
-        if discarded_pending:
-            self._clear_previous_action()
-
     def _maybe_infer(
         self,
         key: FrameKey,
@@ -2191,33 +2117,25 @@ class DecisionNode(Node):
             self._last_inferred_frame_index = int(ent.frame_index)
             self._publish_fail_closed(ent, identity_reason)
             return
-        self._discard_old_pending_actions(key)
         self._frame_sync.consume(key)
         self._last_inference_time = current
         message = self._new_output(ent)
-        if (
-            self._last_inferred_frame_index >= 0
-            and int(ent.frame_index) < self._last_inferred_frame_index
-        ):
-            self._clear_previous_action()
         self._last_inferred_frame_index = int(ent.frame_index)
+
+        ego = self._ego_state
+        if ego is None or _identity_tuple(ego) != key or not bool(ego.valid):
+            self._publish_fail_closed(ent, "MISSING_OR_MISMATCHED_EGO_STATE")
+            return
 
         if self._torch_runner is None:
             self._publish_fail_closed(ent, self._policy_load_error or "NO_MODEL_LOADED")
             return
 
         try:
-            previous_action_valid = bool(
-                self._previous_action_valid
-                and self._previous_action_identity is not None
-                and self._previous_action_identity[:2] == key[:2]
-                and self._previous_action_identity[2] < key[2]
-            )
             inputs = self._build_inputs(
                 self._language,
                 ent,
-                previous_action=self._previous_action,
-                previous_action_valid=previous_action_valid,
+                ego_state=ego,
             )
             action, stop_logit, valid_mask = self._torch_runner.run(inputs)
             action = np.asarray(action, dtype=np.float32)
@@ -2282,9 +2200,7 @@ class DecisionNode(Node):
         current_action = np.asarray(guarded, dtype=np.float32)
         shaped = smooth_policy_displacement(
             current_action,
-            previous_action=(
-                self._previous_action if previous_action_valid else None
-            ),
+            previous_action=None,
             max_step_m=self._smooth_max_step_m,
             max_delta_m=self._smooth_max_delta_m,
         )
@@ -2337,13 +2253,6 @@ class DecisionNode(Node):
             guarded_action=guarded,
             final_action=shaped,
         )
-        self._pending_actions[key] = _PendingAction(
-            stamp_us=int(message.stamp_us),
-            action=(float(shaped[0]), float(shaped[1])),
-        )
-        self._pending_actions.move_to_end(key)
-        while len(self._pending_actions) > SYNC_CACHE_SIZE:
-            self._pending_actions.popitem(last=False)
         self._pub.publish(message)
         self._frame_seq += 1
 
@@ -2352,10 +2261,9 @@ class DecisionNode(Node):
         language: TaskEmbedding,
         entities: DecisionEntityFrame,
         *,
-        previous_action: Sequence[float] | np.ndarray | None = None,
-        previous_action_valid: bool = False,
+        ego_state: ASVState,
     ) -> dict[str, np.ndarray]:
-        """Build the decision-head contract without image or ego fields."""
+        """Build language, entity and current-dynamics policy inputs."""
 
         identity_reason = identity_mismatch_reason(language, entities)
         if identity_reason is not None:
@@ -2375,23 +2283,22 @@ class DecisionNode(Node):
             raise ValueError("active structured entity features are non-finite")
         if not str(language.instruction).strip() == str(entities.instruction).strip() and str(entities.instruction).strip():
             raise ValueError("language/entity instruction mismatch")
-        previous = np.zeros(ACTION_DIM, dtype=np.float32)
-        if bool(previous_action_valid):
-            if previous_action is None:
-                raise ValueError("previous_action is missing while marked valid")
-            previous = np.asarray(previous_action, dtype=np.float32).reshape(-1)
-            if previous.size != ACTION_DIM or not np.all(np.isfinite(previous)):
-                raise ValueError("previous action must be finite float32[2]")
-        policy_valid = bool(language.valid) and bool(entities.valid) and bool(np.any(mask))
+        ego_values = np.asarray(
+            [
+                np.clip(float(ego_state.surge_velocity) / 5.0, -1.0, 1.0),
+                np.clip(float(ego_state.yaw_rate) / 1.0, -1.0, 1.0),
+            ],
+            dtype=np.float32,
+        )
+        ego_valid = bool(ego_state.valid) and bool(np.all(np.isfinite(ego_values)))
+        policy_valid = bool(language.valid) and bool(entities.valid) and bool(np.any(mask)) and ego_valid
         return {
             "language": embedding.reshape(1, LANGUAGE_DIM),
             "entity_geometry": geometry.reshape(1, ENTITY_COUNT, ENTITY_GEOMETRY_DIM),
-            "previous_action": previous.reshape(1, ACTION_DIM),
+            "ego_state": ego_values.reshape(1, EGO_STATE_DIM),
             "language_valid": np.asarray([bool(language.valid)], dtype=bool),
             "entity_geometry_mask": mask.reshape(1, ENTITY_COUNT),
-            "previous_action_valid": np.asarray(
-                [bool(previous_action_valid)], dtype=bool
-            ),
+            "ego_state_valid": np.asarray([ego_valid], dtype=bool),
             "policy_input_valid": np.asarray([policy_valid], dtype=bool),
         }
 

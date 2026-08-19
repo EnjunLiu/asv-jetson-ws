@@ -26,10 +26,8 @@ import numpy as np
 from PIL import Image
 
 
-LEGACY_MODEL_VERSION = "image_entity_ridge_v1"
-IMAGE_ONLY_MODEL_VERSION = "image_entity_ridge_v2"
-MODEL_VERSION = "image_entity_ridge_language_v3"
-MODEL_SCHEMA_VERSION = "image_entity_perception_schema_v3"
+MODEL_VERSION = "perception_ridge_language"
+MODEL_SCHEMA_VERSION = "perception_schema"
 MODEL_INPUT_CONTRACT = (
     "(camera_image_rgb,task_embedding_float32[256])->structured_entities"
 )
@@ -54,16 +52,6 @@ ENTITY_IDS = ("target_red", "target_blue", "target_left", "target_right")
 ENTITY_COUNT = len(ENTITY_IDS)
 OUTPUT_DIM = ENTITY_COUNT * 4  # visible logit + relative x/y/z per slot
 POSITION_SCALE_M = np.asarray((40.0, 40.0, 5.0), dtype=np.float32)
-COLOR_CALIBRATED_MODEL_VERSION = "image_entity_color_calibrated_v1"
-COLOR_CALIBRATED_MODEL_VERSION_V2 = IMAGE_ONLY_MODEL_VERSION
-IMAGE_ONLY_MODEL_VERSIONS = frozenset(
-    {
-        LEGACY_MODEL_VERSION,
-        IMAGE_ONLY_MODEL_VERSION,
-        COLOR_CALIBRATED_MODEL_VERSION,
-        COLOR_CALIBRATED_MODEL_VERSION_V2,
-    }
-)
 COLOR_CALIBRATION_WIDTH = 320
 COLOR_CALIBRATION_HEIGHT = 180
 # Fit on the available near-range S2 red masks.  The form is intentionally
@@ -434,81 +422,49 @@ def _extract_torch_image_features(
         ),
         dim=-1,
     )
-    if model_version == LEGACY_MODEL_VERSION:
-        features = spatial.reshape(-1)
-    else:
-        x_coordinates = torch.linspace(
-            -1.0,
-            1.0,
-            GRID_WIDTH,
-            dtype=torch.float32,
-            device=device,
-        )[None, :]
-        y_coordinates = torch.linspace(
-            0.0,
-            1.0,
-            GRID_HEIGHT,
-            dtype=torch.float32,
-            device=device,
-        )[:, None]
-        moments = []
-        for evidence in (red, blue, white, bright):
-            total = evidence.sum()
-            denominator = torch.clamp(total, min=1.0e-6)
-            center_x = (evidence * x_coordinates).sum() / denominator
-            center_y = (evidence * y_coordinates).sum() / denominator
-            moments.extend(
-                (
-                    torch.log1p(total),
-                    center_x,
-                    center_y,
-                    (evidence * (x_coordinates - center_x) ** 2).sum()
-                    / denominator,
-                    (evidence * (y_coordinates - center_y) ** 2).sum()
-                    / denominator,
-                    evidence.amax(),
-                    evidence.mean(),
-                    (evidence > 0.08).to(dtype=torch.float32).mean(),
-                )
+    x_coordinates = torch.linspace(
+        -1.0,
+        1.0,
+        GRID_WIDTH,
+        dtype=torch.float32,
+        device=device,
+    )[None, :]
+    y_coordinates = torch.linspace(
+        0.0,
+        1.0,
+        GRID_HEIGHT,
+        dtype=torch.float32,
+        device=device,
+    )[:, None]
+    moments = []
+    for evidence in (red, blue, white, bright):
+        total = evidence.sum()
+        denominator = torch.clamp(total, min=1.0e-6)
+        center_x = (evidence * x_coordinates).sum() / denominator
+        center_y = (evidence * y_coordinates).sum() / denominator
+        moments.extend(
+            (
+                torch.log1p(total),
+                center_x,
+                center_y,
+                (evidence * (x_coordinates - center_x) ** 2).sum()
+                / denominator,
+                (evidence * (y_coordinates - center_y) ** 2).sum()
+                / denominator,
+                evidence.amax(),
+                evidence.mean(),
+                (evidence > 0.08).to(dtype=torch.float32).mean(),
             )
-        features = torch.cat((spatial.reshape(-1), torch.stack(moments)))
+        )
+    features = torch.cat((spatial.reshape(-1), torch.stack(moments)))
     # Language-conditioned models append the 256-D task embedding after this
     # helper returns. Validate only the image branch here; checking the fused
     # dimension at this stage rejects every real CUDA frame.
-    expected = (
-        BASE_FEATURE_DIM
-        if model_version == LEGACY_MODEL_VERSION
-        else FEATURE_DIM
-    )
-    if tuple(features.shape) != (expected,) or not bool(torch.isfinite(features).all()):
+    if tuple(features.shape) != (FEATURE_DIM,) or not bool(torch.isfinite(features).all()):
         raise ImageEntityPerceptionError(
             "CUDA image feature vector is invalid"
         )
     return features.contiguous()
-
-
-def _extract_legacy_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
-    """Extract the legacy RGB/evidence vector for deployed model compatibility."""
-
-    result = _resized_rgb(image)
-    red = np.maximum(
-        result[..., 0] - np.maximum(result[..., 1], result[..., 2]), 0.0
-    )
-    blue = np.maximum(
-        result[..., 2] - np.maximum(result[..., 0], result[..., 1]), 0.0
-    )
-    brightness = np.mean(result, axis=-1)
-    saturation = np.max(result, axis=-1) - np.min(result, axis=-1)
-    white = np.clip(brightness - 1.5 * saturation, 0.0, 1.0)
-    bright = np.clip(brightness - 0.45, 0.0, 1.0)
-    result = np.concatenate(
-        [result, red[..., None], blue[..., None], white[..., None], bright[..., None]],
-        axis=-1,
-    )
-    result = np.ascontiguousarray(result.reshape(-1), dtype=np.float32)
-    if result.shape != (BASE_FEATURE_DIM,) or not np.all(np.isfinite(result)):
-        raise ImageEntityPerceptionError("image feature vector is invalid")
-    return result
 
 
 def extract_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
@@ -575,10 +531,6 @@ def extract_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
 
 
 def _feature_dim_for_model(model_version: str) -> int:
-    if model_version == LEGACY_MODEL_VERSION:
-        return BASE_FEATURE_DIM
-    if model_version in IMAGE_ONLY_MODEL_VERSIONS:
-        return FEATURE_DIM
     if model_version == MODEL_VERSION:
         return FEATURE_DIM + LANGUAGE_EMBEDDING_DIM
     raise ImageEntityPerceptionError(
@@ -744,38 +696,32 @@ class ImageEntityModel:
         _torch_for_device(device)
 
     def __post_init__(self) -> None:
-        is_legacy = self.model_version in IMAGE_ONLY_MODEL_VERSIONS
-        if not is_legacy:
-            if self.schema_version != MODEL_SCHEMA_VERSION:
-                raise ImageEntityPerceptionError(
-                    "MODEL_SCHEMA_MISMATCH: expected "
-                    f"{MODEL_SCHEMA_VERSION}, got {self.schema_version!r}"
-                )
-            if self.input_contract != MODEL_INPUT_CONTRACT:
-                raise ImageEntityPerceptionError(
-                    "MODEL_INPUT_CONTRACT_MISMATCH: expected "
-                    f"{MODEL_INPUT_CONTRACT}, got {self.input_contract!r}"
-                )
-            if self.output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
-                raise ImageEntityPerceptionError(
-                    "MODEL_OUTPUT_CONTRACT_MISMATCH: expected "
-                    f"{STRUCTURED_ENTITY_OUTPUT_CONTRACT}, got {self.output_contract!r}"
-                )
-            if int(self.task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
-                raise ImageEntityPerceptionError(
-                    "LANGUAGE_EMBEDDING_DIM_MISMATCH: expected "
-                    f"{LANGUAGE_EMBEDDING_DIM}, got {self.task_embedding_dim}"
-                )
-            if not str(self.language_model_id).strip():
-                raise ImageEntityPerceptionError(
-                    "LANGUAGE_MODEL_ID_MISSING: new perception models require "
-                    "the identity of the embedding model"
-                )
-            if not _is_sha256(self.language_weights_sha256):
-                raise ImageEntityPerceptionError(
-                    "LANGUAGE_MODEL_HASH_INVALID: expected a 64-character "
-                    "SHA-256 for the embedding model weights"
-                )
+        if self.schema_version != MODEL_SCHEMA_VERSION:
+            raise ImageEntityPerceptionError(
+                "MODEL_SCHEMA_MISMATCH: expected "
+                f"{MODEL_SCHEMA_VERSION}, got {self.schema_version!r}"
+            )
+        if self.input_contract != MODEL_INPUT_CONTRACT:
+            raise ImageEntityPerceptionError(
+                "MODEL_INPUT_CONTRACT_MISMATCH: expected "
+                f"{MODEL_INPUT_CONTRACT}, got {self.input_contract!r}"
+            )
+        if self.output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
+            raise ImageEntityPerceptionError(
+                "MODEL_OUTPUT_CONTRACT_MISMATCH: expected "
+                f"{STRUCTURED_ENTITY_OUTPUT_CONTRACT}, got {self.output_contract!r}"
+            )
+        if int(self.task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
+            raise ImageEntityPerceptionError(
+                "LANGUAGE_EMBEDDING_DIM_MISMATCH: expected "
+                f"{LANGUAGE_EMBEDDING_DIM}, got {self.task_embedding_dim}"
+            )
+        if not str(self.language_model_id).strip():
+            raise ImageEntityPerceptionError("LANGUAGE_MODEL_ID_MISSING")
+        if not _is_sha256(self.language_weights_sha256):
+            raise ImageEntityPerceptionError(
+                "LANGUAGE_MODEL_HASH_INVALID: expected a 64-character SHA-256"
+            )
         if bool(self.velocity_output):
             raise ImageEntityPerceptionError(
                 "VELOCITY_OUTPUT_FORBIDDEN: velocity is estimated by the temporal tracker"
@@ -804,38 +750,13 @@ class ImageEntityModel:
         object.__setattr__(self, "task_embedding_dim", int(self.task_embedding_dim))
 
     @classmethod
-    def load(
-        cls, path: str | Path, *, allow_legacy: bool = False
-    ) -> "ImageEntityModel":
+    def load(cls, path: str | Path) -> "ImageEntityModel":
         model_path = Path(path).expanduser()
         if not model_path.is_file():
             raise ImageEntityPerceptionError(f"model not found: {model_path}")
         try:
             with np.load(model_path, allow_pickle=False) as data:
                 version = str(data["model_version"].item())
-                if version in IMAGE_ONLY_MODEL_VERSIONS:
-                    if not allow_legacy:
-                        raise ImageEntityPerceptionError(
-                            "MODEL_SCHEMA_MISMATCH: checkpoint is image-only "
-                            f"({version}); load it only with explicit "
-                            "allow_legacy=True image-only legacy mode"
-                        )
-                    return cls(
-                        feature_mean=data["feature_mean"],
-                        feature_scale=data["feature_scale"],
-                        weights=data["weights"],
-                        bias=data["bias"],
-                        model_version=version,
-                        visibility_threshold=float(
-                            data["visibility_threshold"].item()
-                        ),
-                        schema_version="image_only_legacy_schema",
-                        input_contract="(camera_image_rgb)->structured_entities",
-                        output_contract=STRUCTURED_ENTITY_OUTPUT_CONTRACT,
-                        task_embedding_dim=0,
-                        language_model_id="legacy-image-only",
-                        language_weights_sha256="",
-                    )
                 required = (
                     "model_schema_version",
                     "input_contract",
@@ -894,22 +815,14 @@ class ImageEntityModel:
         requests never fall back to NumPy.
         """
 
-        is_legacy = self.model_version in IMAGE_ONLY_MODEL_VERSIONS
-        validated_embedding = None
-        if not is_legacy:
-            validated_embedding = validate_task_embedding(
-                task_embedding, expected_dim=self.task_embedding_dim
-            )
+        validated_embedding = validate_task_embedding(
+            task_embedding, expected_dim=self.task_embedding_dim
+        )
         torch = _torch_for_device(device)
         if torch is None:
-            feature_extractor = (
-                _extract_legacy_image_features
-                if self.model_version == LEGACY_MODEL_VERSION
-                else extract_image_features
+            features = np.concatenate(
+                (extract_image_features(image), validated_embedding)
             )
-            features = feature_extractor(image)
-            if validated_embedding is not None:
-                features = np.concatenate((features, validated_embedding))
             normalized = (features - self.feature_mean) / self.feature_scale
             output = normalized @ self.weights + self.bias
         else:
@@ -962,15 +875,7 @@ class ImageEntityModel:
             str, tuple[bool, float, float, float, tuple[float, float]]
         ] = {}
         if color_image is not None:
-            if self.model_version == COLOR_CALIBRATED_MODEL_VERSION:
-                color_targets = ("red",)
-            elif self.model_version in (
-                COLOR_CALIBRATED_MODEL_VERSION_V2,
-                MODEL_VERSION,
-            ):
-                color_targets = ("red", "blue")
-            else:
-                color_targets = ()
+            color_targets = ("red", "blue")
             calibrated_colors = {
                 color: calibrated_color_geometry(color_image, color)
                 for color in color_targets
@@ -1051,25 +956,24 @@ def save_model(
     model_path.parent.mkdir(parents=True, exist_ok=True)
     if not model_version.strip():
         raise ImageEntityPerceptionError("model_version must not be empty")
-    if model_version not in IMAGE_ONLY_MODEL_VERSIONS:
-        if schema_version != MODEL_SCHEMA_VERSION:
-            raise ImageEntityPerceptionError(
-                f"MODEL_SCHEMA_MISMATCH: expected {MODEL_SCHEMA_VERSION}, "
-                f"got {schema_version!r}"
-            )
-        if int(task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
-            raise ImageEntityPerceptionError(
-                f"LANGUAGE_EMBEDDING_DIM_MISMATCH: expected {LANGUAGE_EMBEDDING_DIM}, "
-                f"got {task_embedding_dim}"
-            )
-        if output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
-            raise ImageEntityPerceptionError("MODEL_OUTPUT_CONTRACT_MISMATCH")
-        if not str(language_model_id).strip():
-            raise ImageEntityPerceptionError("LANGUAGE_MODEL_ID_MISSING")
-        if not _is_sha256(language_weights_sha256):
-            raise ImageEntityPerceptionError("LANGUAGE_MODEL_HASH_INVALID")
-        if velocity_output:
-            raise ImageEntityPerceptionError("VELOCITY_OUTPUT_FORBIDDEN")
+    if schema_version != MODEL_SCHEMA_VERSION:
+        raise ImageEntityPerceptionError(
+            f"MODEL_SCHEMA_MISMATCH: expected {MODEL_SCHEMA_VERSION}, "
+            f"got {schema_version!r}"
+        )
+    if int(task_embedding_dim) != LANGUAGE_EMBEDDING_DIM:
+        raise ImageEntityPerceptionError(
+            f"LANGUAGE_EMBEDDING_DIM_MISMATCH: expected {LANGUAGE_EMBEDDING_DIM}, "
+            f"got {task_embedding_dim}"
+        )
+    if output_contract != STRUCTURED_ENTITY_OUTPUT_CONTRACT:
+        raise ImageEntityPerceptionError("MODEL_OUTPUT_CONTRACT_MISMATCH")
+    if not str(language_model_id).strip():
+        raise ImageEntityPerceptionError("LANGUAGE_MODEL_ID_MISSING")
+    if not _is_sha256(language_weights_sha256):
+        raise ImageEntityPerceptionError("LANGUAGE_MODEL_HASH_INVALID")
+    if velocity_output:
+        raise ImageEntityPerceptionError("VELOCITY_OUTPUT_FORBIDDEN")
     arrays: dict[str, np.ndarray] = {
         "model_version": np.asarray(model_version),
         "feature_mean": np.asarray(feature_mean, dtype=np.float32),
@@ -1080,18 +984,17 @@ def save_model(
             float(visibility_threshold), dtype=np.float32
         ),
     }
-    if model_version not in IMAGE_ONLY_MODEL_VERSIONS:
-        arrays.update(
-            {
-                "model_schema_version": np.asarray(schema_version),
-                "input_contract": np.asarray(input_contract),
-                "output_contract": np.asarray(output_contract),
-                "task_embedding_dim": np.asarray(int(task_embedding_dim)),
-                "language_model_id": np.asarray(language_model_id),
-                "language_weights_sha256": np.asarray(language_weights_sha256),
-                "velocity_output": np.asarray(bool(velocity_output)),
-            }
-        )
+    arrays.update(
+        {
+            "model_schema_version": np.asarray(schema_version),
+            "input_contract": np.asarray(input_contract),
+            "output_contract": np.asarray(output_contract),
+            "task_embedding_dim": np.asarray(int(task_embedding_dim)),
+            "language_model_id": np.asarray(language_model_id),
+            "language_weights_sha256": np.asarray(language_weights_sha256),
+            "velocity_output": np.asarray(bool(velocity_output)),
+        }
+    )
     np.savez_compressed(model_path, **arrays)
     if metadata is not None:
         model_path.with_suffix(".json").write_text(

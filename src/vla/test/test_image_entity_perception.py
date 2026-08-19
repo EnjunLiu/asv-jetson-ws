@@ -13,7 +13,6 @@ from vla.perception import (
     ENTITY_COUNT,
     FEATURE_DIM,
     FUSED_FEATURE_DIM,
-    LEGACY_MODEL_VERSION,
     LANGUAGE_EMBEDDING_DIM,
     MODEL_VERSION,
     OUTPUT_DIM,
@@ -63,23 +62,6 @@ def test_image_features_accept_rgb_arrays_and_include_moments() -> None:
     assert features.shape == (FEATURE_DIM,)
     assert FEATURE_DIM > BASE_FEATURE_DIM
     assert np.all(np.isfinite(features))
-
-
-def test_legacy_model_round_trip_keeps_v1_feature_contract(tmp_path: Path) -> None:
-    path = tmp_path / "legacy_perception.npz"
-    save_model(
-        path,
-        feature_mean=np.zeros(BASE_FEATURE_DIM, dtype=np.float32),
-        feature_scale=np.ones(BASE_FEATURE_DIM, dtype=np.float32),
-        weights=np.zeros((BASE_FEATURE_DIM, OUTPUT_DIM), dtype=np.float32),
-        bias=np.ones(OUTPUT_DIM, dtype=np.float32),
-        model_version=LEGACY_MODEL_VERSION,
-    )
-    with pytest.raises(ImageEntityPerceptionError, match="MODEL_SCHEMA_MISMATCH"):
-        ImageEntityModel.load(path)
-    model = ImageEntityModel.load(path, allow_legacy=True)
-    assert model.model_version == LEGACY_MODEL_VERSION
-    assert len(model.predict(np.zeros((24, 32, 3), dtype=np.uint8))) == ENTITY_COUNT
 
 
 def test_model_round_trip_and_no_velocity_output(tmp_path: Path) -> None:

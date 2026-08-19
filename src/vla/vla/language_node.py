@@ -114,9 +114,12 @@ class LanguageNode(Node):
         self._timer = self.create_timer(
             self.publish_period_sec, self._publish_current
         )
-        # Publish an initial invalid/empty state so transient-local subscribers
-        # observe a fail-closed value before the first instruction arrives.
-        self._publish_current()
+        # The launch parameter is the normal headless entry point. Encode it
+        # immediately; /task/text remains available for later task changes.
+        if self.task_description.strip():
+            self.on_task(String(data=self.task_description))
+        else:
+            self._publish_current()
 
     def _set_invalid(self, instruction: str, detail: object) -> None:
         self._instruction = str(instruction).strip()

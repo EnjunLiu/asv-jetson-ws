@@ -21,7 +21,7 @@ def test_policy_node_defaults_to_explicit_torch_cuda_backend() -> None:
         "POLICY_READY",
         "TorchPolicyRunner.load",
         "device=policy_device",
-        "inputs=task_embedding+structured_entities+previous_action",
+        "inputs=task_embedding+structured_entities+ego_dynamics",
     ):
         assert token in source
 
@@ -32,14 +32,27 @@ def _inputs(config: Any) -> dict[str, np.ndarray]:
         "entity_geometry": np.zeros(
             (1, config.entity_count, config.entity_geometry_dim), dtype=np.float32
         ),
-        "previous_action": np.zeros(
-            (1, config.previous_action_dim), dtype=np.float32
+        "ego_state": np.zeros(
+            (1, config.ego_state_dim), dtype=np.float32
         ),
         "language_valid": np.ones((1,), dtype=bool),
         "entity_geometry_mask": np.ones((1, config.entity_count), dtype=bool),
-        "previous_action_valid": np.zeros((1,), dtype=bool),
+        "ego_state_valid": np.ones((1,), dtype=bool),
         "policy_input_valid": np.ones((1,), dtype=bool),
     }
+
+
+def test_runtime_does_not_ramp_each_action_from_zero_without_previous_action() -> None:
+    from vla.decision import smooth_policy_displacement
+
+    output = smooth_policy_displacement(
+        (0.3, 0.0),
+        previous_action=None,
+        max_step_m=0.3,
+        max_delta_m=0.05,
+    )
+
+    assert output == pytest.approx((0.3, 0.0))
 
 
 def test_cuda_is_required_without_cpu_fallback(tmp_path: Path) -> None:

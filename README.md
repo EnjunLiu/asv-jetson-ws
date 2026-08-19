@@ -31,8 +31,8 @@ preprocessing.
 ## Build and run
 
 Models are external deployment artifacts and are intentionally not committed.
-The expected deployment artifacts are `policy_single_point.pt`,
-`perception_image_conditioned.npz` and `Qwen3-Embedding-0.6B/`.
+The expected deployment artifacts are `policy.pt`, `perception.npz` and
+`Qwen3-Embedding-0.6B/`.
 
 ```bash
 source /opt/ros/humble/setup.bash

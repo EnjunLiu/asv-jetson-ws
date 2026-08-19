@@ -91,7 +91,7 @@ def generate_launch_description():
                 "model_path",
                 default_value=PathJoinSubstitution([
                     LaunchConfiguration("models_dir"),
-                    "policy_single_point.pt",
+                    "policy.pt",
                 ]),
             ),
             DeclareLaunchArgument("policy_device", default_value="cuda"),
@@ -99,7 +99,7 @@ def generate_launch_description():
                 "perception_model_path",
                 default_value=PathJoinSubstitution([
                     LaunchConfiguration("models_dir"),
-                    "perception_image_conditioned.npz",
+                    "perception.npz",
                 ]),
             ),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
