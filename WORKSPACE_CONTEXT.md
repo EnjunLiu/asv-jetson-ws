@@ -56,13 +56,15 @@ ros2 launch bringup vla_closed_loop.launch.py \
 
 | 文件 | 当前状态 |
 |---|---|
-| `policy.pt` | 存在，SHA-256 `ef50a5c13bfc21d9ab3f74d10f4f3810d7cdedf43573304f0d870011504ca8c1` |
-| `perception.npz` | 存在，SHA-256 `f2d2fc4a3d7de7eec2d4599cd7b5a8b406fda1874bbb4eb81992a50b188fb981` |
+| `policy.pt` | 已部署最终重训模型，SHA-256 `d9c159613c5ad37cfb61dc6aa39b80b334fe07b1663ea250083ce26c2cc1e674` |
+| `perception.npz` | 已部署最终重训模型，SHA-256 `f78af3d972be0e31fae35fd9eaa45c8c14bbf08daa1c489d5daac5adbbccf11e` |
 | `perception.json` | 存在但未跟踪，SHA-256 `9824f3880824df4d30367024352d7e0cf2c0cc52756ecfa2b5266465e5c0721a` |
-| `Qwen3-Embedding-0.6B/` | 当前目录未发现；Hugging Face 只有 `refs/main`，不能视为已下载 |
-| `manifest.yaml` | 存在，但其中登记的模型哈希与当前实际哈希不一致，部署前必须重新生成/审核 |
+| `Qwen3-Embedding-0.6B/model.safetensors` | 完整存在，SHA-256 `0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd` |
+| `manifest.yaml` | 已更新并通过模型文件 SHA-256 一致性检查 |
 
-因此当前模型目录不能被称为“已验证可运行部署”。旧文件存在不等于契约兼容；此前曾出现 `perception_schema` 不匹配、未知 `use_ego_state` 配置和 CUDA OOM，必须在重训/部署后重新验证。
+训练实验目录为 `D:\asv-vla-training\experiments\final_retrain`，数据目录为 `D:\asv-vla-training\data\episodes\asv_final_episodes`。按 R1-R4 训练、R5 验证、R6 测试，无 run/seed 泄漏。PC 端严格回读、Jetson 构建和隔离测试已通过；真实 UE5 同次运行闭环仍待验收，不能仅凭部署状态称为闭环完成。
+
+离线 held-out rollout 最终 signed standoff error：RED 3m `0.0288 m`、BLUE 3m `0.0244 m`、RED 4m `-0.0041 m`，三类均未发散。测试集感知几何 RMSE `0.4663 m`，策略动作 RMSE `0.00208 m`，policy-driven ratio `99.34%`。
 
 ## 6. 正确的重训后部署登记
 
