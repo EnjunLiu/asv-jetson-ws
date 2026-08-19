@@ -871,16 +871,6 @@ class ImageEntityModel:
         if output.shape != (OUTPUT_DIM,) or not np.all(np.isfinite(output)):
             raise ImageEntityPerceptionError("perception output is non-finite")
 
-        calibrated_colors: dict[
-            str, tuple[bool, float, float, float, tuple[float, float]]
-        ] = {}
-        if color_image is not None:
-            color_targets = ("red", "blue")
-            calibrated_colors = {
-                color: calibrated_color_geometry(color_image, color)
-                for color in color_targets
-            }
-
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
@@ -888,19 +878,6 @@ class ImageEntityModel:
             visible = visible_logit >= self.visibility_threshold
             confidence = float(1.0 / (1.0 + math.exp(-np.clip(visible_logit, -30.0, 30.0))))
             geometry = output[offset + 1 : offset + 4] * POSITION_SCALE_M
-            calibrated = calibrated_colors.get(_prediction_color(entity_id))
-            if calibrated is not None:
-                color_valid, color_x, color_y, _, _ = calibrated
-                if color_valid:
-                    visible = True
-                    confidence = 1.0
-                    geometry = np.asarray((color_x, color_y, 0.0), dtype=np.float32)
-                else:
-                    # Do not expose a ridge hallucination when the original
-                    # RGB evidence for a calibrated target is absent.
-                    visible = False
-                    confidence = 0.0
-                    geometry = np.zeros(3, dtype=np.float32)
             predictions.append(
                 ImageEntityPrediction(
                     entity_id=entity_id,

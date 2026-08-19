@@ -1,9 +1,6 @@
 schema_version: 1
-contract_revision: current
+contract_revision: final_retrain_20260819
 
-# Deployment metadata for the selected L7/S2 single-point closed loop.
-# The binary artifacts stay outside this checkout; copy them to the Jetson
-# deployment names below and verify the source hashes before starting.
 deployment:
   jetson_role: ros2_build_and_cuda_online_inference_only
   pc_training_only: true
@@ -15,24 +12,13 @@ deployment:
     source_path: models/perception.npz
     model_id: perception_ridge_language
     model_version: perception_schema
-    artifact_sha256: eaecab49bd69443a9b19ce9b651d31007e49b4034f35eb4dd98a6836da5540b5
+    artifact_sha256: F78AF3D972BE0E31FAE35FD9EAA45C8C14BBF08DAA1C489D5DAAC5ADBBCCF11E
     input: (camera_image_rgb,task_embedding_float32[256])->structured_entities
-    input_components:
-      - camera_image_rgb
-      - task_embedding_float32[256]
-    output: structured_entities
-    output_fields:
-      - relative_position_m
-      - visible_mask
-      - bbox_px
-      - confidence
-      - valid
-      - relative_velocity_mps
-      - velocity_valid
     feature_input_dimension: 272
     velocity_output: false
     velocity_source: temporal_entity_tracker
     language_model_id: Qwen/Qwen3-Embedding-0.6B
+    language_weights_sha256: 0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd
     device: cuda
     deployment_status: selected_for_deployment
 
@@ -40,23 +26,11 @@ deployment:
     path: models/policy.pt
     source_path: models/policy.pt
     model_id: policy
-    source_sha256: 1177221999e0753c74ff8bb286915dea371601c4c95601ee9d2fb515b7e9b5ff
+    artifact_sha256: D9C159613C5AD37CFB61DC6AA39B80B334FE07B1663EA250083CE26C2CC1E674
     backend: torch_cuda
     device: cuda
     training_platform: pc
     input_contract: single_point
-    decision_inputs:
-      - language
-      - structured_entities/entity_geometry
-      - ego_state
-      - language_valid
-      - entity_geometry_mask
-      - ego_state_valid
-      - policy_input_valid
-    decision_input_exclusions:
-      - global_visual
-      - entity_visual
-      - bbox
     output_action_shape: [B, 2]
     output_action_frame: body_frame
     output_action_kind: single_step_desired_displacement_m
@@ -69,17 +43,12 @@ deployment:
     model_path: models/Qwen3-Embedding-0.6B
     feature_dim: 256
     device: cuda
-    language_release_after_encode: true
     release_model_after_encode: true
     online_qwen_runtime: true
-    first_instruction_encoding: real_qwen_cuda
-    qwen_weight_resident_after_encode: false
-    post_encode_embedding_online: true
     cached_embedding_file: false
     cpu_fallback: false
 
-training_only:
-  language_model: Qwen/Qwen3-Embedding-0.6B
-  location: pc_datasets/models/Qwen3-Embedding-0.6B
-  expert_label: one_current_frame_desired_displacement_point
-  target_action_source: perception_geometry
+training:
+  data_root: D:/asv-vla-training/data/episodes/asv_final_episodes
+  qwen_embeddings_sha256: ecf9980f5a947adb26586a07ba73c3ea3814a6f9b030441357fcf6262dabc9cf
+  held_out_rollout: true
