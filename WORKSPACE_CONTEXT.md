@@ -117,4 +117,13 @@ pgrep -af 'ros2 launch|bridge_node|language|perception|decision' || true
 
 然后阅读 UE5 文档，确认 `D:\asv-unreal-simulation`、UE5 commit/源码状态、图像合同和本次运行参数。只有两份文档与现场检查一致，才能继续重训或闭环。
 
+## 10. 2026-08-19 最终重训与闭环验收
+
+- GitHub 推送已恢复并验证：remote 为 `https://github.com/EnjunLiu/asv-jetson-ws.git`，验证前 HEAD 为 `a5b2950`，`git push --dry-run` 返回 `Everything up-to-date`。用户已有未跟踪文件 `models/perception.json` 保留不动。
+- 最终重训已完成，不得重复启动训练。产物位于 `D:\asv-vla-training\experiments\final_retrain`；感知测试几何 RMSE `0.4663 m`，策略 action RMSE `0.00208 m`，策略驱动比例 `99.34%`。
+- 真实闭环已在同次运行通过：`run_id=2BEE9C1048010DE6B4320FB20F6E6034` 出现 CUDA language、perception、policy ready，bridge 发送 `Valid=true`、`Hold_Position=false` 的位移，UE5 日志出现 `SCENE_EXEC_APPLY`。示例命令为 `Delta_X_Cm=26.9896`、`Delta_Y_Cm=-12.6315`；UE5 executor 第 25 次应用记录为 `dx_cm=27.234`、`dy_cm=-12.096`。
+- 启动初期的 `MISSING_OR_MISMATCHED_EGO_STATE` 是严格逐帧同步下状态尚未对齐时的 fail-closed，不是模型或 CUDA 加载失败；同次运行在缓存对齐后持续产生有效命令。不得通过取消身份校验掩盖该保护逻辑。
+- 本次新鲜 JPEG 为 UE5 工作区 `Saved/CaptureDiagnostics/final_diag_camera.jpg`：`run_id=2C4BD279456EF557BE18828964E506D1`、`frame_index=8`、1280x720、48,705 bytes，亮度均值 71.64、P99 186.18、最大 219、过亮像素比例 0%，无额外 Jetson 提亮。
+- 诊断场景真值目标约 80 m，和训练中的 3-4 m 评估分布不同；当前证据证明端到端闭环执行，不代表 3 m 在线跟随精度。
+
 最后核验时间：2026-08-19（Asia/Shanghai）。
