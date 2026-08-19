@@ -1,6 +1,10 @@
 schema_version: 1
 contract_revision: final_retrain_20260819
 
+# Deployment metadata for the selected L7/S2 single-point closed loop.
+# Binary artifacts are copied to the Jetson deployment directory only after
+# source and target SHA-256 verification.
+
 deployment:
   jetson_role: ros2_build_and_cuda_online_inference_only
   pc_training_only: true
@@ -14,6 +18,18 @@ deployment:
     model_version: perception_schema
     artifact_sha256: F78AF3D972BE0E31FAE35FD9EAA45C8C14BBF08DAA1C489D5DAAC5ADBBCCF11E
     input: (camera_image_rgb,task_embedding_float32[256])->structured_entities
+    input_components:
+      - camera_image_rgb
+      - task_embedding_float32[256]
+    output: structured_entities
+    output_fields:
+      - relative_position_m
+      - visible_mask
+      - bbox_px
+      - confidence
+      - valid
+      - relative_velocity_mps
+      - velocity_valid
     feature_input_dimension: 272
     velocity_output: false
     velocity_source: temporal_entity_tracker
@@ -27,10 +43,23 @@ deployment:
     source_path: models/policy.pt
     model_id: policy
     artifact_sha256: D9C159613C5AD37CFB61DC6AA39B80B334FE07B1663EA250083CE26C2CC1E674
+    source_sha256: D9C159613C5AD37CFB61DC6AA39B80B334FE07B1663EA250083CE26C2CC1E674
     backend: torch_cuda
     device: cuda
     training_platform: pc
     input_contract: single_point
+    decision_inputs:
+      - language
+      - structured_entities/entity_geometry
+      - ego_state
+      - language_valid
+      - entity_geometry_mask
+      - ego_state_valid
+      - policy_input_valid
+    decision_input_exclusions:
+      - global_visual
+      - entity_visual
+      - bbox
     output_action_shape: [B, 2]
     output_action_frame: body_frame
     output_action_kind: single_step_desired_displacement_m
@@ -43,8 +72,12 @@ deployment:
     model_path: models/Qwen3-Embedding-0.6B
     feature_dim: 256
     device: cuda
+    language_release_after_encode: true
     release_model_after_encode: true
     online_qwen_runtime: true
+    first_instruction_encoding: real_qwen_cuda
+    qwen_weight_resident_after_encode: false
+    post_encode_embedding_online: true
     cached_embedding_file: false
     cpu_fallback: false
 
@@ -52,3 +85,9 @@ training:
   data_root: D:/asv-vla-training/data/episodes/asv_final_episodes
   qwen_embeddings_sha256: ecf9980f5a947adb26586a07ba73c3ea3814a6f9b030441357fcf6262dabc9cf
   held_out_rollout: true
+
+training_only:
+  language_model: Qwen3-Embedding-0.6B
+  location: D:/asv-vla-training/data/qwen_final_embeddings.npz
+  expert_label: one_current_frame_desired_displacement_point
+  target_action_source: perception_geometry
