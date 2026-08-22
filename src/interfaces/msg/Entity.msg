@@ -10,7 +10,7 @@ float64 relative_velocity_x
 float64 relative_velocity_y
 float64 relative_velocity_z
 bool valid
-# source is one of: ue_truth, image_perception, temporal_tracker.
+# source 可为：ue_truth、image_perception、temporal_tracker。
 string source
 float32 bbox_x_min
 float32 bbox_y_min

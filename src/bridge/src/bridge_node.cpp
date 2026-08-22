@@ -263,10 +263,8 @@ public:
     running_.store(true);
     server_thread_ = std::thread(&BridgeNode::server_loop, this);
 
-    // Optional C++ kinematic executor connection (headless closed loop):
-    // the UE5 Connection blueprint does not apply kinematic setpoints when
-    // running headless, so the bridge can deliver setpoints to the EDGE
-    // executor socket instead.  Enabled when execution_address is set.
+    // 可选 C++ 运动学执行器连接（无头闭环）：无头时 UE5 蓝图不应用位移，
+    // 因此通过 EDGE 执行器套接字发送；设置 execution_address 后启用。
     if (!execution_address_.empty()) {
       execution_thread_ =
       std::thread(&BridgeNode::execution_loop, this);
@@ -346,7 +344,7 @@ private:
         get_logger(), "Connected to UE5 kinematic executor %s:%d",
         execution_address_.c_str(), execution_port_);
 
-      // Keep the connection open; reconnect on close.
+      // 保持连接，断开后重连。
       while (running_.load()) {
         char probe;
         const ssize_t n = ::recv(fd, &probe, 1, MSG_PEEK);
@@ -577,9 +575,7 @@ private:
         return;
       }
 
-      // UE5 sends Get Game Time in Seconds as a floating-point value.
-      // Convert it to integer microseconds so every ROS message generated from
-      // the same UE5 packet carries the same simulation-time timestamp.
+      // UE5 发送浮点游戏时间（秒）；转为整数微秒，使同一数据包生成的 ROS 消息时间一致。
       const int64_t stamp_us =
         static_cast<int64_t>(simulation_time * 1'000'000.0);
 
@@ -593,8 +589,7 @@ private:
         return;
       }
 
-      // Make UE5 game time the ROS 2 time source before publishing any data
-      // produced by this simulation step.
+      // 发布本仿真步数据前，先将 UE5 游戏时间设为 ROS 2 时间源。
       publish_simulation_clock(stamp_us);
 
       interfaces::msg::ASVState state;
@@ -900,8 +895,7 @@ private:
     };
 
     if (!execution_address_.empty()) {
-      // Headless closed loop: deliver to the UE5 C++ executor (the
-      // blueprint does not apply kinematic setpoints headless).
+      // 无头闭环：发送到 UE5 C++ 执行器（蓝图在无头模式不应用位移）。
       send_json_payload_to(response, execution_fd_, "kinematic setpoint");
       return;
     }
@@ -973,7 +967,7 @@ private:
   double kinematic_position_scale_{100.0};
   double kinematic_lateral_sign_{-1.0};
 
-  // Optional UE5 C++ kinematic executor (headless closed loop).
+  // 可选 UE5 C++ 运动学执行器（无头闭环）。
   std::string execution_address_;
   int execution_port_{8081};
   int execution_fd_{-1};

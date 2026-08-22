@@ -33,8 +33,8 @@ def test_safe_stop_contract_accepts_invalid_zero_point():
 
 
 def test_single_point_contract_matches_trained_action_limit():
-    assert DT_SEC == 0.2
-    assert MAX_DISPLACEMENT_M == 0.30
+    assert DT_SEC == 0.5
+    assert MAX_DISPLACEMENT_M == 0.50
 
 
 def test_safe_stop_contract_rejects_executable_zero_point():

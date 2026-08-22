@@ -1,4 +1,4 @@
-"""Subscribe to camera/language messages and publish tracked entities."""
+"""订阅相机和语言消息并发布跟踪实体。"""
 
 from __future__ import annotations
 
@@ -68,13 +68,7 @@ def _predict_with_color_reference(
     device: str,
     task_embedding: object | None,
 ):
-    """Run inference with separate feature and original-RGB inputs.
-
-    The deployed ``ImageEntityModel`` exposes ``color_image`` explicitly.
-    Non-calibrated test doubles may keep their older signature; a calibrated
-    model without this contract fails closed instead of masking colors on
-    decoded sRGB.
-    """
+    """使用特征图和原始 RGB 图像分别推理。"""
 
     predict = model.predict
     try:
@@ -111,7 +105,7 @@ def _format_perception_trace(
     model_version: str,
     entity: object,
 ) -> str:
-    """Format one bounded target diagnostic line without changing data."""
+    """格式化一条有界目标诊断，不改变数据。"""
 
     return (
         "PERCEPTION_TRACE "
@@ -132,7 +126,7 @@ def _apply_prediction_projection(
     profile: CameraProfile,
     confidence_threshold: float,
 ) -> None:
-    """Attach a conservative bbox without letting one bad projection escape."""
+    """附加保守 bbox，阻止异常投影外泄。"""
 
     entity.bbox_x_min = 0.0
     entity.bbox_y_min = 0.0
@@ -149,9 +143,7 @@ def _apply_prediction_projection(
             entity.relative_z,
             profile,
         )
-        # The model has no privileged UE bounding box.  This is a
-        # conservative calibrated box around the image-derived centre, used
-        # only for diagnostics/crops.
+        # 模型没有 UE 特权框；此框仅用于诊断/裁剪。
         half_w = max(8.0, min(96.0, 1600.0 / max(depth, 1.0)))
         half_h = max(6.0, min(64.0, half_w * 0.45))
         entity.bbox_x_min = float(max(0.0, pixel_x - half_w))
@@ -168,8 +160,7 @@ def _apply_prediction_projection(
             and entity.bbox_valid
         )
     except (TargetProjectionError, ValueError, ArithmeticError):
-        # Keep the finite model geometry for temporal tracking, but fail closed
-        # for image-space validity and visibility.
+        # 保留有限几何供时序跟踪，但图像有效性和可见性安全关闭。
         return
 
 
@@ -259,7 +250,7 @@ class PerceptionNode(Node):
             self.get_logger().info(self.detail)
 
     def on_embedding(self, message: TaskEmbedding) -> None:
-        """Accept only a valid embedding for the current instruction/model."""
+        """只接受当前指令和模型对应的有效嵌入。"""
 
         instruction = str(getattr(message, "instruction", "")).strip()
         if not bool(getattr(message, "valid", False)):
@@ -463,9 +454,7 @@ class PerceptionNode(Node):
                 self.profile,
                 self.confidence_threshold,
             )
-            # A perception prediction can be geometrically valid while still
-            # being irrelevant to the active task. Only selected entities are
-            # visible/target-bearing in the online task stream.
+            # 几何有效的预测也可能与当前任务无关；在线流只标记选中的实体。
             entity.visible = bool(entity.is_target and entity.visible)
             message.entities.append(entity)
 

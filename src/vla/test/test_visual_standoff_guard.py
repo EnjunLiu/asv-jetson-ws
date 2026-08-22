@@ -1,4 +1,4 @@
-"""Pure tests for the image/tracker standoff backstop."""
+"""图像/跟踪保持距离回退的纯测试。"""
 
 from types import SimpleNamespace
 
@@ -47,7 +47,7 @@ def test_lateral_geometry_produces_bounded_body_step():
     step = compute_standoff_step(observation, 3.0)
     assert step is not None
     assert step[0] > 0.0 and step[1] > 0.0
-    assert np.linalg.norm(step) <= 0.30 + 1.0e-9
+    assert np.linalg.norm(step) <= 0.50 + 1.0e-9
 
 
 def test_distance_parser_and_deadband():
@@ -63,7 +63,7 @@ def test_velocity_prediction_changes_bounded_step():
     moving = _task("follow red boat 3m", x=3.0, vx=4.0)
     observation = extract_target_observation(moving)
     assert observation is not None
-    assert compute_standoff_step(observation, 3.0) == (0.30, 0.0)
+    assert compute_standoff_step(observation, 3.0) == (0.50, 0.0)
 
 
 def test_missing_or_nonfinite_target_fails_closed():
@@ -101,7 +101,7 @@ def test_away_policy_step_uses_radial_backstop_but_frozen_step_is_kept():
     guarded, reason = apply_standoff_guard((-0.22, -0.19), task)
     assert reason == GUARD_BACKSTOP
     assert guarded is not None
-    assert np.allclose(guarded, (0.23426064, 0.18740852))
+    assert np.allclose(guarded, (0.39043440245110506, 0.3123475266152248))
     frozen, frozen_reason = apply_standoff_guard((0.0, 0.0), task)
     assert frozen_reason == GUARD_POLICY_DRIVEN
     assert frozen == (0.0, 0.0)

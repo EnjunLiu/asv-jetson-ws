@@ -6,7 +6,7 @@ string frame_id
 Entity[] entities
 bool valid
 string detail
-# source is one of: ue_truth, image_perception, temporal_tracker.
+# source 可为：ue_truth、image_perception、temporal_tracker。
 string source
 string instruction_id
 string instruction

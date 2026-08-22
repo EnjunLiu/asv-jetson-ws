@@ -1,4 +1,4 @@
-"""Contract tests for the packaged CUDA policy runtime."""
+"""打包 CUDA 策略运行时的合同测试。"""
 
 from __future__ import annotations
 

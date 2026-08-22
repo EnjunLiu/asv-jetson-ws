@@ -28,8 +28,7 @@ if(COMMAND ament_target_dependencies)
     interfaces
   )
 else()
-  # ROS distributions that removed the legacy helper still export the
-  # package targets; linking those targets preserves include paths and ABI.
+  # 移除旧辅助函数的 ROS 发行版仍导出包目标；链接这些目标可保留头文件路径和 ABI。
   target_link_libraries(
     bridge_node
     rclcpp::rclcpp

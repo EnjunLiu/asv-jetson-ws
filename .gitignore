@@ -12,3 +12,4 @@ models/Qwen3-Embedding-0.6B/
 models/Qwen3-Embedding-0.6B*/
 *.tmp
 *.swp
+logs/

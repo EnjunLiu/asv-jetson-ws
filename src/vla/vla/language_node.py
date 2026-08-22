@@ -1,4 +1,4 @@
-"""Subscribe to ``/task/text`` and publish ``/vla/language_embedding``."""
+"""订阅 ``/task/text`` 并发布 ``/vla/language_embedding``。"""
 
 from __future__ import annotations
 
@@ -34,10 +34,9 @@ LANGUAGE_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
-# Keep the short name used by the existing stub/policy adapters available to
-# diagnostics and launch-level contract checks.
+# 保留旧适配器使用的短名称，供诊断和启动合同检查使用。
 LANG_QOS = LANGUAGE_QOS
-# Emit one bounded diagnostic when the first real task reaches this node.
+# 首条真实任务到达时输出一次有界诊断。
 LANGUAGE_TASK_TRACE_LIMIT = 1
 
 
@@ -82,13 +81,11 @@ class LanguageNode(Node):
         self._released_state: LanguageEmbeddingState | None = None
         self._instruction = ""
         self._task_trace_count = 0
-        # Emit STARTING before model construction, which may take a bounded
-        # but non-trivial amount of time on Jetson unified memory.
+        # 模型构造前输出 STARTING；Jetson 统一内存上的构造可能耗时。
         self._publish_current()
 
-        # Keep the node alive on startup failures so diagnostics can be
-        # observed. This exception path does not alter ``self.device`` or
-        # retry on CPU; subsequent task messages remain invalid/hold.
+        # 启动失败时保持节点存活以便观察诊断；不改设备，也不重试 CPU，
+        # 后续任务继续保持无效/停止。
         try:
             self._encoder = USVLanguageEncoder(
                 self.model_path,
@@ -114,8 +111,7 @@ class LanguageNode(Node):
         self._timer = self.create_timer(
             self.publish_period_sec, self._publish_current
         )
-        # The launch parameter is the normal headless entry point. Encode it
-        # immediately; /task/text remains available for later task changes.
+        # 启动参数是无头模式入口，立即编码；/task/text 仍可接收后续任务。
         if self.task_description.strip():
             self.on_task(String(data=self.task_description))
         else:
@@ -132,7 +128,7 @@ class LanguageNode(Node):
         )
 
     def _release_encoder_model(self) -> str:
-        """Release model references and CUDA allocator blocks after first encode."""
+        """首次编码后释放模型引用和 CUDA 分配块。"""
 
         encoder = self._encoder
         self._encoder = None
@@ -140,8 +136,7 @@ class LanguageNode(Node):
             del encoder
             gc.collect()
             if self.device.startswith("cuda"):
-                # This is cleanup only: there is deliberately no CPU retry or
-                # device reassignment if CUDA cleanup is unavailable.
+                # 这里只做清理；CUDA 清理不可用时不重试 CPU，也不改设备。
                 import torch
 
                 torch.cuda.empty_cache()
@@ -153,7 +148,7 @@ class LanguageNode(Node):
             return f"MODEL_RELEASE_CLEANUP_ERROR:{type(exc).__name__}"
 
     def _trace_first_task(self, instruction: str) -> None:
-        """Record only the first non-empty task received by the subscriber."""
+        """只记录订阅器收到的首条非空任务。"""
 
         if self._task_trace_count >= LANGUAGE_TASK_TRACE_LIMIT:
             return
@@ -164,7 +159,7 @@ class LanguageNode(Node):
         )
 
     def on_task(self, message: String) -> None:
-        """Encode one instruction and publish immediately for low latency."""
+        """编码一条指令并立即发布以降低延迟。"""
 
         instruction = str(getattr(message, "data", "")).strip()
         if not instruction:
@@ -229,9 +224,7 @@ class LanguageNode(Node):
             )
             if self.release_model_after_encode:
                 self._released_state = self._state
-                # Deliver one valid embedding before dropping the model. The
-                # transient-local publisher retains this value while cleanup
-                # runs and while the staged visual node is still delayed.
+                # 释放模型前先发布有效嵌入；瞬态本地发布器会在清理和感知节点延迟期间保留它。
                 self._publish_current()
                 release_detail = self._release_encoder_model()
                 self._state = LanguageEmbeddingState(

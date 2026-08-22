@@ -151,8 +151,7 @@ def test_calibrated_color_geometry_keeps_near_range_component(
     color: str, rgb: tuple[int, int, int]
 ) -> None:
     image = Image.new("RGB", (1280, 720), (20, 30, 40))
-    # This component occupies about 3.6% of the image, larger than the old
-    # 1.72% cap and representative of a target after it approaches the ASV.
+    # 该连通分量约占图像 3.6%，大于旧的 1.72% 上限，代表目标接近 ASV 后的情况。
     ImageDraw.Draw(image).rectangle((280, 260, 520, 400), fill=rgb)
 
     valid, relative_x, relative_y, area, _ = calibrated_color_geometry(image, color)

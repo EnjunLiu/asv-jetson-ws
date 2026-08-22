@@ -8,9 +8,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-# The Jetson system environment may contain an incompatible TensorFlow/tf-keras
-# pair. This component is deliberately PyTorch-only, so prevent Transformers
-# from probing optional backends before sentence-transformers is imported.
+# Jetson 环境可能有不兼容的 TensorFlow/tf-keras；本模块仅使用 PyTorch，
+# 在导入 sentence-transformers 前阻止 Transformers 探测其他后端。
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("USE_TORCH", "1")
@@ -71,23 +70,23 @@ def embedding_tuple(values: object) -> tuple[float, ...]:
 
 
 class LanguageEncoderError(RuntimeError):
-    """Base class for deterministic language-encoder failures."""
+    """确定性语言编码器错误基类。"""
 
 
 class LanguageEncoderMemoryError(LanguageEncoderError):
-    """Raised when the backend reports an allocation/low-memory failure."""
+    """后端报告分配或低内存失败时抛出。"""
 
 
 class EmptyInstructionError(LanguageEncoderError):
-    """Raised when the task instruction is empty."""
+    """任务指令为空时抛出。"""
 
 
 class InstructionTooLongError(LanguageEncoderError):
-    """Raised when the task instruction exceeds the application limit."""
+    """任务指令超过应用上限时抛出。"""
 
 
 class InvalidEmbeddingError(LanguageEncoderError):
-    """Raised when the backend returns an unusable embedding."""
+    """后端返回不可用嵌入时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -97,7 +96,7 @@ class EncodingResult:
 
 
 class USVLanguageEncoder:
-    """Frozen, cached Qwen embedding wrapper with a fixed 256-D contract."""
+    """固定 256 维合同的冻结式 Qwen 嵌入封装。"""
 
     def __init__(
         self,
@@ -162,10 +161,9 @@ class USVLanguageEncoder:
 
         model_kwargs = {}
         if self.device.startswith("cuda"):
-            # Avoid a temporary/default FP32 load exhausting Orin unified memory.
+            # 避免临时或默认 FP32 加载耗尽 Orin 统一内存。
             model_kwargs["torch_dtype"] = torch.float16
-            # Materialize weights with a lower CPU-side peak before moving them
-            # to CUDA; Jetson CPU and GPU share the same physical memory.
+            # 先降低 CPU 侧峰值再移入 CUDA；Jetson CPU 与 GPU 共用物理内存。
             model_kwargs["low_cpu_mem_usage"] = True
 
         try:
@@ -243,9 +241,8 @@ class USVLanguageEncoder:
             with self._inference_context():
                 raw = self._model.encode(
                     [prompt],
-                    # Online ROS callbacks encode one changed instruction at a
-                    # time.  SentenceTransformer's default batch_size=32 can
-                    # create a large temporary peak on Jetson unified memory.
+                    # 在线回调一次只编码一条变化指令；默认 batch_size=32
+                    # 可能在 Jetson 统一内存中产生较大临时峰值。
                     batch_size=1,
                     convert_to_numpy=True,
                     normalize_embeddings=False,
@@ -287,8 +284,7 @@ class USVLanguageEncoder:
                 f"{self.output_dim} are required"
             )
 
-        # Qwen3-Embedding supports Matryoshka Representation Learning.
-        # Truncate first, then normalize the retained dimensions.
+        # Qwen3-Embedding 支持 Matryoshka 表示学习；先截断，再归一化保留维度。
         vector = np.ascontiguousarray(vector[: self.output_dim], dtype=np.float32)
         if not np.all(np.isfinite(vector)):
             raise InvalidEmbeddingError("embedding contains NaN or Inf")

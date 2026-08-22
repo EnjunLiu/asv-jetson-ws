@@ -1,4 +1,4 @@
-"""Focused contract tests for the online Qwen language ROS adapter."""
+"""在线 Qwen 语言 ROS 适配器的重点合同测试。"""
 
 from __future__ import annotations
 

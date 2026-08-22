@@ -1,6 +1,6 @@
-"""VLA closed-loop launch (UE5 simulation).
+"""VLA 闭环启动文件（UE5 仿真）。
 
-Pipeline (no duplicate publishers, real Qwen language encoder):
+流程（无重复发布器，使用真实 Qwen 语言编码器）：
 
     UE5 -> bridge -> /ue/camera_frame + /ue/asv_state
                         |
@@ -17,7 +17,7 @@ Pipeline (no duplicate publishers, real Qwen language encoder):
                         v
               UE5 (kinematic execution)
 
-The launch intentionally starts NO control manager, allocator, or ESP32.
+启动文件明确不启动控制管理器、分配器或 ESP32。
 """
 
 import os
@@ -124,8 +124,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "task_text", default_value="跟随红色目标船，保持3米距离"
             ),
-            # Qwen must finish its first CUDA encode and release its model
-            # before the other CUDA model processes are constructed on Orin.
+            # Qwen 首次 CUDA 编码并释放模型后，再创建其他 CUDA 进程。
             DeclareLaunchArgument(
                 "perception_start_delay_sec", default_value="45.0"
             ),
@@ -133,7 +132,7 @@ def generate_launch_description():
                 "policy_start_delay_sec", default_value="50.0"
             ),
             DeclareLaunchArgument("visual_device", default_value="cuda"),
-            # ── TCP bridge (kinematic outbound) ──
+            # ── TCP bridge（运动学输出）──
             Node(
                 package="bridge",
                 executable="bridge_node",
@@ -163,7 +162,7 @@ def generate_launch_description():
                 respawn=True,
                 respawn_delay=2.0,
             ),
-            # ── Perception and internal temporal tracking ──
+            # ── 感知与内部时序跟踪 ──
             TimerAction(
                 period=LaunchConfiguration("perception_start_delay_sec"),
                 actions=[
@@ -188,9 +187,9 @@ def generate_launch_description():
                     )
                 ],
             ),
-            # ── Language embedding (real Qwen CUDA) ──
+            # ── 语言嵌入（真实 Qwen CUDA）──
             language_node,
-            # ── Decision inference and safety (JetPack PyTorch, CUDA) ──
+            # ── 决策推理与安全检查（JetPack PyTorch、CUDA）──
             TimerAction(
                 period=LaunchConfiguration("policy_start_delay_sec"),
                 actions=[

@@ -2,6 +2,8 @@
 
 Jetson-side ROS 2 runtime for the UE5 ASV simulation loop.
 
+Part of [asv-hil-platform](https://github.com/EnjunLiu/asv-hil-platform). Sibling repos: [`asv-unreal-simulation`](https://github.com/EnjunLiu/asv-unreal-simulation), [`asv-vla-training`](https://github.com/EnjunLiu/asv-vla-training), [`asv-esp32-firmware`](https://github.com/EnjunLiu/asv-esp32-firmware).
+
 ## Runtime nodes
 
 Only four nodes are exposed:

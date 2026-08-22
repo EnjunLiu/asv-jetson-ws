@@ -1,4 +1,4 @@
-"""Pure tests for the structured-entity policy frame cache."""
+"""结构化实体策略帧缓存的纯测试。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import math
 import time
 
 
-POLICY = Path(__file__).resolve().parents[1] / "vla" / "decision.py"
+POLICY = Path(__file__).resolve().parent.parent / "vla" / "decision.py"
 
 
 def _load_sync_cache():
@@ -80,3 +80,22 @@ def test_cache_size_is_bounded() -> None:
     for index in range(5):
         cache.put_entities(_feature("run-a", 1, index), received_at=float(index))
     assert cache.entity_size == 2
+
+
+def test_ego_state_is_retrieved_by_the_entity_frame_identity() -> None:
+    cache = FrameSyncCache(cache_size=4, ttl_sec=10.0)
+    entity = _feature("run-a", 7, 12)
+    ego = _feature("run-a", 7, 12)
+    key, switched = cache.put_ego(ego, received_at=0.0)
+    assert switched is False
+    assert cache.ego_for(key) is ego
+    assert cache.ego_for(cache.key_for(entity)) is ego
+
+
+def test_scene_switch_clears_cached_ego_states() -> None:
+    cache = FrameSyncCache(cache_size=4, ttl_sec=10.0)
+    old_key, _ = cache.put_ego(_feature("run-a", 1, 3), received_at=0.0)
+    new_key, switched = cache.put_ego(_feature("run-b", 2, 0), received_at=0.1)
+    assert switched is True
+    assert cache.ego_for(old_key) is None
+    assert cache.ego_for(new_key) is not None

@@ -5,7 +5,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  # Structured entity observations shared by UE5, perception, and tracking.
+  # UE5、感知和跟踪共用的结构化实体观测。
   "msg/ASVState.msg"
   "msg/Entity.msg"
   "msg/EntityArray.msg"

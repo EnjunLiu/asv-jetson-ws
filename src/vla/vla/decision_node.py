@@ -1,4 +1,4 @@
-"""Subscribe to language/entities and publish desired displacement."""
+"""订阅语言和实体消息并发布期望位移。"""
 
 from __future__ import annotations
 

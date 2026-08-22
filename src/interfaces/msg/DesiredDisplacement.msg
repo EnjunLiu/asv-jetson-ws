@@ -1,5 +1,5 @@
-# One body-frame displacement command for one control interval.
-# +X is forward and +Y is left in base_link.
+# 一个控制周期对应一条机体坐标系位移命令。
+# base_link 中 +X 向前，+Y 向左。
 int64 stamp_us
 string run_id
 int64 scene_seed

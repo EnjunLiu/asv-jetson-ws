@@ -10,7 +10,7 @@ from PIL import Image
 
 
 def _load_node_module():
-    """Load the ROS adapter with tiny local stubs on non-ROS test hosts."""
+    """在无 ROS 测试主机上用本地轻量桩加载 ROS 适配器。"""
 
     rclpy = types.ModuleType("rclpy")
     rclpy_node = types.ModuleType("rclpy.node")

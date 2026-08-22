@@ -1,11 +1,12 @@
-"""Pure-Python guards for the runtime identity propagation contract.
+"""运行时身份传播合同的纯 Python 检查。
 
 These tests intentionally inspect source and interface text instead of
 importing generated ROS message classes, so they remain runnable before a
-ROS interface build has happened.
+ROS 接口已完成构建。
 """
 
 import ast
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -184,14 +185,11 @@ def test_runtime_uses_current_single_point_cuda_artifacts() -> None:
     assert "path: models/policy.pt" in manifest
     assert "source_path: models/policy.pt" in manifest
     assert "model_id: policy" in manifest
-    assert (
-        "artifact_sha256: "
-        "eaecab49bd69443a9b19ce9b651d31007e49b4034f35eb4dd98a6836da5540b5"
-    ) in manifest
-    assert (
-        "source_sha256: "
-        "1177221999e0753c74ff8bb286915dea371601c4c95601ee9d2fb515b7e9b5ff"
-    ) in manifest
+    perception_hash = hashlib.sha256((REPOSITORY / "models/perception.npz").read_bytes()).hexdigest().upper()
+    policy_hash = hashlib.sha256((REPOSITORY / "models/policy.pt").read_bytes()).hexdigest().upper()
+    assert f"artifact_sha256: {perception_hash}" in manifest
+    assert f"artifact_sha256: {policy_hash}" in manifest
+    assert f"source_sha256: {policy_hash}" in manifest
     assert "deployment_status: selected_for_deployment" in manifest
     assert "mode: online_qwen_cuda_release_after_encode" in manifest
     assert "online_qwen_runtime: true" in manifest

@@ -1,5 +1,5 @@
 schema_version: 1
-contract_revision: final_retrain_20260819
+contract_revision: chase_standoff_candidate_20260821
 
 # Deployment metadata for the selected L7/S2 single-point closed loop.
 # Binary artifacts are copied to the Jetson deployment directory only after
@@ -14,9 +14,10 @@ deployment:
   perception:
     path: models/perception.npz
     source_path: models/perception.npz
+    training_source_path: D:/asv-vla-training/experiments/chase_standoff_candidate/perception.npz
     model_id: perception_ridge_language
     model_version: perception_schema
-    artifact_sha256: F78AF3D972BE0E31FAE35FD9EAA45C8C14BBF08DAA1C489D5DAAC5ADBBCCF11E
+    artifact_sha256: 4A39C7DD446570D59E8688EAD426DC3A7417B7FA1C187A92C779C876905B647C
     input: (camera_image_rgb,task_embedding_float32[256])->structured_entities
     input_components:
       - camera_image_rgb
@@ -41,9 +42,10 @@ deployment:
   policy:
     path: models/policy.pt
     source_path: models/policy.pt
+    training_source_path: D:/asv-vla-training/experiments/chase_standoff_candidate/policy.pt
     model_id: policy
-    artifact_sha256: D9C159613C5AD37CFB61DC6AA39B80B334FE07B1663EA250083CE26C2CC1E674
-    source_sha256: D9C159613C5AD37CFB61DC6AA39B80B334FE07B1663EA250083CE26C2CC1E674
+    artifact_sha256: E0975763559D60E47A3CDC78A16C93512017B204826D979F9B2BCAD7A0CADA36
+    source_sha256: E0975763559D60E47A3CDC78A16C93512017B204826D979F9B2BCAD7A0CADA36
     backend: torch_cuda
     device: cuda
     training_platform: pc
@@ -82,12 +84,12 @@ deployment:
     cpu_fallback: false
 
 training:
-  data_root: D:/asv-vla-training/data/episodes/asv_final_episodes
+  data_root: D:/asv-vla-training/data/episodes/moving_target_valid
   qwen_embeddings_sha256: ecf9980f5a947adb26586a07ba73c3ea3814a6f9b030441357fcf6262dabc9cf
   held_out_rollout: true
 
 training_only:
   language_model: Qwen3-Embedding-0.6B
   location: D:/asv-vla-training/data/qwen_final_embeddings.npz
-  expert_label: one_current_frame_desired_displacement_point
+  expert_label: integrated_recorded_displacement_over_0p5s_control_window
   target_action_source: perception_geometry

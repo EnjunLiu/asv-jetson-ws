@@ -1,15 +1,15 @@
-"""Image-only entity geometry model used by the online VLA path.
+"""在线 VLA 路径使用的纯图像实体几何模型。
 
 This is deliberately small and auditable: the PC trainer learns a multi-output
 ridge regressor from RGB image tiles to the calibrated relative geometry of
 four canonical boat slots.  At runtime JPEG/PIL decoding stays on the host,
 while feature construction, normalization and the learned projection run on
 the requested CUDA device.  UE ``Entities`` never enter this module; they are
-used by the trainer as supervision labels only.
+仅供训练器作为监督标签使用。
 
 It is a first perception model, not a claim of general-purpose object
 detection.  The manifest records its data split and metrics, and a later
-detector can replace this file without changing the ROS topic contract.
+检测器可替换本文件而不改变 ROS topic 合同。
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ STRUCTURED_ENTITY_OUTPUT_CONTRACT = (
 VELOCITY_SOURCE = "perception"
 GRID_WIDTH = 32
 GRID_HEIGHT = 18
-CHANNELS = 7  # RGB plus red/blue/white/bright spatial evidence maps
+CHANNELS = 7  # RGB 加红/蓝/白/亮度空间证据图
 BASE_FEATURE_DIM = GRID_WIDTH * GRID_HEIGHT * CHANNELS
 MOMENT_MAPS = 4
 MOMENT_FEATURES_PER_MAP = 8
@@ -50,23 +50,19 @@ FEATURE_DIM = BASE_FEATURE_DIM + MOMENT_MAPS * MOMENT_FEATURES_PER_MAP
 FUSED_FEATURE_DIM = FEATURE_DIM + LANGUAGE_EMBEDDING_DIM
 ENTITY_IDS = ("target_red", "target_blue", "target_left", "target_right")
 ENTITY_COUNT = len(ENTITY_IDS)
-OUTPUT_DIM = ENTITY_COUNT * 4  # visible logit + relative x/y/z per slot
+OUTPUT_DIM = ENTITY_COUNT * 4  # 每槽位：可见性 logit 与相对 x/y/z
 POSITION_SCALE_M = np.asarray((40.0, 40.0, 5.0), dtype=np.float32)
 COLOR_CALIBRATION_WIDTH = 320
 COLOR_CALIBRATION_HEIGHT = 180
-# Fit on the available near-range S2 red masks.  The form is intentionally
-# explicit so the PC calibration script can replace these values in a model
-# artifact without changing the online image-only contract.
+# 根据近距离 S2 红色掩码拟合；保持显式形式，便于 PC 标定脚本替换模型参数。
 COLOR_X_COEFFICIENTS = (0.63521458, 0.15866379)
-# The target grows substantially in the near field.  Keep the lower bound
-# above isolated pixel noise, but do not discard a valid target merely because
-# its image component is larger than the original far-field calibration crop.
+# 目标近距离会明显变大；下限需高于孤立噪声，但不能因超过远场标定裁剪而丢弃目标。
 COLOR_AREA_MIN = 0.0001
 COLOR_AREA_MAX = 0.08
 
 
 class ImageEntityPerceptionError(RuntimeError):
-    """Raised when the image perception model or input is unusable."""
+    """图像感知模型或输入不可用时抛出。"""
 
 
 def validate_task_embedding(
@@ -74,7 +70,7 @@ def validate_task_embedding(
     *,
     expected_dim: int = LANGUAGE_EMBEDDING_DIM,
 ) -> np.ndarray:
-    """Validate the task condition; never create a fallback vector."""
+    """校验任务条件，不创建回退向量。"""
 
     array = np.asarray(embedding, dtype=np.float32)
     if array.shape != (expected_dim,):
@@ -95,7 +91,7 @@ def _is_sha256(value: str) -> bool:
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """Small deterministic task contract used by image-only selection."""
+    """纯图像选择使用的轻量确定性任务合同。"""
 
     instruction: str
     instruction_id: str
@@ -114,7 +110,7 @@ class TaskSpec:
 
 
 def parse_task_instruction(instruction: object) -> TaskSpec:
-    """Parse the minimal runtime task vocabulary without using UE truth.
+    """解析最小运行时任务词汇，不使用 UE truth。
 
     The parser deliberately accepts both the English test vocabulary and the
     Chinese task text used by the online demo. Unknown or empty text is
@@ -172,7 +168,7 @@ def parse_task_instruction(instruction: object) -> TaskSpec:
 def _largest_color_component_in_area(
     mask: np.ndarray,
 ) -> tuple[int, float, float]:
-    """Return the largest 8-connected component whose area is within
+    """返回面积在标定范围内的最大八连通分量。
     [COLOR_AREA_MIN, COLOR_AREA_MAX].
 
     Background clutter (sky/water) often forms a huge component that exceeds
@@ -231,7 +227,7 @@ def calibrated_color_geometry(
     image: Image.Image | np.ndarray,
     color: str,
 ) -> tuple[bool, float, float, float, tuple[float, float]]:
-    """Estimate red/blue-target geometry from RGB only.
+    """仅根据 RGB 估计红/蓝目标几何。
 
     The returned area is the fraction of the fixed 320x180 grid occupied by
     the largest color component, and the centroid is in that same grid.  A
@@ -269,18 +265,14 @@ def calibrated_color_geometry(
     red, green, blue = grid.transpose(2, 0, 1)
     primary = red if normalized_color == "red" else blue
     secondary = np.maximum(red if normalized_color == "blue" else blue, green)
-    # Keep the red and blue contracts on the same component/geometry path;
-    # only the selected primary channel changes. Area filtering below rejects
-    # large background regions without relying on a scene-specific horizon or
-    # camera crop.
+    # 红蓝目标共用连通分量和几何流程，只切换主通道；面积过滤排除大背景。
     dominant_mask = (
         (primary >= 0.25)
         & (primary >= secondary * 1.25)
         & ((primary - secondary) >= 0.08)
     )
     if normalized_color == "blue":
-        # Blue materials can be recorded as low-value cyan. This is a generic
-        # RGB color-family fallback, not a location or scene assumption.
+        # 蓝色材质可能记录为低值青色；这是通用 RGB 颜色族回退，不依赖场景位置。
         cyan_mask = (
             (green >= red * 1.6)
             & (blue >= red * 1.6)
@@ -307,8 +299,7 @@ def calibrated_color_geometry(
         )
     inverse_sqrt_area = 1.0 / math.sqrt(area)
     relative_x = COLOR_X_COEFFICIENTS[0] + COLOR_X_COEFFICIENTS[1] * inverse_sqrt_area
-    # A centroid left of image centre is positive +Y in the ROS base_link
-    # convention.  The 0.93 factor is the frozen camera horizontal scale.
+    # 质心在图像中心左侧时，按 ROS base_link 约定为 +Y；0.93 是固定水平比例。
     relative_y = (
         0.93
         * relative_x
@@ -327,13 +318,13 @@ def calibrated_color_geometry(
 def calibrated_red_geometry(
     image: Image.Image | np.ndarray,
 ) -> tuple[bool, float, float, float, tuple[float, float]]:
-    """Backward-compatible red-only alias for the unified color calibrator."""
+    """统一颜色标定器的兼容红色别名。"""
 
     return calibrated_color_geometry(image, "red")
 
 
 def _resized_rgb(image: Image.Image | np.ndarray) -> np.ndarray:
-    """Convert a PIL image or array to a finite, resized RGB float array."""
+    """将 PIL 图像或数组转换为有限的缩放 RGB 浮点数组。"""
     if isinstance(image, np.ndarray):
         array = np.asarray(image)
         if array.ndim != 3 or array.shape[2] != 3:
@@ -358,7 +349,7 @@ def _resized_rgb(image: Image.Image | np.ndarray) -> np.ndarray:
 
 
 def _decoded_rgb_array(image: Image.Image | np.ndarray) -> np.ndarray:
-    """Return decoded RGB bytes before device-side feature construction."""
+    """返回设备特征构建前解码的 RGB 数据。"""
 
     if isinstance(image, np.ndarray):
         array = np.asarray(image)
@@ -385,7 +376,7 @@ def _extract_torch_image_features(
     device: str,
     model_version: str,
 ):
-    """Construct the feature map and moments on the requested CUDA device.
+    """在指定 CUDA 设备上构建特征图和矩。
 
     The resize runs on the host with the same PIL BILINEAR path the trainer
     uses: torch interpolate differs numerically from PIL, and the tiny
@@ -457,9 +448,7 @@ def _extract_torch_image_features(
             )
         )
     features = torch.cat((spatial.reshape(-1), torch.stack(moments)))
-    # Language-conditioned models append the 256-D task embedding after this
-    # helper returns. Validate only the image branch here; checking the fused
-    # dimension at this stage rejects every real CUDA frame.
+    # 语言条件模型会在此函数后追加 256 维任务嵌入；这里只校验图像分支。
     if tuple(features.shape) != (FEATURE_DIM,) or not bool(torch.isfinite(features).all()):
         raise ImageEntityPerceptionError(
             "CUDA image feature vector is invalid"
@@ -468,7 +457,7 @@ def _extract_torch_image_features(
 
 
 def extract_image_features(image: Image.Image | np.ndarray) -> np.ndarray:
-    """Extract spatial evidence plus color/area moments."""
+    """提取空间证据及颜色/面积矩。"""
 
     result = _resized_rgb(image)
     red = np.maximum(
@@ -539,7 +528,7 @@ def _feature_dim_for_model(model_version: str) -> int:
 
 
 def _torch_for_device(device: str):
-    """Load torch lazily and require the requested CUDA device explicitly."""
+    """延迟加载 torch，并显式要求指定 CUDA 设备。"""
 
     normalized = str(device).strip().lower()
     if normalized in {"", "numpy", "cpu"}:
@@ -602,7 +591,7 @@ class ImageEntityPrediction:
 
     @property
     def relative_velocity(self) -> tuple[float, float, float]:
-        """Velocity is intentionally unavailable to a single-frame head."""
+        """单帧预测头不提供速度。"""
 
         return (0.0, 0.0, 0.0)
 
@@ -624,9 +613,7 @@ def _prediction_bearing(entity: ImageEntityPrediction) -> str:
         return "left"
     if entity_id == "target_right":
         return "right"
-    # The canonical bearing task is represented by the dedicated left/right
-    # slots. Do not relabel a color target as a bearing target merely because
-    # its current pixel happens to be on that side of the image.
+    # 标准方位任务使用专用左右槽位；不能因颜色目标当前位于一侧就改成方位目标。
     if entity_id in {"target_red", "target_blue"}:
         return ""
     if not math.isfinite(float(entity.relative_y)):
@@ -642,7 +629,7 @@ def task_matches_entity(
     entity: ImageEntityPrediction,
     task: TaskSpec | str,
 ) -> bool:
-    """Return whether a model prediction is relevant to the parsed task."""
+    """判断模型预测是否与解析任务相关。"""
 
     spec = parse_task_instruction(task) if isinstance(task, str) else task
     if not spec.valid or not spec.is_follow:
@@ -662,7 +649,7 @@ def select_task_entities(
     predictions: Sequence[ImageEntityPrediction],
     task: TaskSpec | str,
 ) -> tuple[ImageEntityPrediction, ...]:
-    """Return only visible predictions selected by the task instruction."""
+    """只返回任务指令选中的可见预测。"""
 
     return tuple(
         prediction
@@ -673,7 +660,7 @@ def select_task_entities(
 
 @dataclass(frozen=True)
 class ImageEntityModel:
-    """Immutable inference weights loaded from the PC trainer output."""
+    """从 PC 训练器输出加载的不可变推理权重。"""
 
     feature_mean: np.ndarray
     feature_scale: np.ndarray
@@ -691,7 +678,7 @@ class ImageEntityModel:
 
     @staticmethod
     def validate_device(device: str) -> None:
-        """Validate an inference device before a node accepts the model."""
+        """节点接受模型前校验推理设备。"""
 
         _torch_for_device(device)
 
@@ -805,7 +792,7 @@ class ImageEntityModel:
         color_image: Image.Image | np.ndarray | None = None,
         task_embedding: object | None = None,
     ) -> tuple[ImageEntityPrediction, ...]:
-        """Predict entities and optionally apply task selection at the boundary.
+        """预测实体，并可在边界应用任务筛选。
 
         New models require a real fixed-size task embedding and concatenate it
         with image features before the learned projection. ``task`` is only
@@ -826,9 +813,7 @@ class ImageEntityModel:
             normalized = (features - self.feature_mean) / self.feature_scale
             output = normalized @ self.weights + self.bias
         else:
-            # Decode RGB/PIL on the host, then keep the feature map,
-            # normalization, and linear projection on the requested CUDA
-            # device.  This branch has no NumPy fallback.
+            # 在主机解码 RGB/PIL，特征图、归一化和线性投影保留在指定 CUDA 设备；不回退 NumPy。
             try:
                 feature_tensor = _extract_torch_image_features(
                     image,
@@ -871,6 +856,15 @@ class ImageEntityModel:
         if output.shape != (OUTPUT_DIM,) or not np.all(np.isfinite(output)):
             raise ImageEntityPerceptionError("perception output is non-finite")
 
+        calibrated_colors: dict[
+            str, tuple[bool, float, float, float, tuple[float, float]]
+        ] = {}
+        if color_image is not None:
+            calibrated_colors = {
+                color: calibrated_color_geometry(color_image, color)
+                for color in ("red", "blue")
+            }
+
         predictions: list[ImageEntityPrediction] = []
         for index, entity_id in enumerate(ENTITY_IDS):
             offset = index * 4
@@ -878,6 +872,17 @@ class ImageEntityModel:
             visible = visible_logit >= self.visibility_threshold
             confidence = float(1.0 / (1.0 + math.exp(-np.clip(visible_logit, -30.0, 30.0))))
             geometry = output[offset + 1 : offset + 4] * POSITION_SCALE_M
+            calibrated = calibrated_colors.get(_prediction_color(entity_id))
+            if calibrated is not None:
+                color_valid, color_x, color_y, _, _ = calibrated
+                if color_valid:
+                    visible = True
+                    confidence = 1.0
+                    geometry = np.asarray((color_x, color_y, 0.0), dtype=np.float32)
+                else:
+                    visible = False
+                    confidence = 0.0
+                    geometry = np.zeros(3, dtype=np.float32)
             predictions.append(
                 ImageEntityPrediction(
                     entity_id=entity_id,
@@ -927,7 +932,7 @@ def save_model(
     velocity_output: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Write an immutable model and optional JSON metadata next to it."""
+    """写入不可变模型及可选 JSON 元数据。"""
 
     model_path = Path(path).expanduser()
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -991,23 +996,23 @@ IMAGENET_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
 
 
 class VisualEncoderError(RuntimeError):
-    """Base class for deterministic visual-encoder failures."""
+    """确定性视觉编码器错误基类。"""
 
 
 class InvalidImageError(VisualEncoderError):
-    """Raised when a camera payload cannot satisfy the frozen contract."""
+    """相机载荷不满足固定合同时抛出。"""
 
 
 class TargetSelectionError(VisualEncoderError):
-    """Raised when no valid, visible target entity is available."""
+    """没有有效可见目标实体时抛出。"""
 
 
 class TargetProjectionError(VisualEncoderError):
-    """Raised when the selected target cannot be projected into the image."""
+    """选中目标无法投影到图像时抛出。"""
 
 
 class InvalidVisualFeaturesError(VisualEncoderError):
-    """Raised when the backbone returns an unusable tensor."""
+    """骨干网络返回不可用张量时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -1084,10 +1089,8 @@ def project_target_to_pixel(
     if not all(math.isfinite(float(value)) for value in values):
         raise TargetProjectionError("target coordinates contain NaN or Inf")
 
-    # Entity positions use ROS base_link: +X forward, +Y left, +Z up.
-    # The UE camera uses +X forward, +Y right, +Z up.  The frozen UE component
-    # pitch is -5 degrees, so transform the base_link vector into the pitched
-    # camera frame before applying the pinhole projection.
+    # 实体位置使用 ROS base_link：+X 前、+Y 左、+Z 上。
+    # UE 相机 +Y 向右，固定俯仰为 -5 度；投影前先转换到相机坐标系。
     dx = float(relative_x) - profile.mount_x_m
     dy_right = -(float(relative_y) - profile.mount_y_m)
     dz = float(relative_z) - profile.mount_z_m
@@ -1203,7 +1206,7 @@ def _letterbox_and_normalize(
 
 
 class FrozenMobileNetEncoder:
-    """Frozen MobileNetV3-small backbone producing normalized 576-D tokens."""
+    """生成归一化 576 维 token 的冻结 MobileNetV3-small 骨干。"""
 
     def __init__(
         self,
@@ -1273,7 +1276,7 @@ class FrozenMobileNetEncoder:
         self,
         images: Iterable[Image.Image],
     ) -> np.ndarray:
-        """Encode an arbitrary non-empty image batch.
+        """编码任意非空图像批次。
 
         Day 6 used exactly two images (global plus one selected target).  Day
         13 reuses the same frozen backbone and preprocessing for one global
@@ -1331,12 +1334,12 @@ VelocityFilter = Literal["none", "ema", "alpha_beta"]
 
 
 class TemporalEntityTrackerError(ValueError):
-    """Raised when a geometry frame cannot satisfy the tracker contract."""
+    """几何帧不满足跟踪合同。"""
 
 
 @dataclass(frozen=True, slots=True)
 class FrameMetadata:
-    """Identity and timing attached to one observation frame."""
+    """单个观测帧附带的身份和时间。"""
 
     run_id: str
     scene_seed: int
@@ -1366,7 +1369,7 @@ class FrameMetadata:
 
 @dataclass(frozen=True, slots=True)
 class GeometryObservation:
-    """One entity observation containing geometry and semantic metadata."""
+    """包含几何和语义元数据的实体观测。"""
 
     entity_id: str
     relative_x: float
@@ -1442,7 +1445,7 @@ class GeometryObservation:
 
 @dataclass(frozen=True, slots=True)
 class TrackedEntity:
-    """Current geometry plus an explicitly validity-gated velocity estimate."""
+    """当前几何及显式有效性门控的速度估计。"""
 
     entity_id: str
     relative_x: float
@@ -1479,7 +1482,7 @@ class TrackedEntity:
         )
 
     def as_entity_kwargs(self) -> dict[str, object]:
-        """Return fields accepted by the ``Entity`` message."""
+        """返回 ``Entity`` 消息接受的字段。"""
 
         bbox = self.bbox or (0.0, 0.0, 0.0, 0.0)
         return {
@@ -1516,7 +1519,7 @@ class _TrackState:
 
 
 class TemporalEntityTracker:
-    """Track geometry observations and estimate velocity by finite difference."""
+    """跟踪几何观测并用有限差分估计速度。"""
 
     def __init__(
         self,
@@ -1567,7 +1570,7 @@ class TemporalEntityTracker:
         *,
         frame: FrameMetadata | None = None,
     ) -> tuple[TrackedEntity, ...]:
-        """Consume one frame and return records for entities seen in it.
+        """消费一帧并返回其中实体记录。
 
         A frame with no observations can be represented by passing ``frame``;
         this advances TTL bookkeeping without fabricating entity positions.
@@ -1610,7 +1613,7 @@ class TemporalEntityTracker:
         self._last_stamp_us = metadata.stamp_us
         return records
 
-    # Explicit alias makes the intended frame-processing operation discoverable.
+    # 显式别名，便于发现帧处理入口。
     process_frame = update
 
     def _metadata_for(
@@ -1723,8 +1726,7 @@ class TemporalEntityTracker:
                 item.position,
             )
 
-        # Alpha-beta: the position residual corrects the prior velocity.  The
-        # reported position remains the actual geometry observation.
+        # Alpha-beta：位置残差修正先验速度，输出位置仍为实际几何观测。
         residual = tuple(
             current - (previous + velocity * dt_sec)
             for current, previous, velocity in zip(
@@ -1753,7 +1755,7 @@ DEFAULT_DROPOUT_HOLD_SEC = 3.0
 
 
 class _DropoutRecovery:
-    """Bounded, identity-scoped recovery for short perception dropouts."""
+    """按身份限定的短时感知丢帧有界恢复。"""
 
     def __init__(
         self,
