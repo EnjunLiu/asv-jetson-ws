@@ -1,15 +1,24 @@
-# Jetson 当前任务状态（2026-08-22）
-
-- 当前目标：暂无。
-- 当前阶段：已验收 / 空闲。
-- 当前阻塞：无。
-- 下一步动作：空闲。
-
-
 # Jetson 工作区事实与交接文档
 
-> 这是 Jetson 端最终运行工作区的唯一交接入口。每次上下文压缩、开启新对话或部署/闭环验证前，先阅读本文件，再阅读 UE5 端 `D:\asv-unreal-simulation\WORKSPACE_CONTEXT.md`。
+## 0. 当前任务状态（2026-08-22）
 
+- 当前唯一目标：已完成最终三场景软件 HIL 闭环验收，并完成 GitHub 同步。
+- 当前阶段：已验收。
+- 已完成证据（现场验证）：
+  - `models/manifest.yaml` policy SHA-256 已与 live `policy.pt` 对齐：`E0975763559D60E47A3CDC78A16C93512017B204826D979F9B2BCAD7A0CADA36`（`chase_standoff_candidate`）
+  - RED3 / BLUE3 / RED4 launch 均出现 `LANGUAGE_READY_VALID` + CUDA perception ready + `POLICY_READY` + `0.0.0.0:8080`
+  - UE 侧各场 `SCENE_EXEC_APPLY≈300` / 180s；结果图在 PC 桌面 `track_world_chase_standoff_2x3.png`
+  - 指标摘要：RED4 mean_abs≈0.35 final≈-0.03；RED3 mean_abs≈1.24 final≈1.02；BLUE3 mean_abs≈1.50 final≈1.35
+  - Git：`asv-jetson-ws` 已推送 `9d18815`；总览 README：`asv-hil-platform@b5c574d`
+- 当前阻塞：无。注意 Orin 内存紧张时 Qwen CUDA 加载会 OOM，需先清掉残留 VLA 进程再 launch。
+- 下一步唯一动作：空闲。VLA 进程已停止。
+
+## 1. 唯一工作区与职责
+
+- 唯一 Jetson 工作区：`/home/jetson/jetson_asv_ws`
+- SSH：`ssh jetson@192.168.137.100`
+- 本端职责：ROS 2 bridge、语言 embedding、图像感知、决策推理、安全拒止和向 UE5 发送二维机体坐标期望位移。
+- 本端不负责训练、不启动 ESP32 控制器、不启动推进器分配器，也不把 UE 真值作为在线感知输入。
 ## 1. 唯一工作区与职责
 
 - 唯一 Jetson 工作区：`/home/jetson/jetson_asv_ws`
